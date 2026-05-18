@@ -1,0 +1,78 @@
+{
+  "originHash" : "d7d02b50aa4aa141d978740e455031cd94d8de66e053cb471d695f621ecf0ef7",
+  "pins" : [
+    {
+      "identity" : "applifecyclemiddleware",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/SwiftRex/AppLifecycleMiddleware.git",
+      "state" : {
+        "revision" : "4beb56d85de331eb7218c4f8f70630e0ef7a4e6f",
+        "version" : "0.1.0"
+      }
+    },
+    {
+      "identity" : "bridgemiddleware",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/SwiftRex/BridgeMiddleware.git",
+      "state" : {
+        "revision" : "6c886f95a877f7fb75bd7f4043a28d6880c5fff2",
+        "version" : "0.1.3"
+      }
+    },
+    {
+      "identity" : "loggermiddleware",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/SwiftRex/LoggerMiddleware.git",
+      "state" : {
+        "revision" : "794c25144aff4bfc26a7ac99b084a97ce10a189c",
+        "version" : "0.3.9"
+      }
+    },
+    {
+      "identity" : "reactiveswift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ReactiveCocoa/ReactiveSwift.git",
+      "state" : {
+        "revision" : "40c465af19b993344e84355c00669ba2022ca3cd",
+        "version" : "7.1.1"
+      }
+    },
+    {
+      "identity" : "rxswift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ReactiveX/RxSwift.git",
+      "state" : {
+        "revision" : "b06a8c8596e4c3e8e7788e08e720e3248563ce6a",
+        "version" : "6.7.1"
+      }
+    },
+    {
+      "identity" : "swift-syntax",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-syntax.git",
+      "state" : {
+        "revision" : "64889f0c732f210a935a0ad7cda38f77f876262d",
+        "version" : "509.1.1"
+      }
+    },
+    {
+      "identity" : "swiftrex",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/SwiftRex/SwiftRex.git",
+      "state" : {
+        "revision" : "b5b5409c221c5b69bd6b074e84988f90b098e347",
+        "version" : "0.8.12"
+      }
+    },
+    {
+      "identity" : "swiftrexmacros",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/SwiftRex/SwiftRexMacros.git",
+      "state" : {
+        "branch" : "master",
+        "revision" : "1e72d116eb7f96588e255213828fe8bebe737d18"
+      }
+    }
+  ],
+  "version" : 3
+}
