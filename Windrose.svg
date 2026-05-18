@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<svg viewBox="0 0 800 800" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <clipPath id="m">
+    <path id="msk" d="m0-380 45,270 255,-190z m0,0 -45,270 -255,-190z m0,760 -45,-270 -255,190z m0,0 45,-270 255,190z"/>
+    <use xlink:href="#msk" transform="rotate(90)"/>
+  </clipPath>
+  <g transform="translate(400 400)" fill="none" stroke="#000">
+    <circle r="300"/>
+    <g id="sca" stroke-linecap="round">
+      <path d="M0,-300v-40 M0,300v40" stroke-width="2"/>
+      <path id="a" d="M0,-300v-20 M0,300v20"/>
+      <use xlink:href="#a" transform="rotate(5)"/>
+      <use xlink:href="#a" transform="rotate(10)"/>
+      <use xlink:href="#a" transform="rotate(15)"/>
+      <use xlink:href="#a" transform="rotate(20)"/>
+      <use xlink:href="#a" transform="rotate(25)"/>
+      <use xlink:href="#a" transform="rotate(30)"/>
+      <use xlink:href="#a" transform="rotate(35)"/>
+      <use xlink:href="#a" transform="rotate(40)"/>
+    </g>
+    <use xlink:href="#sca" transform="rotate(45)"/>
+    <use xlink:href="#sca" transform="rotate(90)"/>
+    <use xlink:href="#sca" transform="rotate(135)"/>
+    <g fill="#000" stroke="#000">
+      <path d="m0,-65 155-90 -90,155 90,155 -155-90 -155,90 90,-155 -90,-155z" fill="#fff"/>
+      <path d="m0,0 0-65 155-90 -310,310 155-90 0-65 -65,0 -90-155 310,310 -90-155z"/>
+      <path d="m45-45 -45-255 -45,255 -255,45 255,45 45,255 45-255 255-45z" fill="#fff"/>
+      <path d="m0,0 -45-45 45-255 0,600 45-255 -45-45 -300,0 255,45 90-90 255,45z"/>
+    </g>
+    <circle clip-path="url(#m)" stroke="#f00" stroke-width="30" r="220"/>
+    <g font-family="Sans" font-size="18" text-anchor="middle" fill="#000" stroke="none">
+      <text x="0" y="-380">N<tspan x="0" dy="22.5">360°</tspan></text>
+      <text x="0" y="-380" transform="rotate(45)">NO<tspan x="0" dy="22.5">45°</tspan></text>
+      <text x="0" y="-380" transform="rotate(90)">O<tspan x="0" dy="22.5">90°</tspan></text>
+      <text x="0" y="-380" transform="rotate(135)">SO<tspan x="0" dy="22.5">135°</tspan></text>
+      <text x="0" y="-380" transform="rotate(180)">S<tspan x="0" dy="22.5">180°</tspan></text>
+      <text x="0" y="-380" transform="rotate(225)">SW<tspan x="0" dy="22.5">225°</tspan></text>
+      <text x="0" y="-380" transform="rotate(270)">W<tspan x="0" dy="22.5">270°</tspan></text>
+      <text x="0" y="-380" transform="rotate(315)">NW<tspan x="0" dy="22.5">315°</tspan></text>
+    </g>
+  </g>
+</svg>
