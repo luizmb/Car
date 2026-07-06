@@ -36,7 +36,7 @@ public extension AppRoute {
     func view(in store: MainStoreType, world: World) -> some View {
         switch self {
         case .speedMonitor:
-            Scope<AppAction, AppState, World, SpeedMonitorFeature>.speedMonitor.view(from: store, world: world)
+            LiftedScope<SpeedMonitorFeature>.speedMonitor.view(from: store, world: world)
         }
     }
 }

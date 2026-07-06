@@ -26,6 +26,7 @@ public enum AppAction: Sendable {
 
 public typealias MainStoreType = any StoreType<AppAction, AppState>
 public typealias MainStore     = Store<AppAction, AppState, World>
+public typealias LiftedScope<F: Feature> = Scope<AppAction, AppState, World, F>
 
 // MARK: - Store conveniences
 
@@ -37,7 +38,7 @@ public extension MainStore {
         Store(
             initial: AppState(),
             behavior: NavigationFeature.behavior().lift(action: \.navigation, state: \.navigation, environment: { _ in () })
-                <> Scope<AppAction, AppState, World, SpeedMonitorFeature>.speedMonitor.behavior,
+                <> LiftedScope<SpeedMonitorFeature>.speedMonitor.behavior,
             environment: world
         )
     }
@@ -47,7 +48,7 @@ public extension MainStore {
 
 // The SpeedMonitor slice of the app: action/state are addressed by `\.speedMonitor` on the flat
 // AppAction/AppState; the environment is narrowed from `World`.
-public extension Scope<AppAction, AppState, World, SpeedMonitorFeature> {
+public extension LiftedScope<SpeedMonitorFeature> {
     static var speedMonitor: Self {
         Scope(
             SpeedMonitorFeature.self,
