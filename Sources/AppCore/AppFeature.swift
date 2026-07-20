@@ -36,7 +36,7 @@ public extension MainStore {
     @MainActor static func app(world: World) -> MainStoreType {
         Store(
             initial: AppState(),
-            behavior: NavigationFeature.behavior().lift(Relay.Empty.action(AppAction.prism.navigation).state(\AppState.navigation).environment { _ in () })
+            behavior: NavigationFeature.behavior().lift(.action(\.navigation).state(\.navigation).environment(ignore))
                 <> AppScopes.speedMonitor.behavior(of: SpeedMonitorFeature.self),
             environment: world
         )
