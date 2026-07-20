@@ -26,7 +26,6 @@ public enum AppAction: Sendable {
 
 public typealias MainStoreType = any StoreType<AppAction, AppState>
 public typealias MainStore     = Store<AppAction, AppState, World>
-public typealias LiftedScope<F: Feature> = Scope<AppAction, AppState, World, F>
 
 // MARK: - Store conveniences
 
@@ -37,8 +36,8 @@ public extension MainStore {
     @MainActor static func app(world: World) -> MainStoreType {
         Store(
             initial: AppState(),
-            behavior: NavigationFeature.behavior().lift(action: \.navigation, state: \.navigation, environment: { _ in () })
-                <> LiftedScope<SpeedMonitorFeature>.speedMonitor.behavior,
+            behavior: NavigationFeature.behavior().lift(Relay.Empty.action(AppAction.prism.navigation).state(\AppState.navigation).environment { _ in () })
+                <> AppScopes.speedMonitor.behavior(of: SpeedMonitorFeature.self),
             environment: world
         )
     }
@@ -48,14 +47,11 @@ public extension MainStore {
 
 // The SpeedMonitor slice of the app: action/state are addressed by `\.speedMonitor` on the flat
 // AppAction/AppState; the environment is narrowed from `World`.
-public extension LiftedScope<SpeedMonitorFeature> {
-    static var speedMonitor: Self {
-        Scope(
-            SpeedMonitorFeature.self,
-            action: \.speedMonitor,
-            state: \.speedMonitor,
-            environment: { @Sendable world in
-                SpeedMonitorFeature.Environment(
+public enum AppScopes {
+    static let speedMonitor = Relay.Empty
+        .action(AppAction.prism.speedMonitor).state(\AppState.speedMonitor)
+        .environment { @Sendable (world: World) in
+            SpeedMonitorFeature.Environment(
                     requestAuthorization: world.requestAuthorization,
                     authorizationUpdates: world.authorizationUpdates,
                     locationUpdates:      world.locationUpdates,
@@ -70,7 +66,5 @@ public extension LiftedScope<SpeedMonitorFeature> {
                     formatBearing:        world.formatBearing,
                     formatCoordinate:     world.formatCoordinate
                 )
-            }
-        )
-    }
+        }
 }

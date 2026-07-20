@@ -22,7 +22,7 @@ public extension AppRoute {
     @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
     @MainActor
     private static func root(store: MainStoreType, world: World, entry: AppRoute) -> some View {
-        AppRootView(path: store.path(\.navigation.path, set: { AppAction.navigation(.setPath($0)) })) {
+        AppRootView(path: store.binding(.state(\.navigation.path), dispatch: .action(review: { AppAction.navigation(.setPath($0)) }))) {
             entry.view(in: store, world: world)
                 .navigationDestination(for: AppRoute.self) { route in
                     route.view(in: store, world: world)
@@ -36,7 +36,7 @@ public extension AppRoute {
     func view(in store: MainStoreType, world: World) -> some View {
         switch self {
         case .speedMonitor:
-            LiftedScope<SpeedMonitorFeature>.speedMonitor.view(from: store, world: world)
+            AppScopes.speedMonitor.view(of: SpeedMonitorFeature.self, from: store, world: world)
         }
     }
 }
