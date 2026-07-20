@@ -6,8 +6,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/luizmb/FP.git",
       "state" : {
-        "revision" : "c1b32932021b444d8b21ca873c80bfcd4c6b8ecb",
-        "version" : "1.13.0"
+        "revision" : "d72df5ffaa2ec6b26d8fcbd624e3b66fa3d811c9",
+        "version" : "2.1.0"
       }
     },
     {
@@ -15,8 +15,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/luizmb/Hourglass.git",
       "state" : {
-        "revision" : "ec2ff5aac99e59d2ea208e4d391fe54da8961608",
-        "version" : "0.6.2"
+        "revision" : "c122a98281bdd61a1c231c111fe643e49a6eaa9c",
+        "version" : "1.0.1"
       }
     },
     {
@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/luizmb/ReactiveConcurrency.git",
       "state" : {
-        "revision" : "4b712d4d311177182a109c7e3fb5f802fe80a648",
-        "version" : "0.3.0"
+        "revision" : "c93c77e136c454216f8fa9d745f1f04270f5a8f0",
+        "version" : "1.0.1"
       }
     },
     {
@@ -51,8 +51,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-nio.git",
       "state" : {
-        "revision" : "cd3e1152083706d77b223fb29110e590efcc70c0",
-        "version" : "2.101.2"
+        "revision" : "0b18836bd8b0162e7e17a995a3fbee20ed8f3b2b",
+        "version" : "2.101.3"
       }
     },
     {
@@ -69,8 +69,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-system.git",
       "state" : {
-        "revision" : "7502b711c92a17741fa625d722b0ccbd595d8ed1",
-        "version" : "1.7.2"
+        "revision" : "b5544ba79a70a0cb3563e75bf26dc198d6b40ed3",
+        "version" : "1.7.4"
       }
     },
     {
@@ -79,7 +79,7 @@
       "location" : "https://github.com/SwiftRex/SwiftRex.git",
       "state" : {
         "branch" : "main",
-        "revision" : "755ab92ef93854c5966dd558ea00ce36ee0de592"
+        "revision" : "9595e98a99f971eb229ea629a64e277beec96de2"
       }
     }
   ],

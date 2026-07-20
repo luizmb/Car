@@ -60,8 +60,8 @@ extension World {
             numberFormatStyle: numFmt1dp
         )
 
-        // Overpass API client — URLSession+TaskRequester provides ZIO-based request execution
-        let taskRequester = URLSession.shared.taskRequester
+        // Overpass API client — HTTPClient over URLSession (NetworkTools 0.7)
+        let httpClient = HTTPClient.live(session: .shared)
         let decoder       = JSONDecoder().dataDecoder(for: OverpassResponse.self)
 
         return World(
@@ -101,7 +101,7 @@ extension World {
             subscribeToRoadSpeed: {
                 makeRoadSpeedStream(
                     box: roadSpeed,
-                    taskRequester: taskRequester,
+                    httpClient: httpClient,
                     decoder: decoder
                 )
             },

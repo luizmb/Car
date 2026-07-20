@@ -28,8 +28,8 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/SwiftRex/SwiftRex.git", branch: "main", traits: ["ReactiveConcurrency"]),
-        .package(url: "https://github.com/luizmb/FP.git",                  from: "1.13.0"),
-        .package(url: "https://github.com/luizmb/ReactiveConcurrency.git", from: "0.3.0"),
+        .package(url: "https://github.com/luizmb/FP.git",                  from: "2.1.0"),
+        .package(url: "https://github.com/luizmb/ReactiveConcurrency.git", from: "1.0.0"),
         .package(path: "../NetworkTools"),
     ],
     targets: [
