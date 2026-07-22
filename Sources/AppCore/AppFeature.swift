@@ -47,9 +47,21 @@ public extension MainStore {
 
 // The SpeedMonitor slice of the app: action/state are addressed by `\.speedMonitor` on the flat
 // AppAction/AppState; the environment is narrowed from `World`.
-public enum AppScopes {
-    static let speedMonitor = Relay.Scope.identity
-        .action(AppAction.prism.speedMonitor).state(\AppState.speedMonitor)
+public enum AppScopes: Rig {
+    public typealias Action = AppAction
+    public typealias State = AppState
+    public typealias Environment = World
+
+    // Total-state scope shape pinned to the app triad (duplex `Prism` / total `ReadsWrites` / `Narrows`).
+    // Annotating a scope `Global<_,_,_>` roots the bare optics.
+    typealias Global<A, S, E> = Relay.Scope<
+        Relay.ActionAxis.Prism<Action, A>,
+        Relay.StateAxis.ReadsWrites<State, S>,
+        Relay.EnvironmentAxis.Narrows<Environment, E>
+    >
+
+    static let speedMonitor: Global<_, _, _> =
+        .action(\.speedMonitor).state(\.speedMonitor)
         .environment { @Sendable (world: World) in
             SpeedMonitorFeature.Environment(
                     requestAuthorization: world.requestAuthorization,
