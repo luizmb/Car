@@ -48,7 +48,7 @@ public extension MainStore {
 // The SpeedMonitor slice of the app: action/state are addressed by `\.speedMonitor` on the flat
 // AppAction/AppState; the environment is narrowed from `World`.
 public enum AppScopes {
-    static let speedMonitor = Relay.Empty
+    static let speedMonitor = Relay.Scope.identity
         .action(AppAction.prism.speedMonitor).state(\AppState.speedMonitor)
         .environment { @Sendable (world: World) in
             SpeedMonitorFeature.Environment(
