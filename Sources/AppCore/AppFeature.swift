@@ -62,21 +62,10 @@ public enum AppScopes: Rig {
 
     static let speedMonitor: Global<_, _, _> =
         .action(\.speedMonitor).state(\.speedMonitor)
-        .environment { @Sendable (world: World) in
-            SpeedMonitorFeature.Environment(
-                    requestAuthorization: world.requestAuthorization,
-                    authorizationUpdates: world.authorizationUpdates,
-                    locationUpdates:      world.locationUpdates,
-                    subscribeToRoadSpeed: world.subscribeToRoadSpeed,
-                    speak:                world.speak,
-                    announceOverLimit:    world.announceOverLimit,
-                    announceUnderLimit:   world.announceUnderLimit,
-                    thresholds:           world.thresholds,
-                    formatSpeed:          world.formatSpeed,
-                    formatSpeedSpeech:    world.formatSpeedSpeech,
-                    formatAltitude:       world.formatAltitude,
-                    formatBearing:        world.formatBearing,
-                    formatCoordinate:     world.formatCoordinate
-                )
-        }
+        .environment(fanout(
+            keypaths: \.requestAuthorization, \.authorizationUpdates, \.locationUpdates, \.subscribeToRoadSpeed,
+                      \.speak, \.announceOverLimit, \.announceUnderLimit, \.thresholds, \.formatSpeed,
+                      \.formatSpeedSpeech, \.formatAltitude, \.formatBearing, \.formatCoordinate,
+            into: SpeedMonitorFeature.Environment.init
+        ))
 }
