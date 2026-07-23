@@ -1,5 +1,5 @@
 {
-  "originHash" : "b30d20d1bdd75128af59af23fb207f7eed46704832a9cd1db7f4112faa8cee5e",
+  "originHash" : "5b0ae7f0b95b1baa8af88653ddd881b7275e64b208d575842e55b020f022102c",
   "pins" : [
     {
       "identity" : "fp",
@@ -88,7 +88,7 @@
       "location" : "https://github.com/SwiftRex/SwiftRex.git",
       "state" : {
         "branch" : "main",
-        "revision" : "88f8f6eee5e4dd100b6fac3ac63c3c16ede7c300"
+        "revision" : "4138ec632e690618b9af02cdb59fba0e067f92ca"
       }
     }
   ],
