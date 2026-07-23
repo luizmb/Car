@@ -52,18 +52,13 @@ public enum AppScopes: Rig {
     public typealias State = AppState
     public typealias Environment = World
 
-    // Total-state scope shape pinned to the app triad (duplex `Prism` / total `ReadsWrites` / `Narrows`).
-    // Annotating a scope `Global<_,_,_>` roots the bare optics.
-    typealias Global<A, S, E> = Relay.Scope<
-        Relay.ActionAxis.Prism<Action, A>,
-        Relay.StateAxis.ReadsWrites<State, S>,
-        Relay.EnvironmentAxis.Narrows<Environment, E>
-    >
-
+    // `ScopeOf<AppScopes>` pins the app triad (`Action`/`State`/`Environment`) as the entry point, so the
+    // scope is just `.action(\.x).state(\.x).environment(…)` — no explicit witnesses.
+    //
     // NB: this ONE scope uses the named `fanout(keypaths:into:)` rather than `fanout(…) >>> Env.init`.
     // `SpeedMonitorFeature.Environment.init` (13 params) refuses to coerce to `@Sendable` in operator-operand
     // position (a Swift type-checker quirk) — the named `into:` parameter accepts the very same init.
-    static let speedMonitor: Global<_, _, _> =
+    static let speedMonitor = ScopeOf<AppScopes>
         .action(\.speedMonitor).state(\.speedMonitor)
         .environment(fanout(
             keypaths: \.requestAuthorization, \.authorizationUpdates, \.locationUpdates, \.subscribeToRoadSpeed,
