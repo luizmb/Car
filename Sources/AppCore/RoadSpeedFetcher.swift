@@ -80,7 +80,7 @@ extension DeferredTask {
 /// wires the continuation and starts delivery.
 func makeRoadSpeedStream(
     box: RoadSpeedBox,
-    taskRequester: TaskRequester,
+    httpClient: HTTPClient,
     decoder: DataDecoder<OverpassResponse>
 ) -> Publisher<RoadInfo, Never> {
     let (locStream, locContinuation) = AsyncStream<LocationUpdate>.makeStream()
@@ -103,11 +103,10 @@ func makeRoadSpeedStream(
 
     let fetch: @Sendable (LocationUpdate) -> Publisher<RoadInfo, Never> = { location in
         let request = overpassRequest(latitude: location.latitude, longitude: location.longitude)
-        return taskRequester
+        return httpClient(request)
             .validateStatusCode()
             .decode(using: decoder)
-            .mapT(parseRoadInfo)
-            .callAsFunction(request)
+            .map(parseRoadInfo)
             .replaceError(with: .unknown)
     }
 

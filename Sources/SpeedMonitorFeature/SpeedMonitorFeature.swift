@@ -31,7 +31,7 @@ public enum AuthorizationPhase: Sendable, Equatable {
 
 // MARK: - Feature
 
-@Feature(type: .moduleEntryPoint, strategy: .observationSimple)
+@Feature(strategy: .observationSimple)
 public enum SpeedMonitorFeature {
 
     // MARK: - State
@@ -446,4 +446,3 @@ private func buildDisplay(
 }
 
 // The @Feature macro generates the members but does not add the conformance.
-extension SpeedMonitorFeature: SwiftRexArchitecture.Feature {}

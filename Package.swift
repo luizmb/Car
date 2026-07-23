@@ -28,9 +28,9 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/SwiftRex/SwiftRex.git", branch: "main", traits: ["ReactiveConcurrency"]),
-        .package(url: "https://github.com/luizmb/FP.git",                  from: "1.13.0"),
-        .package(url: "https://github.com/luizmb/ReactiveConcurrency.git", from: "0.3.0"),
-        .package(path: "../NetworkTools"),
+        .package(url: "https://github.com/luizmb/FP.git",                  from: "2.2.0"),
+        .package(url: "https://github.com/luizmb/ReactiveConcurrency.git", from: "1.1.0"),
+        .package(url: "https://github.com/luizmb/NetworkTools.git", from: "0.8.0"),
     ],
     targets: [
 
@@ -82,5 +82,5 @@ let package = Package(
             path: "Tests/AppCoreTests"
         ),
     ],
-    swiftLanguageModes: [.v5]
+    swiftLanguageModes: [.v6]
 )

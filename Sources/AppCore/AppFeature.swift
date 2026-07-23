@@ -26,7 +26,6 @@ public enum AppAction: Sendable {
 
 public typealias MainStoreType = any StoreType<AppAction, AppState>
 public typealias MainStore     = Store<AppAction, AppState, World>
-public typealias LiftedScope<F: Feature> = Scope<AppAction, AppState, World, F>
 
 // MARK: - Store conveniences
 
@@ -37,8 +36,8 @@ public extension MainStore {
     @MainActor static func app(world: World) -> MainStoreType {
         Store(
             initial: AppState(),
-            behavior: NavigationFeature.behavior().lift(action: \.navigation, state: \.navigation, environment: { _ in () })
-                <> LiftedScope<SpeedMonitorFeature>.speedMonitor.behavior,
+            behavior: NavigationFeature.behavior().lift(.action(\.navigation).state(\.navigation).environment(ignore))
+                <> AppScopes.speedMonitor.behavior(of: SpeedMonitorFeature.self),
             environment: world
         )
     }
@@ -48,29 +47,23 @@ public extension MainStore {
 
 // The SpeedMonitor slice of the app: action/state are addressed by `\.speedMonitor` on the flat
 // AppAction/AppState; the environment is narrowed from `World`.
-public extension LiftedScope<SpeedMonitorFeature> {
-    static var speedMonitor: Self {
-        Scope(
-            SpeedMonitorFeature.self,
-            action: \.speedMonitor,
-            state: \.speedMonitor,
-            environment: { @Sendable world in
-                SpeedMonitorFeature.Environment(
-                    requestAuthorization: world.requestAuthorization,
-                    authorizationUpdates: world.authorizationUpdates,
-                    locationUpdates:      world.locationUpdates,
-                    subscribeToRoadSpeed: world.subscribeToRoadSpeed,
-                    speak:                world.speak,
-                    announceOverLimit:    world.announceOverLimit,
-                    announceUnderLimit:   world.announceUnderLimit,
-                    thresholds:           world.thresholds,
-                    formatSpeed:          world.formatSpeed,
-                    formatSpeedSpeech:    world.formatSpeedSpeech,
-                    formatAltitude:       world.formatAltitude,
-                    formatBearing:        world.formatBearing,
-                    formatCoordinate:     world.formatCoordinate
-                )
-            }
-        )
-    }
+public enum AppScopes: Rig {
+    public typealias Action = AppAction
+    public typealias State = AppState
+    public typealias Environment = World
+
+    // `ScopeOf<AppScopes>` pins the app triad (`Action`/`State`/`Environment`) as the entry point, so the
+    // scope is just `.action(\.x).state(\.x).environment(…)` — no explicit witnesses.
+    //
+    // NB: this ONE scope uses the named `fanout(keypaths:into:)` rather than `fanout(…) >>> Env.init`.
+    // `SpeedMonitorFeature.Environment.init` (13 params) refuses to coerce to `@Sendable` in operator-operand
+    // position (a Swift type-checker quirk) — the named `into:` parameter accepts the very same init.
+    static let speedMonitor = ScopeOf<AppScopes>
+        .action(\.speedMonitor).state(\.speedMonitor)
+        .environment(fanout(
+            keypaths: \.requestAuthorization, \.authorizationUpdates, \.locationUpdates, \.subscribeToRoadSpeed,
+                      \.speak, \.announceOverLimit, \.announceUnderLimit, \.thresholds, \.formatSpeed,
+                      \.formatSpeedSpeech, \.formatAltitude, \.formatBearing, \.formatCoordinate,
+            into: SpeedMonitorFeature.Environment.init
+        ))
 }

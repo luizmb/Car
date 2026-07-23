@@ -1,13 +1,13 @@
 {
-  "originHash" : "96e2c070aebde1675db31875e824c8a26256a62e541ab452cf727cc575e7eaba",
+  "originHash" : "5b0ae7f0b95b1baa8af88653ddd881b7275e64b208d575842e55b020f022102c",
   "pins" : [
     {
       "identity" : "fp",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/luizmb/FP.git",
       "state" : {
-        "revision" : "c1b32932021b444d8b21ca873c80bfcd4c6b8ecb",
-        "version" : "1.13.0"
+        "revision" : "3ff729badf4be84773f9681350e63513dddd4339",
+        "version" : "2.2.0"
       }
     },
     {
@@ -15,8 +15,17 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/luizmb/Hourglass.git",
       "state" : {
-        "revision" : "ec2ff5aac99e59d2ea208e4d391fe54da8961608",
-        "version" : "0.6.2"
+        "revision" : "c122a98281bdd61a1c231c111fe643e49a6eaa9c",
+        "version" : "1.0.1"
+      }
+    },
+    {
+      "identity" : "networktools",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/luizmb/NetworkTools.git",
+      "state" : {
+        "revision" : "4721b315a0ab3ac4e44496cc04ab5c1f759557f7",
+        "version" : "0.8.0"
       }
     },
     {
@@ -24,8 +33,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/luizmb/ReactiveConcurrency.git",
       "state" : {
-        "revision" : "4b712d4d311177182a109c7e3fb5f802fe80a648",
-        "version" : "0.3.0"
+        "revision" : "35ac52966c4c514bca05ed23bd3f2f621ea77e0f",
+        "version" : "1.1.0"
       }
     },
     {
@@ -51,8 +60,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-nio.git",
       "state" : {
-        "revision" : "cd3e1152083706d77b223fb29110e590efcc70c0",
-        "version" : "2.101.2"
+        "revision" : "0b18836bd8b0162e7e17a995a3fbee20ed8f3b2b",
+        "version" : "2.101.3"
       }
     },
     {
@@ -69,8 +78,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-system.git",
       "state" : {
-        "revision" : "7502b711c92a17741fa625d722b0ccbd595d8ed1",
-        "version" : "1.7.2"
+        "revision" : "b5544ba79a70a0cb3563e75bf26dc198d6b40ed3",
+        "version" : "1.7.4"
       }
     },
     {
@@ -79,7 +88,7 @@
       "location" : "https://github.com/SwiftRex/SwiftRex.git",
       "state" : {
         "branch" : "main",
-        "revision" : "755ab92ef93854c5966dd558ea00ce36ee0de592"
+        "revision" : "4138ec632e690618b9af02cdb59fba0e067f92ca"
       }
     }
   ],
