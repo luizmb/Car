@@ -82,5 +82,5 @@ let package = Package(
             path: "Tests/AppCoreTests"
         ),
     ],
-    swiftLanguageModes: [.v5]
+    swiftLanguageModes: [.v6]
 )

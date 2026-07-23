@@ -60,6 +60,9 @@ public enum AppScopes: Rig {
         Relay.EnvironmentAxis.Narrows<Environment, E>
     >
 
+    // NB: this ONE scope uses the named `fanout(keypaths:into:)` rather than `fanout(…) >>> Env.init`.
+    // `SpeedMonitorFeature.Environment.init` (13 params) refuses to coerce to `@Sendable` in operator-operand
+    // position (a Swift type-checker quirk) — the named `into:` parameter accepts the very same init.
     static let speedMonitor: Global<_, _, _> =
         .action(\.speedMonitor).state(\.speedMonitor)
         .environment(fanout(
