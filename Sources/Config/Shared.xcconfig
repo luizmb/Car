@@ -1,0 +1,16 @@
+// Checked in. DEVELOPMENT_TEAM defaults to empty so a fresh clone never needs a real
+// team id — most CI builds use CODE_SIGNING_ALLOWED=NO and don't need one either; the
+// signed RC/TestFlight builds write a real value into Local.xcconfig at build time from
+// a secret (see release.yml/promote-testflight.yml), same mechanism as local dev.
+// #include? is optional — it silently no-ops when Local.xcconfig doesn't exist.
+// See Local.xcconfig.example.
+DEVELOPMENT_TEAM =
+// CODE_SIGN_STYLE defaults to Automatic for local dev and unsigned CI builds. Must live
+// here, not as a hardcoded pbxproj buildSettings entry — a direct buildSettings value
+// always wins over an xcconfig, so the signed RC/TestFlight jobs couldn't override it to
+// Manual (+ CODE_SIGN_IDENTITY/PROVISIONING_PROFILE_SPECIFIER) via Local.xcconfig below
+// otherwise — confirmed the hard way on luizmb/PookiePayslip and
+// luizmb/biokinetics-dosimetry. #include? processes after this line, so its override
+// wins when present.
+CODE_SIGN_STYLE = Automatic
+#include? "Local.xcconfig"

@@ -1,0 +1,74 @@
+name: Create Release Candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number (e.g. 1.2.3)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  create-rc:
+    name: Create release/${{ inputs.version }}
+    runs-on: ubuntu-latest
+    steps:
+      # A push authenticated with the default GITHUB_TOKEN does not trigger other
+      # workflow runs (GitHub's anti-recursion rule) — the release/* branch pushed
+      # below would silently never kick off the RC build otherwise. PAT_TOKEN (a
+      # fine-grained PAT scoped to this repo, Contents: read/write) sidesteps that,
+      # same as luizmb/PookiePayslip's and luizmb/biokinetics-dosimetry's create-rc.yml.
+      - uses: actions/checkout@v7
+        with:
+          ref: master
+          fetch-depth: 0
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Validate version format
+        run: |
+          VERSION="${{ inputs.version }}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid version format: $VERSION — expected X.Y.Z"
+            exit 1
+          fi
+
+      - name: Ensure branch does not already exist
+        run: |
+          BRANCH="release/${{ inputs.version }}"
+          if git ls-remote --exit-code --heads origin "$BRANCH" > /dev/null 2>&1; then
+            echo "::error::Branch $BRANCH already exists"
+            exit 1
+          fi
+
+      # MARKETING_VERSION (user-visible) and CURRENT_PROJECT_VERSION (an
+      # ever-incrementing build number, for TestFlight uniqueness — never reset) both
+      # live in the Xcode project and both target/project configs must agree. Bumped on
+      # `master` before branching the RC, so `master` and the eventual v-tag agree.
+      - name: Bump app version to ${{ inputs.version }} (SpeedJarvis.xcodeproj)
+        run: |
+          VER="${{ inputs.version }}"
+          PBXPROJ="Sources/SpeedJarvis.xcodeproj/project.pbxproj"
+          CURRENT_BUILD=$(grep -m1 "CURRENT_PROJECT_VERSION = " "$PBXPROJ" | grep -o '[0-9]\+')
+          NEXT_BUILD=$((CURRENT_BUILD + 1))
+
+          perl -pi -e "s/MARKETING_VERSION = [0-9]+(\.[0-9]+)*;/MARKETING_VERSION = ${VER};/g" "$PBXPROJ"
+          perl -pi -e "s/CURRENT_PROJECT_VERSION = [0-9]+;/CURRENT_PROJECT_VERSION = ${NEXT_BUILD};/g" "$PBXPROJ"
+
+          if git diff --quiet; then
+            echo "::notice::app version already ${VER} (build ${NEXT_BUILD})"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -am "chore: bump app version to ${VER} (build ${NEXT_BUILD})"
+            git push origin master
+            echo "::notice::app version bumped to ${VER} (build ${NEXT_BUILD})"
+          fi
+
+      - name: Create and push release branch
+        run: |
+          BRANCH="release/${{ inputs.version }}"
+          git checkout -b "$BRANCH"
+          git push origin "$BRANCH"
+          echo "::notice::Branch $BRANCH created — RC build started automatically"

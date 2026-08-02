@@ -6,3 +6,4 @@ DerivedData/
 xcuserdata/
 .swiftpm/xcode/package.xcworkspace/xcuserdata/
 .netrc
+Sources/Config/Local.xcconfig
