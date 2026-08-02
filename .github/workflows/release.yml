@@ -25,6 +25,13 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_26.5.app
 
+      # See ci.yml's identical step for why this is needed, and why it must run before
+      # any xcodebuild/swift test invocation that touches the macros.
+      - name: Trust SPM macro plugins for headless xcodebuild
+        run: |
+          defaults write com.apple.dt.Xcode IDESkipPackagePluginFingerprintValidatation -bool YES
+          defaults write com.apple.dt.Xcode IDESkipMacroFingerprintValidation -bool YES
+
       # See ci.yml's identical step for why this uses xcodebuild test against the
       # package directly (no -project) rather than plain swift test.
       - name: swift test (iOS Simulator via SpeedJarvis-Package)
@@ -33,12 +40,6 @@ jobs:
             -scheme SpeedJarvis-Package \
             -destination 'platform=iOS Simulator,name=iPhone 17 Pro Max' \
             2>&1
-
-      # See ci.yml's identical step for why this is needed.
-      - name: Trust SPM macro plugins for headless xcodebuild
-        run: |
-          defaults write com.apple.dt.Xcode IDESkipPackagePluginFingerprintValidatation -bool YES
-          defaults write com.apple.dt.Xcode IDESkipMacroFingerprintValidation -bool YES
 
       # See ci.yml's identical step for why CODE_SIGNING_ALLOWED=NO is needed.
       - name: xcodebuild SpeedJarvis

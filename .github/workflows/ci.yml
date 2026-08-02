@@ -16,6 +16,18 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_26.5.app
 
+      # xcodebuild in a non-interactive CI runner has no one to click "Trust & Enable" on
+      # the SPM macro plugins (SwiftRexMacros, FPMacrosPlugin) this project depends on —
+      # confirmed on luizmb/tacos-mind and luizmb/PookiePayslip: "Macro ... must be
+      # enabled before it can be used". These defaults are the standard headless-CI
+      # workaround. Must run before ANY xcodebuild/swift test invocation that touches
+      # these macros — confirmed the hard way: placed after the test step below, the
+      # macro trust wasn't in effect yet and the build failed with the same error.
+      - name: Trust SPM macro plugins for headless xcodebuild
+        run: |
+          defaults write com.apple.dt.Xcode IDESkipPackagePluginFingerprintValidatation -bool YES
+          defaults write com.apple.dt.Xcode IDESkipMacroFingerprintValidation -bool YES
+
       # Package.swift declares iOS-only platforms (no macOS) — this app targets
       # motorcycles, not Macs, so plain `swift build`/`swift test` (which build for the
       # macOS host by default) can never work here. `xcodebuild test -scheme
@@ -29,16 +41,6 @@ jobs:
             -scheme SpeedJarvis-Package \
             -destination 'platform=iOS Simulator,name=iPhone 17 Pro Max' \
             2>&1
-
-      # xcodebuild in a non-interactive CI runner has no one to click "Trust & Enable" on
-      # the SPM macro plugins (SwiftRexMacros, FPMacrosPlugin) this project depends on —
-      # confirmed on luizmb/tacos-mind and luizmb/PookiePayslip: "Macro ... must be
-      # enabled before it can be used". These defaults are the standard headless-CI
-      # workaround.
-      - name: Trust SPM macro plugins for headless xcodebuild
-        run: |
-          defaults write com.apple.dt.Xcode IDESkipPackagePluginFingerprintValidatation -bool YES
-          defaults write com.apple.dt.Xcode IDESkipMacroFingerprintValidation -bool YES
 
       # CODE_SIGNING_ALLOWED=NO: this runner has no "Apple Development" certificate for
       # the project's team ID, and CI only needs to confirm the code builds, not produce
