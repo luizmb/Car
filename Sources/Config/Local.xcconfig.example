@@ -1,0 +1,4 @@
+// Copy this file to Local.xcconfig (gitignored) and fill in your own team id to build
+// and run on your own devices. Find it at developer.apple.com/account under Membership,
+// or in Xcode: Settings > Accounts > (your Apple ID) > (your team) > Team ID.
+DEVELOPMENT_TEAM = YOUR_TEAM_ID_HERE

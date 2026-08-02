@@ -1,0 +1,177 @@
+name: Promote Version to TestFlight
+
+# Deliberately separate from release.yml's tag-triggered promote phase, and manual —
+# every tag push already ships a GitHub release automatically; shipping a build to
+# TestFlight is a bigger, riskier step (real signing secrets, a real upload to App Store
+# Connect) that stays an explicit choice every time, same philosophy as
+# create-rc/promote-rc never auto-chaining into each other.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to upload (e.g. 1.2.3) — must already be tagged v<version>'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  upload-testflight:
+    name: Archive, sign, and upload v${{ inputs.version }} to TestFlight
+    runs-on: macos-26
+    steps:
+      - name: Validate version format
+        run: |
+          VERSION="${{ inputs.version }}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid version format: $VERSION — expected X.Y.Z"
+            exit 1
+          fi
+
+      # Authenticated via gh (GH_TOKEN), not a bare `git ls-remote` — this is a private
+      # repo, and an unauthenticated ls-remote against a private repo always fails
+      # (can't even see it exists), which made this step report "tag not found" even
+      # when the tag was there — confirmed the hard way on luizmb/PookiePayslip.
+      - name: Verify tag exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v${{ inputs.version }}"
+          if ! gh api "repos/${{ github.repository }}/git/refs/tags/$TAG" > /dev/null 2>&1; then
+            echo "::error::Tag $TAG not found — run 'Promote RC to Release' first"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          ref: v${{ inputs.version }}
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_26.5.app
+
+      # See ci.yml's identical step for why this is needed.
+      - name: Trust SPM macro plugins for headless xcodebuild
+        run: |
+          defaults write com.apple.dt.Xcode IDESkipPackagePluginFingerprintValidatation -bool YES
+          defaults write com.apple.dt.Xcode IDESkipMacroFingerprintValidation -bool YES
+
+      # See release.yml's identical step (rc-test) for why the cert is imported rather
+      # than left to -allowProvisioningUpdates to auto-create one.
+      - name: Import distribution certificate
+        env:
+          CERTIFICATE_P12: ${{ secrets.DISTRIBUTION_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.DISTRIBUTION_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          echo "$CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$RUNNER_TEMP/cert.p12" -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed 's/"//g')
+          rm "$RUNNER_TEMP/cert.p12"
+
+      - name: Set up App Store Connect API key
+        env:
+          API_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          API_KEY_P8: ${{ secrets.APPSTORE_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo "$API_KEY_P8" | base64 --decode > ~/.appstoreconnect/private_keys/AuthKey_${API_KEY_ID}.p8
+
+      # See release.yml's identical step (rc-test) for why CODE_SIGN_STYLE etc. live here
+      # rather than as xcodebuild command-line overrides — those apply to the whole build
+      # graph, including the SwiftPM macro plugin host tools, which then fail signing.
+      - name: Write CI-only signing config
+        env:
+          DEVELOPMENT_TEAM: ${{ secrets.DEVELOPMENT_TEAM }}
+        run: |
+          cat >> Sources/Config/Local.xcconfig <<XCCONFIG
+          DEVELOPMENT_TEAM = ${DEVELOPMENT_TEAM}
+          CODE_SIGN_STYLE = Manual
+          CODE_SIGN_IDENTITY = Apple Distribution
+          PROVISIONING_PROFILE_SPECIFIER = SpeedJarvis AppStore Distribution
+          XCCONFIG
+
+      # Archive, then export straight to App Store Connect in one step — Xcode 13+ does
+      # the export AND upload together when the exportOptions method is
+      # app-store-connect, destination is upload, and the same API key authenticates the
+      # export. No separate altool/notarytool call needed. exportOptions.plist is
+      # generated here (not committed) since its only real content is the team ID.
+      #
+      # signingStyle: manual, not automatic — confirmed the hard way on
+      # luizmb/PookiePayslip and luizmb/tacos-mind: even with an "App Store" distribution
+      # profile already existing in the portal, -allowProvisioningUpdates archives with a
+      # Development identity and automatic-signingStyle export then fails with
+      # "No profiles for '...' were found". Pinning the exact provisioning profile name
+      # forces -exportArchive to re-sign with the real App Store Distribution
+      # profile/cert regardless of what the archive step itself used.
+      - name: Archive and upload to TestFlight
+        env:
+          API_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+          DEVELOPMENT_TEAM: ${{ secrets.DEVELOPMENT_TEAM }}
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/exportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>app-store-connect</string>
+              <key>teamID</key>
+              <string>${DEVELOPMENT_TEAM}</string>
+              <key>destination</key>
+              <string>upload</string>
+              <key>signingStyle</key>
+              <string>manual</string>
+              <key>provisioningProfiles</key>
+              <dict>
+                  <key>lu.ios.speed-jarvis</key>
+                  <string>SpeedJarvis AppStore Distribution</string>
+              </dict>
+          </dict>
+          </plist>
+          PLIST
+
+          # Distribution signing comes from Local.xcconfig (written above), not a
+          # command-line override — see that step's comment for why. Without it,
+          # -allowProvisioningUpdates alone has no Development identity to reuse on a
+          # fresh CI keychain and mints a brand-new one via the API on every run.
+          xcodebuild archive \
+            -project Sources/SpeedJarvis.xcodeproj \
+            -scheme SpeedJarvis \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/SpeedJarvis.xcarchive" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$HOME/.appstoreconnect/private_keys/AuthKey_${API_KEY_ID}.p8" \
+            -authenticationKeyID "$API_KEY_ID" \
+            -authenticationKeyIssuerID "$API_ISSUER_ID"
+
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/SpeedJarvis.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/exportOptions.plist" \
+            -authenticationKeyPath "$HOME/.appstoreconnect/private_keys/AuthKey_${API_KEY_ID}.p8" \
+            -authenticationKeyID "$API_KEY_ID" \
+            -authenticationKeyIssuerID "$API_ISSUER_ID"
+
+      - name: Clean up signing keychain and API key
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+          rm -rf ~/.appstoreconnect
+
+      - name: Notify status
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "::notice::v${{ inputs.version }} uploaded to TestFlight — processing on App Store Connect can take a few minutes"
+          else
+            echo "::error::TestFlight upload failed for v${{ inputs.version }} — see the failed step above"
+          fi

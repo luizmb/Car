@@ -20,6 +20,7 @@
 		D62659CF2C69962A00625B74 /* Preview Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Preview Assets.xcassets"; sourceTree = "<group>"; };
 		D62659D92C69B27A00625B74 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		D6C19A5C2C6C4BA400D93BDD /* SpeedJarvis.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = SpeedJarvis.entitlements; sourceTree = "<group>"; };
+		25C1422C44B7E303FEC68D2E /* Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Shared.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -38,9 +39,19 @@
 			isa = PBXGroup;
 			children = (
 				D62659C72C69962800625B74 /* App */,
+				5376334CF4C9786DF154729D /* Config */,
 				D62659C62C69962800625B74 /* Products */,
 				D62659D62C69969F00625B74 /* Frameworks */,
 			);
+			sourceTree = "<group>";
+		};
+		5376334CF4C9786DF154729D /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				25C1422C44B7E303FEC68D2E /* Shared.xcconfig */,
+			);
+			name = Config;
+			path = Config;
 			sourceTree = "<group>";
 		};
 		D62659C62C69962800625B74 /* Products */ = {
@@ -283,14 +294,13 @@
 		};
 		D62659D42C69962A00625B74 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 25C1422C44B7E303FEC68D2E /* Shared.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = App/SpeedJarvis.entitlements;
-				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"App/Preview Content\"";
-				DEVELOPMENT_TEAM = REDACTED_TEAM_ID;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = App/Info.plist;
@@ -307,7 +317,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = lu.ios.SpeedJarvis;
+				PRODUCT_BUNDLE_IDENTIFIER = lu.ios.speed-jarvis;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 6.0;
@@ -317,14 +327,13 @@
 		};
 		D62659D52C69962A00625B74 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 25C1422C44B7E303FEC68D2E /* Shared.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = App/SpeedJarvis.entitlements;
-				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"App/Preview Content\"";
-				DEVELOPMENT_TEAM = REDACTED_TEAM_ID;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = App/Info.plist;
@@ -341,7 +350,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = lu.ios.SpeedJarvis;
+				PRODUCT_BUNDLE_IDENTIFIER = lu.ios.speed-jarvis;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 6.0;

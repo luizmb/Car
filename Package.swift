@@ -20,7 +20,7 @@ let sharedRC: [Target.Dependency] = [
 
 let package = Package(
     name: "SpeedJarvis",
-    platforms: [.iOS(.v26), .macOS(.v14)],
+    platforms: [.iOS(.v26)],
     products: [
         .library(name: "AppDomain",              targets: ["AppDomain"]),
         .library(name: "SpeedMonitorFeature", targets: ["SpeedMonitorFeature"]),
