@@ -13,7 +13,7 @@ import NetworkClient
 // during app initialisation, not inside an async Task (which crashes on iOS 26).
 final class RoadSpeedBox: @unchecked Sendable {
     nonisolated(unsafe) let manager: CLLocationManager
-    nonisolated(unsafe) let delegate: RoadSpeedLocationDelegate
+    let delegate: RoadSpeedLocationDelegate
 
     init(minDistance: Meters, minTime: TimeInterval) {
         let m = CLLocationManager()
@@ -54,61 +54,78 @@ final class RoadSpeedLocationDelegate: NSObject, CLLocationManagerDelegate, @unc
     }
 }
 
-// MARK: - DeferredTask stream helpers
-
-extension DeferredTask {
-    /// Yields the success value, or `fallback` on any failure — never silently discards.
-    func asStreamWithFallback<S, E>(_ fallback: S) -> DeferredStream<S> where Success == Result<S, E> {
-        DeferredStream {
-            AsyncStream<S> { continuation in
-                Task {
-                    switch await self.run() {
-                    case .success(let value): continuation.yield(value)
-                    case .failure:            continuation.yield(fallback)
-                    }
-                    continuation.finish()
-                }
-            }
-        }
-    }
-}
-
 // MARK: - Road speed stream builder
 
-/// Builds a `DeferredStream<RoadInfo>` driven by the pre-created `RoadSpeedBox`.
-/// The manager is already configured with background updates; this function only
-/// wires the continuation and starts delivery.
+/// Builds a **cold** `Publisher<RoadInfo, Never>` driven by the pre-created `RoadSpeedBox`.
+///
+/// Coldness is the whole point. The store reconciles supervision after *every* state change — i.e.
+/// after every GPS fix, several times a minute — and each reconciliation calls this function again to
+/// describe the channel set. Anything performed eagerly here would therefore be re-performed on that
+/// cadence: re-pointing the delegate at a continuation nobody consumes, and tearing the manager down
+/// through the discarded stream's `onTermination`. Every side-effect consequently lives inside
+/// `Publisher { … }`, whose body runs only when a subscriber actually attaches.
+///
+/// `switchToLatest` rather than `flatMap`: only the newest fix's road matters, so an in-flight fetch
+/// for a location already left behind is cancelled instead of racing the current one.
 func makeRoadSpeedStream(
     box: RoadSpeedBox,
     httpClient: HTTPClient,
     decoder: DataDecoder<OverpassResponse>
 ) -> Publisher<RoadInfo, Never> {
-    let (locStream, locContinuation) = AsyncStream<LocationUpdate>.makeStream()
+    roadSpeedLocations(box: box)
+        .map(fetchRoadInfo(httpClient: httpClient, decoder: decoder))
+        .switchToLatest()
+}
 
-    Task { @MainActor in
-        box.delegate.continuation   = locContinuation
-        box.delegate.lastUpdateTime = .distantPast
-        box.manager.delegate        = box.delegate
-        // Explicitly start if already authorized — startUpdatingLocation is idempotent
-        // so calling it here and again from locationManagerDidChangeAuthorization is safe.
-        let status = box.manager.authorizationStatus
-        if status == .authorizedAlways || status == .authorizedWhenInUse {
-            box.manager.startUpdatingLocation()
+// MARK: - Location source
+
+/// The throttled fixes that trigger an Overpass lookup, as a cold publisher. The manager is wired on
+/// subscribe and torn down when the subscription ends, so the delegate's continuation always points at
+/// the stream someone is actually reading.
+private func roadSpeedLocations(box: RoadSpeedBox) -> Publisher<LocationUpdate, Never> {
+    Publisher { continuation in
+        let (stream, streamContinuation) = AsyncStream<LocationUpdate>.makeStream()
+
+        await MainActor.run {
+            box.delegate.continuation   = streamContinuation
+            box.delegate.lastUpdateTime = .distantPast   // ensures the first fix triggers a fetch
+            box.manager.delegate        = box.delegate
+            // Explicitly start if already authorized — startUpdatingLocation is idempotent, so calling
+            // it here and again from locationManagerDidChangeAuthorization is safe.
+            let status = box.manager.authorizationStatus
+            if status == .authorizedAlways || status == .authorizedWhenInUse {
+                box.manager.startUpdatingLocation()
+            }
         }
-        locContinuation.onTermination = { [box] _ in
+
+        await continuation.yieldAll(stream)   // parks here until cancelled
+
+        await MainActor.run {
             box.manager.stopUpdatingLocation()
-            box.manager.delegate = nil
+            box.manager.delegate      = nil
+            box.delegate.continuation = nil
         }
     }
+}
 
-    let fetch: @Sendable (LocationUpdate) -> Publisher<RoadInfo, Never> = { location in
-        let request = overpassRequest(latitude: location.latitude, longitude: location.longitude)
-        return httpClient(request)
+// MARK: - Overpass lookup
+
+/// One Overpass lookup for a fix.
+///
+/// Transient failure **drops the event** rather than emitting `.unknown`: the public Overpass endpoint
+/// answers 504 ("server too busy") often enough that replacing errors with `.unknown` would blank a
+/// perfectly good speed limit mid-ride and re-announce the road once it came back. Emitting nothing
+/// leaves the last known road standing, which is both quieter and more accurate.
+private func fetchRoadInfo(
+    httpClient: HTTPClient,
+    decoder: DataDecoder<OverpassResponse>
+) -> @Sendable (LocationUpdate) -> Publisher<RoadInfo, Never> {
+    { location in
+        httpClient(overpassRequest(latitude: location.latitude, longitude: location.longitude))
             .validateStatusCode()
             .decode(using: decoder)
             .map(parseRoadInfo)
-            .replaceError(with: .unknown)
+            .retry(2)
+            .catch { _ in Publisher<RoadInfo, Never>.empty() }
     }
-
-    return locStream.eraseToPublisher().flatMap(fetch)
 }

@@ -261,7 +261,7 @@ public enum SpeedMonitorFeature {
                 let lastLocation = context.stateBefore?.lastLocation
                 return .reduce { $0.currentRoadInfo = info }
                     .produce { ctx in
-                        let announce = (info.limit != prevInfo?.limit)
+                        let announce = (info.announcement != prevInfo?.announcement)
                             ? announceRoadInfo(info, env: ctx.environment)
                             : .empty
                         let refresh = lastLocation.map { loc in
@@ -312,20 +312,23 @@ private let asNoopEffect: @Sendable (Publisher<Void, Never>) -> Effect<SpeedMoni
 
 // MARK: - Audio
 
-/// Announces the new road info when the limit changes — includes road ref/name if available.
+/// Announces the road: its limit, its name, or both — "thirty zone, High Street".
+///
+/// The limit being `.unknown` no longer silences the whole announcement. An unnamed limit and an
+/// unlimited name are independently useful, so each is spoken whenever it is there; only a road with
+/// neither says nothing at all.
 private func announceRoadInfo(
     _ info: RoadInfo,
     env: SpeedMonitorFeature.Environment
 ) -> Effect<SpeedMonitorFeature.Action> {
-    let limitText: String
-    switch info.limit {
-    case .unknown:          return .empty
-    case .national:         limitText = "national"
-    case .value(let mph):   limitText = (mph |> env.formatSpeedSpeech) + " zone"
+    let limitText: String? = switch info.limit {
+    case .unknown:        nil
+    case .national:       "national"
+    case .value(let mph): (mph |> env.formatSpeedSpeech) + " zone"
     }
-    let roadLabel = info.ref ?? info.name     // prefer ref ("A40") over name ("High Street")
-    let text = roadLabel.map { "\(limitText), \($0)" } ?? limitText
-    return text |> (env.speak >>> asNoopEffect)
+    let spoken = [limitText, info.roadLabel].compactMap(id).joined(separator: ", ")
+    guard !spoken.isEmpty else { return .empty }
+    return spoken |> (env.speak >>> asNoopEffect)
 }
 
 /// All audio effects for a speed change: TTS up, k down, beeps — combined.

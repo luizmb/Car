@@ -53,4 +53,18 @@ public struct RoadInfo: Sendable, Equatable {
     }
 
     public static let unknown = RoadInfo(limit: .unknown, ref: nil, name: nil, resolvedFromNational: false)
+
+    /// How the road is referred to out loud — `ref` preferred over `name` because "A40" is shorter to
+    /// hear at speed than "Western Avenue". `nil` when OSM gave us neither.
+    public var roadLabel: String? { ref ?? name }
+
+    /// Everything an announcement would mention. Comparing this — rather than the limit alone — is what
+    /// makes turning from a 30 road onto a different 30 road speak, while driving the length of the A40
+    /// stays silent across Overpass polls.
+    public var announcement: Announcement { Announcement(limit: limit, label: roadLabel) }
+
+    public struct Announcement: Sendable, Equatable {
+        public let limit: RoadSpeedLimit
+        public let label: String?
+    }
 }
