@@ -1,33 +1,105 @@
 import AppDomain
+import CoreFP
+import CoreFPOperators
 import FP
 import SpeedMonitorFeature
 import SwiftRex
 import SwiftRexArchitecture
+import SwiftRexOperators
+import SwiftUI
 
-// MARK: - AppState
+// MARK: - AppFeature
 
-/// Flat application state. Every feature is a sibling — none is parent to another.
-/// (Single feature today; structured for growth — add a slice + a Scope + a route to add a screen.)
-@Lenses
-public struct AppState: Sendable {
-    public var navigation:   NavigationFeature.State   = .init()
-    public var speedMonitor: SpeedMonitorFeature.State = SpeedMonitorFeature.initialState(with: ())
-    public init() {}
+/// The app is a `Feature` like any other: it owns state, actions and a behavior, and it builds its own
+/// view. Nothing about the root is special-cased — which is the point. A root that hands a bare `Store`
+/// to a view silently never re-renders, because `Store` is not `@Observable`; the SwiftRex APIs that
+/// tempt you into it (`binding` / `presence` / `item`) are declared on `StoreType`, which the concrete
+/// `Store` also satisfies. Going through the standard `Feature` machinery means the root's view store is
+/// built exactly the way every other screen's is, so that failure is not expressible here.
+///
+/// It is also the app's coordinator: it holds the `World`, constructs the ``AppRouter``, and injects it
+/// into the root view. Child screens are created by that router on demand and never cached.
+@Feature(strategy: .observationSimple)
+public enum AppFeature {
+
+    // MARK: - State
+
+    public struct State: Sendable, Equatable {
+        /// The root screen — always on screen, so never optional.
+        public var speedMonitor: SpeedMonitorFeature.State
+
+        /// The pushed screens, each carrying its own state. One source of truth: there is no parallel
+        /// table to keep in step, so a route and its data cannot disagree.
+        public var path: [StackEntry]
+
+        public init() {
+            speedMonitor = SpeedMonitorFeature.initialState(with: ())
+            path = []
+        }
+    }
+
+    // MARK: - Action
+
+    /// Flat action space. Navigation is its own case, a sibling of every screen — not a parent wrapper.
+    public enum Action: Sendable {
+        case navigation(NavigationAction)
+        case speedMonitor(SpeedMonitorFeature.Action)
+    }
+
+    // MARK: - Environment
+
+    public typealias Environment = World
+
+    // No `ViewState`/`ViewAction`: the macro aliases them to `State`/`Action`, so the root view's store
+    // is `ViewStore<State, Action>` — the whole app, which is what a router needs to project children.
+
+    // MARK: - Lifecycle
+
+    public static func initialState(with _: Void) -> State { .init() }
+
+    // MARK: - View
+    //
+    // Hand-written rather than `typealias Content`: the generated `view()` passes only the view store,
+    // and the root view also needs its router. This is the one place holding the `World`, so it is the
+    // one place that can build a router — and the `World` goes no further.
+
+    @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
+    @MainActor
+    public static func view(store: any StoreType<Action, State>, environment: World) -> some View {
+        AppRootView(
+            viewStore: ViewStore(store),
+            router: AppRouter(store: store, world: environment)
+        )
+    }
+
+    // MARK: - Behavior
+
+    public static func behavior() -> Behavior<Action, State, World> {
+        // Each feature's own wiring sits with it: the lift, then the actions it sends onward. Reading a
+        // feature's row tells you everything it participates in, without a separate bridge to cross-check.
+        // A screen that navigates gains a `.on(.action(\.x.tapped), dispatch: .action(\.navigation.push.y))`
+        // here and nothing else changes.
+        navigationBehavior()
+
+        <> AppScopes.speedMonitor.behavior(of: SpeedMonitorFeature.self)
+    }
 }
 
-// MARK: - AppAction
-
-/// Flat action space. Navigation actions are their own case, not a parent wrapper.
-@Prisms
-public enum AppAction: Sendable {
-    case navigation(NavigationFeature.Action)
-    case speedMonitor(SpeedMonitorFeature.Action)
-}
-
+// Familiar spellings for the app triad — `AppFeature.State` everywhere would only add noise.
+public typealias AppState = AppFeature.State
+public typealias AppAction = AppFeature.Action
 public typealias MainStoreType = any StoreType<AppAction, AppState>
-public typealias MainStore     = Store<AppAction, AppState, World>
+public typealias MainStore = Store<AppAction, AppState, World>
 
-// MARK: - Store conveniences
+// MARK: - The path, as SwiftUI sees it
+
+public extension AppState {
+    /// The `Hashable` identities SwiftUI navigates by. Read-only — the path is the truth, this is a view
+    /// of it. A screen's data can change all it likes without changing which screen it is.
+    var routes: [AppRoute] { path.map(\.route) }
+}
+
+// MARK: - Store factory
 
 public extension MainStore {
 
@@ -36,17 +108,19 @@ public extension MainStore {
     @MainActor static func app(world: World) -> MainStoreType {
         Store(
             initial: AppState(),
-            behavior: NavigationFeature.behavior().lift(.action(\.navigation).state(\.navigation).environment(ignore))
-                <> AppScopes.speedMonitor.behavior(of: SpeedMonitorFeature.self),
+            behavior: AppFeature.behavior(),
             environment: world
         )
     }
 }
 
 // MARK: - Feature scopes
+//
+// One declaration per feature carrying all three axes — action, state, environment — so the same value
+// drives the behavior fold and the router. The root's state axis is **total** (`\.speedMonitor`); a
+// pushed screen's would be **affine**, focusing the `path` element it lives in through a single prism
+// (`topmost` / `replacing` in AppRouter.swift), so there is no derived copy and nothing to keep in step.
 
-// The SpeedMonitor slice of the app: action/state are addressed by `\.speedMonitor` on the flat
-// AppAction/AppState; the environment is narrowed from `World`.
 public enum AppScopes: Rig {
     public typealias Action = AppAction
     public typealias State = AppState
@@ -58,7 +132,7 @@ public enum AppScopes: Rig {
     // NB: this ONE scope uses the named `fanout(keypaths:into:)` rather than `fanout(…) >>> Env.init`.
     // `SpeedMonitorFeature.Environment.init` (13 params) refuses to coerce to `@Sendable` in operator-operand
     // position (a Swift type-checker quirk) — the named `into:` parameter accepts the very same init.
-    static let speedMonitor = ScopeOf<AppScopes>
+    public static let speedMonitor = ScopeOf<AppScopes>
         .action(\.speedMonitor).state(\.speedMonitor)
         .environment(fanout(
             keypaths: \.requestAuthorization, \.authorizationUpdates, \.locationUpdates, \.subscribeToRoadSpeed,
