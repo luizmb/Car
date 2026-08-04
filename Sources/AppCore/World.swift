@@ -23,6 +23,14 @@ public struct World: Sendable {
     /// `AVAudioPlayer`, so speech neither stops it nor is stopped by it.
     public let playIndicatorLoop: @Sendable (Side) -> Publisher<Void, Never>
     public let stopIndicatorLoop: @Sendable () -> Publisher<Void, Never>
+    /// Tyre pressure and temperature from the FOBO sensors. Advertisement-only — these run coin
+    /// cells and sleep between broadcasts, so nothing is ever connected to.
+    /// Already matched to a wheel and graded against its band. Sensor identity is keyed on the
+    /// broadcast serial rather than the CoreBluetooth identifier, so a reinstall cannot invalidate
+    /// it and the other bike in the garage is excluded by construction.
+    public let tyreReadings: @Sendable () -> Publisher<TyreReading, Never>
+    public let formatPressure: @Sendable (PSI) -> String
+    public let formatTemperature: @Sendable (Celsius) -> String
     /// Presence of the CarPlay head unit, i.e. whether the ignition is on. Observed only — never
     /// connected to, since connecting is what suppressed its advertising.
     public let chigeeEvents: @Sendable () -> Publisher<ChigeeEvent, Never>

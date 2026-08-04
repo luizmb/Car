@@ -11,6 +11,9 @@ public enum FeetTag {}
 public enum LatTag {}
 public enum LonTag {}
 public enum CourseTag {}
+public enum KPaTag {}
+public enum PSITag {}
+public enum CelsiusTag {}
 
 // MARK: - Newtypes
 
@@ -22,6 +25,9 @@ public typealias Feet      = Newtype<FeetTag,   Double>
 public typealias Latitude  = Newtype<LatTag,    Double>
 public typealias Longitude = Newtype<LonTag,    Double>
 public typealias Course    = Newtype<CourseTag, Double>
+public typealias KPa       = Newtype<KPaTag,     Double>
+public typealias PSI       = Newtype<PSITag,     Double>
+public typealias Celsius   = Newtype<CelsiusTag, Double>
 
 // MARK: - Generic unit-conversion helper
 
@@ -55,4 +61,14 @@ extension Iso where S == MPS, A == KPH {
 
 extension Iso where S == MPH, A == KPH {
     public static var convert: Self { measurementIso(from: UnitSpeed.milesPerHour, to: .kilometersPerHour) }
+}
+
+// MARK: - Pressure isos
+
+// FOBO sensors broadcast kilopascals; the rider thinks in psi, and so does the FOBO app's own
+// threshold table, so the conversion is needed at every display and comparison.
+extension Iso where S == KPa, A == PSI {
+    public static var convert: Self {
+        measurementIso(from: UnitPressure.kilopascals, to: .poundsForcePerSquareInch)
+    }
 }
