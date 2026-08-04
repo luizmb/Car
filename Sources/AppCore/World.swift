@@ -23,6 +23,15 @@ public struct World: Sendable {
     /// `AVAudioPlayer`, so speech neither stops it nor is stopped by it.
     public let playIndicatorLoop: @Sendable (Side) -> Publisher<Void, Never>
     public let stopIndicatorLoop: @Sendable () -> Publisher<Void, Never>
+    /// Presence of the CarPlay head unit, i.e. whether the ignition is on. Observed only — never
+    /// connected to, since connecting is what suppressed its advertising.
+    public let chigeeEvents: @Sendable () -> Publisher<ChigeeEvent, Never>
+    /// Telemetry from the helmet intercom. Connection is required — its advertisement carries a
+    /// constant, so nothing useful is broadcast.
+    public let cardoEvents: @Sendable () -> Publisher<CardoEvent, Never>
+    /// Current output route, emitted on subscribe and on every change. The reliable way to know
+    /// the helmet intercom is connected — far more so than its sparse BLE advertising.
+    public let audioRouteChanges: @Sendable () -> Publisher<AudioRoute, Never>
     // Audio
     public let speak: @Sendable (String) -> Publisher<Void, Never>
     public let announceOverLimit: @Sendable () -> Publisher<Void, Never>

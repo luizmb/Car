@@ -51,6 +51,8 @@ extension World {
         let roadSpeed = RoadSpeedBox(minDistance: Meters(300), minTime: 20)
         let speech    = SpeechBox()
         let indimate  = IndimateCentral()
+        let cardo     = CardoCentral()
+        let chigee    = ChigeeCentral()
         let ticks     = IndicatorAudioBox()
 
         // Locale captured once — all formatters below are pure closures over this snapshot
@@ -120,6 +122,9 @@ extension World {
             stopIndicatorLoop: {
                 Publisher.future { DispatchQueue.main.async { ticks.stop() } }
             },
+            chigeeEvents: { makeChigeeStream(central: chigee) },
+            cardoEvents: { makeCardoStream(central: cardo) },
+            audioRouteChanges: { makeAudioRouteStream() },
             speak: { text in
                 Publisher.future { DispatchQueue.main.async { speech.speak(text) } }
             },

@@ -39,9 +39,13 @@ public struct AppRouter {
     public func root() -> some View {
         AppScopes.speedMonitor.view(of: SpeedMonitorFeature.self, from: store, world: world)
             .overlay(alignment: .topLeading) {
-                AppScopes.indicator.view(of: IndicatorFeature.self, from: store, world: world)
-                    .padding(.leading, 12)
-                    .padding(.top, 6)
+                VStack(alignment: .leading, spacing: 6) {
+                    AppScopes.chigee.view(of: ChigeeFeature.self, from: store, world: world)
+                    AppScopes.indicator.view(of: IndicatorFeature.self, from: store, world: world)
+                    AppScopes.cardo.view(of: CardoFeature.self, from: store, world: world)
+                }
+                .padding(.leading, 12)
+                .padding(.top, 6)
             }
     }
 

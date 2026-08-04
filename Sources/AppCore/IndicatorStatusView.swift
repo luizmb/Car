@@ -20,26 +20,17 @@ struct IndicatorStatusView: View {
     @State private var blinking = false
 
     var body: some View {
-        HStack(spacing: 8) {
-            Text("Indimate:")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 3) {
+            row("Indimate:", status.label, status.colour)
 
-            Text(status.label)
-                .font(.caption2.bold())
-                .foregroundStyle(status.colour)
+            // Read as hex the captured samples give 12.34-12.55 V with no scale factor, which is
+            // what a resting battery looks like — but every sample so far is digits-only, so the
+            // encoding is unproven. The trailing "?" says so, and disappears (green) the moment a
+            // hex-only digit settles it. See BatteryReading.
+            row("Battery:", batteryLabel, batteryColour)
 
-            // Raw payload plus the hex reading, because the encoding is not settled. Read as hex
-            // the samples so far give 12.34-12.55 V with no scale factor, which is what a resting
-            // battery looks like. A letter appearing here proves hex outright — see BatteryReading.
-            if let battery = viewStore.state.battery {
-                Text(batteryLabel(battery))
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(battery.provesHex ? .green : .secondary)
-            }
-
-            Spacer(minLength: 8)
-
+            // Only while actually indicating — the row is absent, not dimmed, so the pill shrinks
+            // back to two lines when you are going straight.
             if let side = viewStore.state.side {
                 Text(side.arrowLabel)
                     .font(.system(size: 15, weight: .black, design: .rounded))
@@ -53,18 +44,37 @@ struct IndicatorStatusView: View {
                     .onDisappear { blinking = false }
             }
         }
+        .animation(.easeInOut(duration: 0.2), value: viewStore.state.side == nil)
         .padding(.horizontal, 14)
-        .padding(.vertical, 7)
-        .glassEffect(.regular, in: .capsule)
-        .fixedSize(horizontal: true, vertical: false)
+        .padding(.vertical, 8)
+        .glassEffect(.regular, in: .rect(cornerRadius: 14))
+        .fixedSize()
     }
 
-    /// `3091 12.43V?` — the raw payload and what it means read as hex. The question mark stays
-    /// until a hex letter appears and settles it.
-    private func batteryLabel(_ battery: BatteryReading) -> String {
+    private func row(_ label: String, _ value: String, _ colour: Color) -> some View {
+        HStack(spacing: 5) {
+            Text(label)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.caption2.bold().monospacedDigit())
+                .foregroundStyle(colour)
+        }
+    }
+
+    /// `Unknown` until the unit reports, then `12.43V?` — the question mark dropping once a hex
+    /// digit proves the encoding. Falls back to the raw payload if it parses as neither, so an
+    /// unexpected format is visible rather than swallowed.
+    private var batteryLabel: String {
+        guard let battery = viewStore.state.battery else { return "Unknown" }
         guard let millivolts = battery.hexMillivolts else { return battery.raw }
         let volts = String(format: "%.2f", Double(millivolts) / 1000)
-        return "\(battery.raw) \(volts)V\(battery.provesHex ? "" : "?")"
+        return "\(volts)V\(battery.provesHex ? "" : "?")"
+    }
+
+    private var batteryColour: Color {
+        guard let battery = viewStore.state.battery else { return .secondary }
+        return battery.provesHex ? .green : .primary
     }
 
     // Bluetooth problems outrank the connection state: "Disconnected" when the radio is off is
