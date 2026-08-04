@@ -86,6 +86,8 @@ public enum AppFeature {
         case motion(MotionFeature.Action)
         case weather(WeatherFeature.Action)
         case fuel(FuelFeature.Action)
+        /// Speak the briefing on demand, at either verbosity.
+        case speakFlightPlan(FlightPlanVerbosity)
     }
 
     // MARK: - Environment
@@ -118,10 +120,9 @@ public enum AppFeature {
     public static func behavior() -> Behavior<Action, State, World> {
         // Each feature's own wiring sits with it: the lift, then the actions it sends onward. Reading a
         // feature's row tells you everything it participates in, without a separate bridge to cross-check.
-        // A screen that navigates gains a `.on(.action(\.x.tapped), dispatch: .action(\.navigation.push.y))`
-        // here and nothing else changes.
-        // Every observation reaches the store as an action, so one handler captures GPS, road
-        // info, Indimate, Cardo, CHIGEE and tyres in true interleaved order — the whole raw
+        //
+        // Every observation reaches the store as an action, so one handler captures GPS, road info,
+        // Indimate, Cardo, CHIGEE, tyres and motion in true interleaved order — the whole raw
         // timeline, with no per-source wiring. Temporary, until the real recorder exists.
         Behavior<AppAction, AppState, World>.handle { action, _ in
             .produce { ctx in
@@ -129,9 +130,96 @@ public enum AppFeature {
             }
         }
 
-        // Publish a snapshot for App Intents. Siri constructs intents itself and cannot be handed
-        // a store, so state is mirrored into a plain value they can read — including when the app
-        // is suspended, where a stale answer beats a hang.
+        <> navigationBehavior()
+
+        // Bluetooth is requested only once location has resolved. Constructing a `CBCentralManager`
+        // *is* the permission request, so chaining the two here is what keeps the system dialogs
+        // sequential and in order of importance — the speedometer's permission first, the
+        // indicator enhancement second.
+        <> AppScopes.speedMonitor.behavior(of: SpeedMonitorFeature.self)
+            .on(.action(\.speedMonitor.readyToMonitor), dispatch: .action(\.indicator.start))
+
+        <> AppScopes.indicator.behavior(of: IndicatorFeature.self)
+            .on(.action(\.appLaunch), dispatch: .action(\.indicator.launch))
+
+        <> AppScopes.cardo.behavior(of: CardoFeature.self)
+
+        <> AppScopes.chigee.behavior(of: ChigeeFeature.self)
+
+        <> AppScopes.tyres.behavior(of: TyreFeature.self)
+
+        <> AppScopes.motion.behavior(of: MotionFeature.self)
+
+        <> AppScopes.weather.behavior(of: WeatherFeature.self)
+
+        <> AppScopes.fuel.behavior(of: FuelFeature.self)
+
+        // Location fans out from the one feature that owns the stream. A second subscription would
+        // clobber the delegate's single continuation slot — the failure that silently killed the
+        // road-speed stream before it was made cold.
+        <> Behavior<AppAction, AppState, World>.handle { action, _ in
+            guard
+                let monitorAction = AppAction.prism.speedMonitor.preview(action),
+                let update = SpeedMonitorFeature.Action.prism.locationUpdate.preview(monitorAction)
+            else { return .doNothing }
+            return .produce { ctx in
+                Effect.just(.weather(.located(update.latitude, update.longitude, ctx.environment.now())))
+                    <> Effect.just(.fuel(.setPosition(update.latitude, update.longitude)))
+            }
+        }
+
+        // Flight Plan, spoken once when the last of CHIGEE and Cardo arrives — during the
+        // two-minute choked warm-up, when the rider is sitting there anyway.
+        <> Behavior<AppAction, AppState, World>.handle { _, context in
+            guard
+                let state = context.stateBefore,
+                !state.flightPlanSpoken,
+                state.chigee.isIgnitionOn == true,
+                state.cardo.isConnected
+            else { return .doNothing }
+            return .reduce { $0.flightPlanSpoken = true }
+                .produce { ctx in
+                    ctx.environment.speakSequence(
+                        composeFlightPlan(state.flightPlanInputs(ctx.environment), verbosity: .exceptions),
+                        flightPlanGap
+                    ) |> Effect.fireAndForget
+                }
+        }
+
+        // On demand, at whichever verbosity was asked for. The full report is a diagnostic: a
+        // provider that has quietly failed is indistinguishable from a healthy one under
+        // `.exceptions`, but names itself here.
+        <> Behavior<AppAction, AppState, World>.handle { action, context in
+            guard
+                let verbosity = AppAction.prism.speakFlightPlan.preview(action),
+                let state = context.stateBefore
+            else { return .doNothing }
+            return .produce { ctx in
+                ctx.environment.speakSequence(
+                    composeFlightPlan(state.flightPlanInputs(ctx.environment), verbosity: verbosity),
+                    flightPlanGap
+                ) |> Effect.fireAndForget
+            }
+        }
+
+        // Drain any briefing requested by Siri. An intent cannot dispatch, so it leaves a value
+        // behind and this picks it up on the next action — of which there are several a second.
+        <> Behavior<AppAction, AppState, World>.handle { _, context in
+            guard
+                let verbosity = FlightPlanRequest.shared.take(),
+                let state = context.stateBefore
+            else { return .doNothing }
+            return .produce { ctx in
+                ctx.environment.speakSequence(
+                    composeFlightPlan(state.flightPlanInputs(ctx.environment), verbosity: verbosity),
+                    flightPlanGap
+                ) |> Effect.fireAndForget
+            }
+        }
+
+        // Publish a snapshot for App Intents. Siri constructs intents itself and cannot be handed a
+        // store, so state is mirrored into a plain value they can read — including when the app is
+        // suspended, where a stale answer beats a hang.
         <> Behavior<AppAction, AppState, World>.handle { _, context in
             guard let state = context.stateBefore else { return .doNothing }
             return .produce { ctx in
@@ -152,6 +240,31 @@ public enum AppFeature {
                 return .empty
             }
         }
+    }
+}
+
+/// Pause between briefing segments. Long enough to separate sources through a helmet, short
+/// enough that the whole thing still fits inside the warm-up.
+let flightPlanGap: TimeInterval = 0.45
+
+public extension AppState {
+    /// Gathers everything the briefing can speak about. Kept in one place so the automatic and
+    /// on-demand paths cannot drift apart.
+    func flightPlanInputs(_ world: World) -> FlightPlanInputs {
+        let display = speedMonitor.display
+        return FlightPlanInputs(
+            ignitionOn: chigee.isIgnitionOn,
+            indimateConnected: indicator.isConnected,
+            cardoConnected: cardo.isConnected,
+            tyres: tyres.readings,
+            weather: weather.latest,
+            road: display.roadRef ?? display.roadName,
+            speedLimit: display.roadLimitDisplay.spokenLimit,
+            bikeMillivolts: indicator.battery?.hexMillivolts,
+            phoneBattery: world.phoneBattery(),
+            lowPowerMode: world.isLowPowerMode(),
+            gpsAccuracy: nil
+        )
     }
 }
 

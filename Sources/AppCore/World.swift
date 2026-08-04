@@ -68,6 +68,9 @@ public struct World: Sendable {
     public let logAction: @Sendable (String) -> Publisher<Void, Never>
     // Audio
     public let speak: @Sendable (String) -> Publisher<Void, Never>
+    /// Speaks several lines with a pause between each. Used for the briefing, where a beat between
+    /// sources is what makes it followable through a helmet.
+    public let speakSequence: @Sendable ([String], TimeInterval) -> Publisher<Void, Never>
     public let announceOverLimit: @Sendable () -> Publisher<Void, Never>
     public let announceUnderLimit: @Sendable () -> Publisher<Void, Never>
     // Domain config
