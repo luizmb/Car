@@ -36,8 +36,19 @@ final class IndimateCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
     private var peripheral: CBPeripheral?
     private var emit: (@Sendable (IndimateEvent) -> Void)?
 
+    /// Idempotent. A second concurrent subscription would otherwise build a second
+    /// `CBCentralManager` and overwrite the first's emit closure — leaking a scanning manager
+    /// while orphaning the subscription that is actually being read. Supervision should keep only
+    /// one channel per id, but that is the assumption that failed in the road-speed stream, so it
+    /// is enforced here rather than relied upon.
     func start(_ emit: @escaping @Sendable (IndimateEvent) -> Void) {
-        lock.withLock { self.emit = emit }
+        let alreadyRunning = lock.withLock { () -> Bool in
+            guard central == nil else { return true }
+            self.emit = emit
+            return false
+        }
+        guard !alreadyRunning else { return }
+
         let manager = CBCentralManager(
             delegate: self,
             queue: nil,

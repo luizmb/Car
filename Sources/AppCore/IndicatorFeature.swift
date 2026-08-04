@@ -32,11 +32,11 @@ public enum IndicatorFeature {
 
     // MARK: Action
 
-    @Prisms
-    public enum Action: Sendable {
-        case event(IndimateEvent)
-        case _noop
-    }
+    /// The feature's only input is the unit itself — there is no view and no second source — so
+    /// its action space *is* the event stream. A wrapper case would be ceremony, and `IndimateEvent`
+    /// already carries `@Prisms`, so app-level wiring like `.action(\.indicator.connected)` still
+    /// reads naturally. Introduce a real enum here the day something else can act on this feature.
+    public typealias Action = IndimateEvent
 
     // MARK: Environment
 
@@ -69,14 +69,13 @@ public enum IndicatorFeature {
 
     private static func commands() -> Behavior<Action, State, Environment> {
         .handle { action, context in
-            guard case let .event(event) = action else { return .doNothing }
             let before = context.stateBefore
 
-            switch event {
+            switch action {
             case .connected:
                 guard before?.isConnected != true else { return .doNothing }
                 return .reduce { $0.isConnected = true }
-                    .produce { ctx in ctx.environment.speak("Indimate connected") |> asNoop }
+                    .produce { ctx in ctx.environment.speak("Indimate connected") |> Effect.fireAndForget }
 
             case .disconnected:
                 guard before?.isConnected != false else { return .doNothing }
@@ -87,8 +86,8 @@ public enum IndicatorFeature {
                     $0.side = nil
                 }
                 .produce { ctx in
-                    (ctx.environment.stopIndicatorLoop() |> asNoop)
-                        <> (ctx.environment.speak("Indimate disconnected") |> asNoop)
+                    (ctx.environment.stopIndicatorLoop() |> Effect.fireAndForget)
+                        <> (ctx.environment.speak("Indimate disconnected") |> Effect.fireAndForget)
                 }
 
             case let .indicator(side):
@@ -97,8 +96,8 @@ public enum IndicatorFeature {
                 guard before?.side != side else { return .doNothing }
                 return .reduce { $0.side = side }
                     .produce { ctx in
-                        side.map { ctx.environment.playIndicatorLoop($0) |> asNoop }
-                            ?? (ctx.environment.stopIndicatorLoop() |> asNoop)
+                        side.map { ctx.environment.playIndicatorLoop($0) |> Effect.fireAndForget }
+                            ?? (ctx.environment.stopIndicatorLoop() |> Effect.fireAndForget)
                     }
 
             case let .voltage(millivolts):
@@ -116,7 +115,7 @@ public enum IndicatorFeature {
     private static func supervisor() -> Behavior<Action, State, Environment> {
         .supervise { _ in
             Supervision { env in
-                [env.indimateEvents().asChannel(id: "indimate", Action.event)]
+                [env.indimateEvents().asChannel(id: "indimate", id)]
             }
         }
     }
@@ -125,6 +124,3 @@ public enum IndicatorFeature {
 // `@Feature` would synthesise this, but that macro also expects a view. A logic-only feature
 // declares the behaviour half of the contract by hand.
 extension IndicatorFeature: HasBehavior {}
-
-private let asNoop: @Sendable (Publisher<Void, Never>) -> Effect<IndicatorFeature.Action> =
-    { $0.asEffect { (_: Void) in IndicatorFeature.Action._noop } }
