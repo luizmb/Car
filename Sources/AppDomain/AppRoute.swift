@@ -12,10 +12,11 @@ import FPMacros
 /// SpeedJarvis has no destinations yet — the speed monitor is the **root**, and a root is not something
 /// you can push, so it is deliberately absent (exactly as the calendar is in PookiePayslip). The enum is
 /// therefore uninhabited by design rather than by accident: until a second screen exists, "navigated
-/// somewhere" is unrepresentable. Adding the first one is a case here, a case in ``NavigationRequest``,
-/// and a case in `StackEntry`.
+/// somewhere" is unrepresentable. The fuel screen is the first real destination.
 @Prisms
-public enum AppRoute: Hashable, Sendable {}
+public enum AppRoute: Hashable, Sendable {
+    case fuel
+}
 
 // MARK: - NavigationRequest
 
@@ -26,4 +27,7 @@ public enum AppRoute: Hashable, Sendable {}
 /// tacitly (`dispatch: .action(\.navigation.push.someScreen)`) while a screen that must be built from
 /// state the app already holds — which no action payload could supply — still works the same way.
 @Prisms
-public enum NavigationRequest: Sendable, Equatable {}
+public enum NavigationRequest: Sendable, Equatable {
+    /// Carries no payload: the fuel screen builds itself from persisted state, not from the ask.
+    case fuel
+}

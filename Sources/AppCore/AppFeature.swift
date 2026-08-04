@@ -46,6 +46,14 @@ public enum AppFeature {
         /// put raw samples into the ride log so inference can be worked out offline.
         public var motion: MotionFeature.State
 
+        /// Conditions along the route. Feeds air density, which drives how rich the carb runs.
+        public var weather: WeatherFeature.State
+
+        /// Whether the pre-ride briefing has been spoken this session. It fires once, when the last
+        /// of CHIGEE and Cardo connects — no Cardo means no greeting, but also no ears, so nothing
+        /// is lost.
+        public var flightPlanSpoken: Bool = false
+
         /// The pushed screens, each carrying its own state. One source of truth: there is no parallel
         /// table to keep in step, so a route and its data cannot disagree.
         public var path: [StackEntry]
@@ -57,6 +65,7 @@ public enum AppFeature {
             chigee = ChigeeFeature.initialState(with: ())
             tyres = TyreFeature.initialState(with: ())
             motion = MotionFeature.initialState(with: ())
+            weather = WeatherFeature.initialState(with: ())
             path = []
         }
     }
@@ -75,6 +84,8 @@ public enum AppFeature {
         case chigee(ChigeeFeature.Action)
         case tyres(TyreFeature.Action)
         case motion(MotionFeature.Action)
+        case weather(WeatherFeature.Action)
+        case fuel(FuelFeature.Action)
     }
 
     // MARK: - Environment
@@ -240,4 +251,18 @@ public enum AppScopes: Rig {
     public static let motion = ScopeOf<AppScopes>
         .action(\.motion).state(\.motion)
         .environment(fanout(\.barometer, \.motion, \.motionActivity) >>> MotionFeature.Environment.init)
+
+    public static let weather = ScopeOf<AppScopes>
+        .action(\.weather).state(\.weather)
+        .environment(\.fetchWeather >>> WeatherFeature.Environment.init)
+
+    // The first **affine** scope: the fuel screen's state lives inside a `path` element rather than
+    // as a permanent field, so reads and writes both go through the same prism. `replacing` cannot
+    // append, so the feature can never conjure a screen navigation did not push.
+    public static let fuel = ScopeOf<AppScopes>
+        .action(\.fuel)
+        .state(preview: topmost(StackEntry.prism.fuel), set: replacing(StackEntry.prism.fuel))
+        .environment(fanout(
+            \.loadFuelLog, \.saveFuelLog, \.now, \.newID
+        ) >>> FuelFeature.Environment.init)
 }

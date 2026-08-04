@@ -34,6 +34,20 @@ public struct AppRootView: View, Routable {
                 .navigationDestination(for: AppRoute.self) { route in
                     router.destination(for: route)
                 }
+                // The first thing to actually use the navigation machinery — until now every
+                // route enum was uninhabited.
+                .overlay(alignment: .bottomTrailing) {
+                    Button {
+                        viewStore.dispatch(.navigation(.push(.fuel)))
+                    } label: {
+                        Image(systemName: "fuelpump.fill")
+                            .font(.title3)
+                            .padding(14)
+                            .glassEffect(.regular, in: .circle)
+                    }
+                    .padding(.trailing, 16)
+                    .padding(.bottom, 190)
+                }
         }
     }
 }

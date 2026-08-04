@@ -59,6 +59,8 @@ private extension AppState {
     /// half-initialised screen for someone to finish assembling. Requests whose data comes from the
     /// action carry it; the rest read what the app already holds.
     func entry(for request: NavigationRequest) -> StackEntry {
-        switch request {}
+        switch request {
+        case .fuel: .fuel(FuelFeature.initialState(with: ()))
+        }
     }
 }
