@@ -4,6 +4,12 @@
 <dict>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Connects to the Indimate unit on the bike to play indicator sounds in your helmet.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>Records barometric pressure and motion during rides, to learn how conditions affect fuel consumption.</string>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

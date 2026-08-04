@@ -71,6 +71,8 @@ extension World {
         let cardo     = CardoCentral()
         let chigee    = ChigeeCentral()
         let tyres     = TyreCentral()
+        let rideLog   = ActionLogBox()
+        let motionBox = MotionBox()
         let ticks     = IndicatorAudioBox()
 
         // Locale captured once — all formatters below are pure closures over this snapshot
@@ -149,6 +151,12 @@ extension World {
             chigeeEvents: { makeChigeeStream(central: chigee) },
             cardoEvents: { makeCardoStream(central: cardo) },
             audioRouteChanges: { makeAudioRouteStream() },
+            barometer: { makeBarometerStream(box: motionBox) },
+            motion: { makeMotionStream(box: motionBox) },
+            motionActivity: { makeActivityStream(box: motionBox) },
+            logAction: { line in
+                Publisher.future { rideLog.append(line) }
+            },
             speak: { text in
                 Publisher.future { DispatchQueue.main.async { speech.speak(text) } }
             },

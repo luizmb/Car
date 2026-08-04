@@ -43,6 +43,7 @@ public struct AppRouter {
                     AppScopes.chigee.view(of: ChigeeFeature.self, from: store, world: world)
                     AppScopes.indicator.view(of: IndicatorFeature.self, from: store, world: world)
                     AppScopes.tyres.view(of: TyreFeature.self, from: store, world: world)
+                    AppScopes.motion.view(of: MotionFeature.self, from: store, world: world)
                     AppScopes.cardo.view(of: CardoFeature.self, from: store, world: world)
                 }
                 .padding(.leading, 12)
