@@ -18,12 +18,16 @@ import FPMacros
 /// monitor is the root, and the root is not a stack entry. A screen is added here as
 /// `case foo(FooFeature.State)`.
 @Prisms
-public enum StackEntry: Sendable, Equatable {}
+public enum StackEntry: Sendable, Equatable {
+    case fuel(FuelFeature.State)
+}
 
 public extension StackEntry {
     /// The `Hashable` identity SwiftUI navigates by. Derived, never stored — a screen's data can change
     /// all it likes without changing which screen it is, so `NavigationStack` never re-pushes.
     var route: AppRoute {
-        switch self {}
+        switch self {
+        case .fuel: .fuel
+        }
     }
 }

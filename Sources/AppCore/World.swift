@@ -48,6 +48,22 @@ public struct World: Sendable {
     /// iOS's own activity classification. Unknown whether it calls a motorcycle automotive or
     /// cycling — recorded raw so a real ride answers it.
     public let motionActivity: @Sendable () -> Publisher<MotionActivitySample, Never>
+    /// Conditions at a position. Feeds air density, which is the causal driver of how rich a
+    /// carburettor runs — the single physically-motivated feature that replaces temperature,
+    /// pressure and altitude as three weak statistical ones.
+    public let fetchWeather: @Sendable (Latitude, Longitude) -> Publisher<WeatherObservation, Never>
+    /// Persisted fuel log. Plain JSON in Documents, so it can be inspected or corrected by hand.
+    public let loadFuelLog: @Sendable () -> Publisher<Result<FuelLog, FileError>, Never>
+    public let saveFuelLog: @Sendable (FuelLog) -> Publisher<Result<Void, FileError>, Never>
+    /// The phone is the instrument cluster, so its battery is a pre-ride check. Low Power Mode
+    /// matters more than the percentage: it throttles the background work location and Bluetooth
+    /// depend on, and can silently disable most of the app mid-ride.
+    public let phoneBattery: @Sendable () -> Double?
+    public let isLowPowerMode: @Sendable () -> Bool
+    /// Injected rather than called ambiently — the architecture forbids `Date()`/`UUID()` inside
+    /// logic, and a refuel record needs both.
+    public let now: @Sendable () -> Date
+    public let newID: @Sendable () -> UUID
     /// Appends a line to the ride log. Temporary raw capture until the journey recorder lands.
     public let logAction: @Sendable (String) -> Publisher<Void, Never>
     // Audio

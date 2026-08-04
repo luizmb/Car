@@ -1,4 +1,5 @@
 import AVFoundation
+import UIKit
 import ReactiveConcurrency
 import Core
 import CoreBluetooth
@@ -73,6 +74,7 @@ extension World {
         let tyres     = TyreCentral()
         let rideLog   = ActionLogBox()
         let motionBox = MotionBox()
+        let device    = DeviceBox()
         let ticks     = IndicatorAudioBox()
 
         // Locale captured once — all formatters below are pure closures over this snapshot
@@ -92,6 +94,8 @@ extension World {
         // Overpass API client — HTTPClient over URLSession (NetworkTools 0.7)
         let httpClient = HTTPClient.live(session: .shared)
         let decoder       = JSONDecoder().dataDecoder(for: OverpassResponse.self)
+        let weatherDecoder = JSONDecoder().dataDecoder(for: OpenMeteoResponse.self)
+        let weatherFetch   = makeWeatherFetch(httpClient: httpClient, decoder: weatherDecoder)
 
         return World(
             requestAuthorization: {
@@ -154,6 +158,13 @@ extension World {
             barometer: { makeBarometerStream(box: motionBox) },
             motion: { makeMotionStream(box: motionBox) },
             motionActivity: { makeActivityStream(box: motionBox) },
+            fetchWeather: weatherFetch,
+            loadFuelLog: { makeFileReader(FuelLog.self, filename: FuelStore.filename) },
+            saveFuelLog: { makeFileWriter($0, filename: FuelStore.filename) },
+            phoneBattery: { device.batteryLevel },
+            isLowPowerMode: { ProcessInfo.processInfo.isLowPowerModeEnabled },
+            now: { Date() },
+            newID: { UUID() },
             logAction: { line in
                 Publisher.future { rideLog.append(line) }
             },

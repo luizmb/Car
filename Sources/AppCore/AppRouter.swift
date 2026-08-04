@@ -44,6 +44,7 @@ public struct AppRouter {
                     AppScopes.indicator.view(of: IndicatorFeature.self, from: store, world: world)
                     AppScopes.tyres.view(of: TyreFeature.self, from: store, world: world)
                     AppScopes.motion.view(of: MotionFeature.self, from: store, world: world)
+                    AppScopes.weather.view(of: WeatherFeature.self, from: store, world: world)
                     AppScopes.cardo.view(of: CardoFeature.self, from: store, world: world)
                 }
                 .padding(.leading, 12)
@@ -53,13 +54,11 @@ public struct AppRouter {
 
     /// The screen for `route`. `@ViewBuilder` keeps the concrete per-route types without `AnyView`.
     ///
-    /// Unreachable rather than unimplemented: ``AppRoute`` is uninhabited while the speed monitor is the
-    /// only screen, so nothing can be pushed to ask for a destination. The first real screen turns this
-    /// into `switch route { case .foo: AppScopes.foo.pushedView(of: FooFeature.self, from: store, world: world) }`
-    /// and everything below is already in place to serve it.
     @ViewBuilder
     public func destination(for route: AppRoute) -> some View {
-        EmptyView()
+        switch route {
+        case .fuel: AppScopes.fuel.pushedView(of: FuelFeature.self, from: store, world: world)
+        }
     }
 }
 
