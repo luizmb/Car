@@ -29,15 +29,13 @@ struct IndicatorStatusView: View {
                 .font(.caption2.bold())
                 .foregroundStyle(status.colour)
 
-            // Raw millivolts, deliberately uncalibrated. 3.09 V is not a 12 V battery, but x4
-            // lands on 12.15-12.42 V — textbook resting lead-acid — so this is almost certainly
-            // the bike battery behind a divider of unknown ratio. Shown raw so it can be read
-            // against a multimeter; once the ratio is known this becomes volts, and a charging
-            // fault on a bike with no warning light becomes visible.
-            if let millivolts = viewStore.state.millivolts {
-                Text("\(millivolts)")
+            // Raw payload plus the hex reading, because the encoding is not settled. Read as hex
+            // the samples so far give 12.34-12.55 V with no scale factor, which is what a resting
+            // battery looks like. A letter appearing here proves hex outright — see BatteryReading.
+            if let battery = viewStore.state.battery {
+                Text(batteryLabel(battery))
                     .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(battery.provesHex ? .green : .secondary)
             }
 
             Spacer(minLength: 8)
@@ -59,6 +57,14 @@ struct IndicatorStatusView: View {
         .padding(.vertical, 7)
         .glassEffect(.regular, in: .capsule)
         .fixedSize(horizontal: true, vertical: false)
+    }
+
+    /// `3091 12.43V?` — the raw payload and what it means read as hex. The question mark stays
+    /// until a hex letter appears and settles it.
+    private func batteryLabel(_ battery: BatteryReading) -> String {
+        guard let millivolts = battery.hexMillivolts else { return battery.raw }
+        let volts = String(format: "%.2f", Double(millivolts) / 1000)
+        return "\(battery.raw) \(volts)V\(battery.provesHex ? "" : "?")"
     }
 
     // Bluetooth problems outrank the connection state: "Disconnected" when the radio is off is

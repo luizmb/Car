@@ -29,9 +29,10 @@ public enum IndicatorFeature {
         /// Which side is ticking right now. `nil` is genuinely "neither" — the unit reports that
         /// explicitly, so it is not an unknown.
         public var side: Side?
-        /// Last reported supply voltage in millivolts. Not acted on; kept because the journey
-        /// recorder will want it and it costs one field.
-        public var millivolts: Int?
+        /// Last reported supply voltage, in every interpretation still in play. Not acted on yet —
+        /// kept because the journey recorder will want it, and because a charging fault on a bike
+        /// with no warning light is worth surfacing once the encoding is settled.
+        public var battery: BatteryReading?
 
         public init() {}
     }
@@ -145,8 +146,8 @@ public enum IndicatorFeature {
                             ?? (ctx.environment.stopIndicatorLoop() |> Effect.fireAndForget)
                     }
 
-            case let .event(.voltage(millivolts)):
-                return .reduce { $0.millivolts = millivolts }
+            case let .event(.voltage(reading)):
+                return .reduce { $0.battery = reading }
 
             case .event(.info):
                 return .doNothing

@@ -79,11 +79,50 @@ public enum IndimateEvent: Sendable, Equatable {
     case connected
     case disconnected
     case indicator(Side?)
-    /// Supply voltage in millivolts, reported periodically on the same characteristic.
-    case voltage(Int)
+    /// Supply voltage, reported periodically on the same characteristic. Carries the raw text
+    /// because the encoding is not yet settled — see ``BatteryReading``.
+    case voltage(BatteryReading)
     /// Firmware string, serial, and anything else the unit volunteers. Kept so the raw recorder
     /// can log it without the parser having to understand it.
     case info(String)
+}
+
+// MARK: - Battery reading
+
+/// A `B####` payload, kept in every interpretation we cannot yet rule out.
+///
+/// The encoding is genuinely undetermined. Every sample so far is digits-only, which is consistent
+/// with *both* readings, so neither can be eliminated:
+///
+/// - **Hex** — `0x3091` = 12433 mV = 12.43 V. Needs no scale factor at all, and all four captured
+///   samples land in 12.34–12.55 V, textbook resting lead-acid. A 12 V system lives in
+///   `0x3000...0x3FFF`, so engine-off naturally keeps the digits numeric.
+/// - **Decimal** — 3091 mV is not a 12 V battery directly, but ×4 gives 12.36 V, equally plausible
+///   for a divider.
+///
+/// **The engine settles it.** Running, a bike sits near 13.5–14.4 V; as hex that is `0x34BC`–`0x3840`,
+/// so a *letter* would appear in the payload. Decimal has no way to produce one. Until then both are
+/// carried and the raw text is preserved, so nothing is lost to a guess — and, importantly, a reading
+/// containing `A`–`F` no longer fails to parse and vanish exactly when it becomes interesting.
+public struct BatteryReading: Sendable, Equatable {
+    /// The payload with its `B` prefix stripped, e.g. `"3091"` or `"34BC"`.
+    public let raw: String
+    /// Interpreted as hexadecimal millivolts — the stronger hypothesis.
+    public let hexMillivolts: Int?
+    /// Interpreted as decimal millivolts, unscaled.
+    public let decimalMillivolts: Int?
+
+    public init(raw: String) {
+        self.raw = raw
+        hexMillivolts = Int(raw, radix: 16)
+        decimalMillivolts = Int(raw, radix: 10)
+    }
+
+    /// True once the payload contains a hex-only digit, which decimal cannot produce — the
+    /// observation that decides the encoding.
+    public var provesHex: Bool {
+        raw.uppercased().contains { "ABCDEF".contains($0) }
+    }
 }
 
 // MARK: - Payload parsing
@@ -112,8 +151,15 @@ public func parseIndimatePayload(_ data: Data) -> IndimateEvent? {
         !text.isEmpty
     else { return nil }
 
-    if let voltage = text.first == "B" ? Int(text.dropFirst()) : nil {
-        return .voltage(voltage)
+    // Accept any `B`-prefixed payload, not just decimal-parsable ones: once the engine runs the
+    // value may contain hex letters, and rejecting those would drop the reading precisely when it
+    // starts mattering.
+    if text.first == "B", text.count > 1 {
+        let body = String(text.dropFirst())
+        let reading = BatteryReading(raw: body)
+        if reading.hexMillivolts != nil || reading.decimalMillivolts != nil {
+            return .voltage(reading)
+        }
     }
 
     if text.count == 4, text.allSatisfy({ $0 == "0" || $0 == "1" }) {

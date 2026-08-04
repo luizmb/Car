@@ -36,10 +36,44 @@ struct IndimateParsingTests {
         #expect(parseIndimatePayload(payload("0101")) == parseIndimatePayload(payload("0100")))
     }
 
-    @Test("voltage")
+    @Test("voltage keeps both readings while the encoding is undetermined")
     func voltage() {
-        #expect(parseIndimatePayload(payload("B3091")) == .voltage(3091))
-        #expect(parseIndimatePayload(payload("B3038")) == .voltage(3038))
+        guard case let .voltage(reading)? = parseIndimatePayload(payload("B3091")) else {
+            Issue.record("expected a voltage event")
+            return
+        }
+        #expect(reading.raw == "3091")
+        #expect(reading.decimalMillivolts == 3091)
+        #expect(reading.hexMillivolts == 0x3091)   // 12433 mV = 12.43 V, a resting battery
+        #expect(reading.provesHex == false)        // digits-only cannot settle it
+    }
+
+    @Test("a hex letter parses and settles the encoding")
+    func hexLetterProvesEncoding() {
+        // 13.5 V running = 0x34BC. The old parser did Int("34BC") in decimal, got nil, and
+        // dropped the reading to .info — losing the value exactly when the engine made it useful.
+        guard case let .voltage(reading)? = parseIndimatePayload(payload("B34BC")) else {
+            Issue.record("expected a voltage event, not an info fallthrough")
+            return
+        }
+        #expect(reading.raw == "34BC")
+        #expect(reading.hexMillivolts == 13500)
+        #expect(reading.decimalMillivolts == nil)
+        #expect(reading.provesHex)
+    }
+
+    @Test("every captured engine-off sample reads as a plausible resting battery in hex")
+    func capturedSamplesArePlausible() {
+        // The four real payloads from the garage session.
+        for raw in ["3091", "3038", "3105", "3056"] {
+            guard case let .voltage(reading)? = parseIndimatePayload(payload("B" + raw)),
+                  let millivolts = reading.hexMillivolts
+            else {
+                Issue.record("\(raw) did not parse")
+                return
+            }
+            #expect(millivolts > 12_000 && millivolts < 12_800)
+        }
     }
 
     @Test("firmware and serial come through as info")
