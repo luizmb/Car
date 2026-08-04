@@ -43,6 +43,20 @@ public struct FlightPlanInputs: Sendable, Equatable {
     }
 }
 
+// MARK: - Verbosity
+
+public enum FlightPlanVerbosity: Sendable, Equatable {
+    /// Problems in full, then one line if all is well. The automatic pre-ride briefing.
+    case exceptions
+    /// Every provider speaks, including the ones with nothing to report.
+    ///
+    /// This is a **diagnostic**, not a nicer briefing. Under `.exceptions` a provider that is
+    /// silently broken — weather never fetched, a sensor never wired — is indistinguishable from
+    /// one with nothing to say. Here every source says something or explicitly says it has no data,
+    /// so silence identifies exactly which link is dead.
+    case full
+}
+
 // MARK: - Composition
 
 /// Builds the spoken pre-ride briefing.
@@ -54,7 +68,17 @@ public struct FlightPlanInputs: Sendable, Equatable {
 ///
 /// It lands during the two-minute choked warm-up, so there is time — but time available is not a
 /// reason to use it.
-public func composeFlightPlan(_ inputs: FlightPlanInputs) -> String {
+public func composeFlightPlan(
+    _ inputs: FlightPlanInputs,
+    verbosity: FlightPlanVerbosity = .exceptions
+) -> [String] {
+    verbosity == .full ? fullReport(inputs) : exceptionReport(inputs)
+}
+
+/// Returned as segments rather than one string so the speech layer can pause between them. A
+/// continuous forty-second sentence is far harder to follow through a helmet than the same words
+/// with a beat between each source.
+private func exceptionReport(_ inputs: FlightPlanInputs) -> [String] {
     var problems: [String] = []
     var facts: [String] = []
 
@@ -77,39 +101,35 @@ public func composeFlightPlan(_ inputs: FlightPlanInputs) -> String {
             continue
         }
         if reading.status != .ok {
-            let psi = Iso<KPa, PSI>.convert.get(reading.telemetry.pressure).rawValue
             problems.append(
-                "\(position.spokenLabel) tyre \(reading.status == .low ? "low" : "high") at \(Int(psi.rounded())) psi"
+                "\(position.spokenLabel) tyre \(reading.status == .low ? "low" : "high") at \(psi(reading)) psi"
             )
         }
     }
 
     if !inputs.indimateConnected {
-        // Actionable, and the rider's own habit: flicking an indicator with the keys on wakes it.
         problems.append("Indimate not connected, flick an indicator")
     }
     if let accuracy = inputs.gpsAccuracy, accuracy > 20 {
         problems.append("GPS accuracy \(Int(accuracy)) metres")
     }
     if let millivolts = inputs.bikeMillivolts, millivolts < 12_000 {
-        problems.append("Bike battery \(String(format: "%.1f", Double(millivolts) / 1000)) volts")
+        problems.append("Bike battery \(volts(millivolts)) volts")
     }
 
     // ---- Facts, only the ones worth hearing ----
 
     let pressures = TyrePosition.allCases.compactMap { position -> String? in
         guard let reading = inputs.tyres[position], reading.status == .ok else { return nil }
-        let psi = Iso<KPa, PSI>.convert.get(reading.telemetry.pressure).rawValue
-        return "\(position.spokenLabel) \(Int(psi.rounded()))"
+        return "\(position.spokenLabel) \(psi(reading))"
     }
     if !pressures.isEmpty { facts.append("tyres " + pressures.joined(separator: ", ")) }
 
     if let millivolts = inputs.bikeMillivolts, millivolts >= 12_000 {
-        facts.append("battery \(String(format: "%.1f", Double(millivolts) / 1000)) volts")
+        facts.append("battery \(volts(millivolts)) volts")
     }
     if let weather = inputs.weather {
         facts.append("\(Int(weather.temperature.rawValue.rounded())) degrees")
-        // Only when it is strong enough to change how the bike behaves.
         if weather.windSpeed.rawValue >= 5 {
             facts.append("wind \(Int(weather.windSpeed.rawValue.rounded())) metres per second")
         }
@@ -118,7 +138,88 @@ public func composeFlightPlan(_ inputs: FlightPlanInputs) -> String {
     inputs.road.map { facts.append("on \($0)") }
 
     if problems.isEmpty {
-        return (["All nominal"] + facts).joined(separator: ", ") + "."
+        return [(["All nominal"] + facts).joined(separator: ", ") + "."]
     }
-    return (problems + (facts.isEmpty ? [] : ["Otherwise"] + facts)).joined(separator: ", ") + "."
+    return problems.map { $0 + "." }
+        + (facts.isEmpty ? [] : ["Otherwise " + facts.joined(separator: ", ") + "."])
+}
+
+/// One segment per provider, each stating a value **or** explicitly stating it has none.
+///
+/// The explicit "no data" lines are the point. A provider that has quietly failed produces the same
+/// silence as one working perfectly under `.exceptions`; here it names itself.
+private func fullReport(_ inputs: FlightPlanInputs) -> [String] {
+    var segments: [String] = []
+
+    switch inputs.ignitionOn {
+    case .some(true):  segments.append("Ignition on.")
+    case .some(false): segments.append("Ignition off.")
+    case nil:          segments.append("Ignition unknown.")
+    }
+
+    segments.append(inputs.indimateConnected ? "Indimate connected." : "Indimate not connected.")
+    segments.append(inputs.cardoConnected ? "Cardo connected." : "Cardo not connected.")
+
+    for position in TyrePosition.allCases {
+        guard let reading = inputs.tyres[position] else {
+            segments.append("No \(position.spokenLabel) tyre reading.")
+            continue
+        }
+        let state = reading.status == .ok ? "" : reading.status == .low ? ", low" : ", high"
+        segments.append(
+            "\(position.spokenLabel.capitalized) tyre \(psi(reading)) psi, "
+            + "\(Int(reading.telemetry.temperature.rawValue.rounded())) degrees\(state)."
+        )
+    }
+
+    if let millivolts = inputs.bikeMillivolts {
+        segments.append("Bike battery \(volts(millivolts)) volts.")
+    } else {
+        segments.append("No bike battery reading.")
+    }
+
+    if let weather = inputs.weather {
+        segments.append(
+            "Air \(Int(weather.temperature.rawValue.rounded())) degrees, "
+            + "\(Int(weather.humidity.rounded())) percent humidity, "
+            + "density \(String(format: "%.2f", weather.airDensity))."
+        )
+        segments.append(
+            "Wind \(Int(weather.windSpeed.rawValue.rounded())) metres per second "
+            + "from \(Int(weather.windDirection.rawValue.rounded())) degrees."
+        )
+    } else {
+        segments.append("No weather data.")
+    }
+
+    if let road = inputs.road {
+        segments.append("Road \(road)\(inputs.speedLimit.map { ", \($0)" } ?? "").")
+    } else if let limit = inputs.speedLimit {
+        segments.append("\(limit), road unknown.")
+    } else {
+        segments.append("No road data.")
+    }
+
+    if let accuracy = inputs.gpsAccuracy {
+        segments.append("GPS accurate to \(Int(accuracy)) metres.")
+    } else {
+        segments.append("No GPS accuracy reading.")
+    }
+
+    if let battery = inputs.phoneBattery {
+        segments.append("Phone battery \(Int(battery * 100)) percent.")
+    } else {
+        segments.append("No phone battery reading.")
+    }
+    if inputs.lowPowerMode { segments.append("Low power mode is on.") }
+
+    return segments
+}
+
+private func psi(_ reading: TyreReading) -> Int {
+    Int(Iso<KPa, PSI>.convert.get(reading.telemetry.pressure).rawValue.rounded())
+}
+
+private func volts(_ millivolts: Int) -> String {
+    String(format: "%.1f", Double(millivolts) / 1000)
 }

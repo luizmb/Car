@@ -164,6 +164,12 @@ public struct SpeedJarvisShortcuts: AppShortcutsProvider {
             systemImageName: "circle.circle"
         )
         AppShortcut(
+            intent: FullReportIntent(),
+            phrases: ["Full report in \(.applicationName)", "\(.applicationName) full report"],
+            shortTitle: "Full report",
+            systemImageName: "list.bullet.rectangle.portrait"
+        )
+        AppShortcut(
             intent: BikeStatusIntent(),
             phrases: ["Bike status in \(.applicationName)", "\(.applicationName) status"],
             shortTitle: "Status",
@@ -184,6 +190,48 @@ extension RoadLimitDisplay {
         case .nationalOnly:                 "national speed limit"
         case let .known(text, _):           "\(text) miles per hour"
         case let .national(text, _):        "\(text), national"
+        }
+    }
+}
+
+// MARK: - Briefing on demand
+
+/// "Hey Siri, full report in SpeedJarvis" — every provider speaks, including the silent ones.
+///
+/// Deliberately separate from ``BikeStatusIntent``, which reports by exception. This one exists to
+/// expose providers that have quietly stopped working: under an exception report a dead source and
+/// a healthy one are indistinguishable, because both say nothing.
+public struct FullReportIntent: AppIntent {
+    public static let title: LocalizedStringResource = "Full report"
+    public static let description = IntentDescription("Every reading, including the ones with no data.")
+    public static let openAppWhenRun = false
+
+    public init() {}
+
+    public func perform() async throws -> some IntentResult & ProvidesDialog {
+        FlightPlanRequest.shared.request(.full)
+        return .result(dialog: "Reading full report.")
+    }
+}
+
+/// The seam between an intent and the store.
+///
+/// An intent cannot dispatch, so it records a request here and `AppFeature` drains it. Coalesced to
+/// a single pending value rather than queued: two taps in quick succession should produce one
+/// briefing, not two overlapping ones.
+public final class FlightPlanRequest: @unchecked Sendable {
+    public static let shared = FlightPlanRequest()
+    private let lock = NSLock()
+    private var pending: FlightPlanVerbosity?
+
+    public func request(_ verbosity: FlightPlanVerbosity) {
+        lock.withLock { pending = verbosity }
+    }
+
+    public func take() -> FlightPlanVerbosity? {
+        lock.withLock {
+            defer { pending = nil }
+            return pending
         }
     }
 }

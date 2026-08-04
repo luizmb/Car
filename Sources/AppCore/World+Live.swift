@@ -42,6 +42,25 @@ private final class SpeechBox: @unchecked Sendable {
         synth.stopSpeaking(at: .immediate)
         synth.speak(u)
     }
+
+    /// Speaks a sequence with a pause between each item.
+    ///
+    /// Stops only **once**, up front, then enqueues the lot — `AVSpeechSynthesizer` maintains its
+    /// own queue, and calling `stopSpeaking` per item (as `speak` does) would cancel each utterance
+    /// with the next. The gap comes from `postUtteranceDelay` rather than sleeping between calls,
+    /// so the whole briefing is handed over in one go and survives the app being backgrounded
+    /// mid-sentence.
+    func speakSequence(_ texts: [String], gap: TimeInterval) {
+        guard !texts.isEmpty else { return }
+        synth.stopSpeaking(at: .immediate)
+        for text in texts {
+            let u = AVSpeechUtterance(string: text)
+            u.voice = AVSpeechSynthesisVoice(language: "en-GB")
+            u.rate  = 0.65
+            u.postUtteranceDelay = gap
+            synth.speak(u)
+        }
+    }
 }
 
 // MARK: - Tyre configuration
@@ -170,6 +189,9 @@ extension World {
             },
             speak: { text in
                 Publisher.future { DispatchQueue.main.async { speech.speak(text) } }
+            },
+            speakSequence: { texts, gap in
+                Publisher.future { DispatchQueue.main.async { speech.speakSequence(texts, gap: gap) } }
             },
             announceOverLimit: {
                 Publisher.future { DispatchQueue.main.async { speech.speak("over") } }
