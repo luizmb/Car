@@ -87,7 +87,13 @@ public enum AppFeature {
         // here and nothing else changes.
         navigationBehavior()
 
+        // Bluetooth is requested only once location has resolved. Constructing a `CBCentralManager`
+        // *is* the permission request, so chaining the two here is what keeps the system dialogs
+        // sequential and in order of importance — the speedometer's permission first, the
+        // indicator enhancement second. Ungated, the Bluetooth prompt would appear at store
+        // creation, i.e. ahead of the one the app cannot function without.
         <> AppScopes.speedMonitor.behavior(of: SpeedMonitorFeature.self)
+            .on(.action(\.speedMonitor.readyToMonitor), dispatch: .action(\.indicator.start))
 
         <> AppScopes.indicator.behavior(of: IndicatorFeature.self)
     }

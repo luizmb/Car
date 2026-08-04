@@ -52,7 +52,13 @@ final class IndimateCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
         let manager = CBCentralManager(
             delegate: self,
             queue: nil,
-            options: [CBCentralManagerOptionRestoreIdentifierKey: Indimate.restoreID]
+            options: [
+                CBCentralManagerOptionRestoreIdentifierKey: Indimate.restoreID,
+                // Without this, iOS pops its own "Turn On Bluetooth" alert. With state
+                // restoration we can be relaunched in the background, so that alert could land
+                // mid-ride. We report `.poweredOff` and speak it instead.
+                CBCentralManagerOptionShowPowerAlertKey: false
+            ]
         )
         lock.withLock { central = manager }
     }
@@ -102,6 +108,7 @@ final class IndimateCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
     }
 
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        send(.availability(central.state.availability))
         guard central.state == .poweredOn else {
             send(.disconnected)
             return
@@ -169,6 +176,21 @@ final class IndimateCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
         characteristic.value
             .flatMap(parseIndimatePayload)
             .map(send)
+    }
+}
+
+private extension CBManagerState {
+    /// `.resetting` is transient — the stack is coming back, so reporting a problem would make us
+    /// announce a failure that resolves itself a moment later.
+    var availability: BluetoothAvailability {
+        switch self {
+        case .poweredOn:    .ready
+        case .poweredOff:   .poweredOff
+        case .unauthorized: .unauthorized
+        case .unsupported:  .unsupported
+        case .resetting, .unknown: .unknown
+        @unknown default:   .unknown
+        }
     }
 }
 

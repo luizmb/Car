@@ -12,12 +12,48 @@ public enum Side: Sendable, Equatable, Hashable, CaseIterable {
     case right
 }
 
+// MARK: - Bluetooth availability
+
+/// Whether Bluetooth can be used at all, independent of any particular device.
+///
+/// Deliberately a domain enum rather than `CBManagerState`, so the reason a feature is unavailable
+/// can be reasoned about (and spoken) without dragging CoreBluetooth into the domain.
+///
+/// There is no "request Bluetooth permission" API on iOS — constructing a `CBCentralManager` *is*
+/// the request. So permission handling is really a decision about *when* to construct one, which
+/// makes this a state a feature has to hold rather than a call it can make.
+@Prisms
+public enum BluetoothAvailability: Sendable, Equatable {
+    /// Not asked yet, or asked and still waiting for the first state callback.
+    case unknown
+    case ready
+    case unauthorized
+    case poweredOff
+    /// No BLE hardware, or the OS refuses. Not recoverable, so nothing should retry.
+    case unsupported
+}
+
+public extension BluetoothAvailability {
+    /// What to say out loud when this changes. `nil` where speaking would be noise — the interface
+    /// is audio-only, so a silent failure is indistinguishable from a working system.
+    var spokenProblem: String? {
+        switch self {
+        case .ready, .unknown: nil
+        case .unauthorized:    "Bluetooth denied. Indicators unavailable."
+        case .poweredOff:      "Bluetooth is off. Indicators unavailable."
+        case .unsupported:     "Bluetooth unavailable."
+        }
+    }
+}
+
 // MARK: - Indimate events
 
 /// What the Indimate unit tells us. `indicator(nil)` means both lamps are off — which is distinct
 /// from `disconnected`, where we simply have no idea.
 @Prisms
 public enum IndimateEvent: Sendable, Equatable {
+    /// Reported by the central itself rather than the unit — whether we may scan at all.
+    case availability(BluetoothAvailability)
     case connected
     case disconnected
     case indicator(Side?)

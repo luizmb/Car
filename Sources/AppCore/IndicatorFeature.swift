@@ -19,6 +19,12 @@ public enum IndicatorFeature {
     // MARK: State
 
     public struct State: Sendable, Equatable {
+        /// Whether we have decided to ask for Bluetooth yet. The supervisor is gated on this, and
+        /// since constructing a `CBCentralManager` *is* the permission request, this flag is
+        /// precisely "have we shown the dialog". It stays false until location has been resolved,
+        /// so the two system prompts arrive one at a time and in order of importance.
+        public var hasStarted: Bool = false
+        public var bluetooth: BluetoothAvailability = .unknown
         public var isConnected: Bool = false
         /// Which side is ticking right now. `nil` is genuinely "neither" — the unit reports that
         /// explicitly, so it is not an unknown.
@@ -32,11 +38,15 @@ public enum IndicatorFeature {
 
     // MARK: Action
 
-    /// The feature's only input is the unit itself — there is no view and no second source — so
-    /// its action space *is* the event stream. A wrapper case would be ceremony, and `IndimateEvent`
-    /// already carries `@Prisms`, so app-level wiring like `.action(\.indicator.connected)` still
-    /// reads naturally. Introduce a real enum here the day something else can act on this feature.
-    public typealias Action = IndimateEvent
+    /// Two input sources, so this is a real enum rather than an alias for `IndimateEvent`: the unit
+    /// pushes `event`s, and the app tells us when it is our turn to ask for Bluetooth.
+    @Prisms
+    public enum Action: Sendable {
+        /// Location has been resolved — go ahead and request Bluetooth. Constructing the central
+        /// is the request, so this action is what actually triggers the system dialog.
+        case start
+        case event(IndimateEvent)
+    }
 
     // MARK: Environment
 
@@ -72,12 +82,28 @@ public enum IndicatorFeature {
             let before = context.stateBefore
 
             switch action {
-            case .connected:
+            case .start:
+                // Idempotent — the trigger is a location transition, which can recur.
+                guard before?.hasStarted != true else { return .doNothing }
+                return .reduce { $0.hasStarted = true }
+
+            case let .event(.availability(availability)):
+                guard before?.bluetooth != availability else { return .doNothing }
+                return .reduce { $0.bluetooth = availability }
+                    .produce { ctx in
+                        // Say why it is not working. In an audio-only interface, silence is
+                        // indistinguishable from everything being fine.
+                        availability.spokenProblem
+                            .map { ctx.environment.speak($0) |> Effect.fireAndForget }
+                            ?? .empty
+                    }
+
+            case .event(.connected):
                 guard before?.isConnected != true else { return .doNothing }
                 return .reduce { $0.isConnected = true }
                     .produce { ctx in ctx.environment.speak("Indimate connected") |> Effect.fireAndForget }
 
-            case .disconnected:
+            case .event(.disconnected):
                 guard before?.isConnected != false else { return .doNothing }
                 // Silence the tick too: the unit vanishing mid-blink would otherwise leave it
                 // ticking forever, which on a motorway is worse than useless.
@@ -90,7 +116,7 @@ public enum IndicatorFeature {
                         <> (ctx.environment.speak("Indimate disconnected") |> Effect.fireAndForget)
                 }
 
-            case let .indicator(side):
+            case let .event(.indicator(side)):
                 // The unit pushes a frame per blink phase, twice a second. Only transitions
                 // matter — the loop runs at its own rate and is not synced to the real lamps.
                 guard before?.side != side else { return .doNothing }
@@ -100,22 +126,31 @@ public enum IndicatorFeature {
                             ?? (ctx.environment.stopIndicatorLoop() |> Effect.fireAndForget)
                     }
 
-            case let .voltage(millivolts):
+            case let .event(.voltage(millivolts)):
                 return .reduce { $0.millivolts = millivolts }
 
-            case .info:
+            case .event(.info):
                 return .doNothing
             }
         }
     }
 
-    /// The BLE channel stays open for the app's lifetime. The unit is activity-triggered — it does
-    /// not advertise at all until an indicator is first used — so there is nothing to gate this on
-    /// and no point closing it early.
+    /// Gated on `hasStarted`, which is the entire permission workflow: subscribing constructs the
+    /// `CBCentralManager`, and constructing it *is* the system prompt. Leaving this ungated would
+    /// fire the Bluetooth dialog at store creation — ahead of the location dialog, which matters
+    /// far more to an app whose job is reading out speed.
+    ///
+    /// `.unsupported` closes the channel for good: there is no BLE hardware to wait for, so
+    /// retrying would only burn battery. `.poweredOff` and `.unauthorized` deliberately keep it
+    /// open, since both can be resolved from Settings without relaunching.
+    ///
+    /// Once open it stays open for the journey. The unit is activity-triggered — invisible until
+    /// an indicator is first used — so there is nothing earlier to wait for.
     private static func supervisor() -> Behavior<Action, State, Environment> {
-        .supervise { _ in
+        .supervise { state in
             Supervision { env in
-                [env.indimateEvents().asChannel(id: "indimate", id)]
+                guard state.hasStarted, state.bluetooth != .unsupported else { return [] }
+                return [env.indimateEvents().asChannel(id: "indimate", Action.event)]
             }
         }
     }
