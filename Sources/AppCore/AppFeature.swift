@@ -32,6 +32,10 @@ public enum AppFeature {
         /// runs for the whole journey regardless of what is displayed.
         public var indicator: IndicatorFeature.State
 
+        /// Helmet intercom status. Another sibling overlay — the map is the canvas and each
+        /// concern contributes its own pill.
+        public var cardo: CardoFeature.State
+
         /// The pushed screens, each carrying its own state. One source of truth: there is no parallel
         /// table to keep in step, so a route and its data cannot disagree.
         public var path: [StackEntry]
@@ -39,6 +43,7 @@ public enum AppFeature {
         public init() {
             speedMonitor = SpeedMonitorFeature.initialState(with: ())
             indicator = IndicatorFeature.initialState(with: ())
+            cardo = CardoFeature.initialState(with: ())
             path = []
         }
     }
@@ -53,6 +58,7 @@ public enum AppFeature {
         case navigation(NavigationAction)
         case speedMonitor(SpeedMonitorFeature.Action)
         case indicator(IndicatorFeature.Action)
+        case cardo(CardoFeature.Action)
     }
 
     // MARK: - Environment
@@ -99,6 +105,8 @@ public enum AppFeature {
 
         <> AppScopes.indicator.behavior(of: IndicatorFeature.self)
             .on(.action(\.appLaunch), dispatch: .action(\.indicator.launch))
+
+        <> AppScopes.cardo.behavior(of: CardoFeature.self)
     }
 }
 
@@ -179,4 +187,8 @@ public enum AppScopes: Rig {
             \.bluetoothAuthorization, \.indimateEvents,
             \.playIndicatorLoop, \.stopIndicatorLoop, \.speak
         ) >>> IndicatorFeature.Environment.init)
+
+    public static let cardo = ScopeOf<AppScopes>
+        .action(\.cardo).state(\.cardo)
+        .environment(fanout(\.audioRouteChanges, \.cardoEvents) >>> CardoFeature.Environment.init)
 }
