@@ -28,12 +28,17 @@ public enum AppFeature {
         /// The root screen — always on screen, so never optional.
         public var speedMonitor: SpeedMonitorFeature.State
 
+        /// Indicator audio. A sibling of the root screen, not a child of it: it has no view and
+        /// runs for the whole journey regardless of what is displayed.
+        public var indicator: IndicatorFeature.State
+
         /// The pushed screens, each carrying its own state. One source of truth: there is no parallel
         /// table to keep in step, so a route and its data cannot disagree.
         public var path: [StackEntry]
 
         public init() {
             speedMonitor = SpeedMonitorFeature.initialState(with: ())
+            indicator = IndicatorFeature.initialState(with: ())
             path = []
         }
     }
@@ -44,6 +49,7 @@ public enum AppFeature {
     public enum Action: Sendable {
         case navigation(NavigationAction)
         case speedMonitor(SpeedMonitorFeature.Action)
+        case indicator(IndicatorFeature.Action)
     }
 
     // MARK: - Environment
@@ -82,6 +88,8 @@ public enum AppFeature {
         navigationBehavior()
 
         <> AppScopes.speedMonitor.behavior(of: SpeedMonitorFeature.self)
+
+        <> AppScopes.indicator.behavior(of: IndicatorFeature.self)
     }
 }
 
@@ -140,4 +148,10 @@ public enum AppScopes: Rig {
                       \.formatSpeedSpeech, \.formatAltitude, \.formatBearing, \.formatCoordinate,
             into: SpeedMonitorFeature.Environment.init
         ))
+
+    public static let indicator = ScopeOf<AppScopes>
+        .action(\.indicator).state(\.indicator)
+        .environment(fanout(
+            \.indimateEvents, \.playIndicatorLoop, \.stopIndicatorLoop, \.speak
+        ) >>> IndicatorFeature.Environment.init)
 }

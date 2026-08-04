@@ -14,6 +14,12 @@ public struct World: Sendable {
     public let locationUpdates: @Sendable () -> Publisher<LocationUpdate, Never>
     // Road speed
     public let subscribeToRoadSpeed: @Sendable () -> Publisher<RoadInfo, Never>
+    // Indimate (BLE indicator unit on the bike)
+    public let indimateEvents: @Sendable () -> Publisher<IndimateEvent, Never>
+    /// Starts the looping tick for a side, replacing whatever was playing. Runs on its own
+    /// `AVAudioPlayer`, so speech neither stops it nor is stopped by it.
+    public let playIndicatorLoop: @Sendable (Side) -> Publisher<Void, Never>
+    public let stopIndicatorLoop: @Sendable () -> Publisher<Void, Never>
     // Audio
     public let speak: @Sendable (String) -> Publisher<Void, Never>
     public let announceOverLimit: @Sendable () -> Publisher<Void, Never>
