@@ -81,11 +81,19 @@ public struct TyreTelemetry: Sendable, Equatable {
     public let serial: String
     public let pressure: KPa
     public let temperature: Celsius
+    /// Bit 15 of the pressure field: the wheel is turning.
+    ///
+    /// A **hardware** motion signal, and more trustworthy than GPS for the purpose. A stationary
+    /// GPS receiver random-walks, which silently inflates accumulated distance — and distance error
+    /// feeds directly into fuel consumption. A bit that says the wheel is physically rotating gates
+    /// that cleanly, and it also survives tunnels and urban canyons where GPS does not.
+    public let isMoving: Bool
 
-    public init(serial: String, pressure: KPa, temperature: Celsius) {
+    public init(serial: String, pressure: KPa, temperature: Celsius, isMoving: Bool) {
         self.serial = serial
         self.pressure = pressure
         self.temperature = temperature
+        self.isMoving = isMoving
     }
 
     public var psi: PSI { Iso<KPa, PSI>.convert.get(pressure) }
@@ -157,11 +165,19 @@ public func parseTyreAdvertisement(_ data: Data) -> TyreTelemetry? {
     guard bytes.count >= 10, bytes[0] == 0x00, bytes[1] == 0x15, bytes[2] == 0x88 else { return nil }
 
     let serial = bytes[3...5].map { String(format: "%02x", $0) }.joined()
-    let kilopascals = Int(bytes[8]) << 8 | Int(bytes[9])
+    let raw = Int(bytes[8]) << 8 | Int(bytes[9])
+
+    // Bit 15 is a motion flag, not pressure. Every garage capture was of a stationary bike, so it
+    // read 0 and went unnoticed — the first ride reported 33,000 kPa (4,786 psi), which is `0x80E8`
+    // with the flag set over a perfectly ordinary 232 kPa. Left unmasked it also trips a spoken
+    // "pressure high" warning, which is worse than a wrong number on screen.
+    let isMoving = raw & 0x8000 != 0
+    let kilopascals = raw & 0x7FFF
 
     return TyreTelemetry(
         serial: serial,
         pressure: KPa(Double(kilopascals)),
-        temperature: Celsius(Double(bytes[6]))
+        temperature: Celsius(Double(bytes[6])),
+        isMoving: isMoving
     )
 }

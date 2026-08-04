@@ -50,6 +50,36 @@ struct TyreParsingTests {
         }
     }
 
+    @Test("bit 15 of the pressure field is motion, not pressure")
+    func motionFlagIsMasked() {
+        // Captured on the first real ride: 0x80E8. Unmasked it reads 33,000 kPa = 4,786 psi, which
+        // is both nonsense and above the maximum, so it spoke a false "pressure high".
+        guard let moving = parseTyreAdvertisement(payload("00158809" + "7d12" + "1e" + "43" + "80e8")) else {
+            Issue.record("moving payload did not parse")
+            return
+        }
+        #expect(moving.isMoving)
+        #expect(moving.pressure.rawValue == 232)              // 0x00e8
+        #expect(abs(moving.psi.rawValue - 33.65) < 0.05)      // a plausible warm tyre
+
+        // The same sensor stationary, as captured in the garage.
+        guard let parked = parseTyreAdvertisement(payload("001588097d121e4300e5")) else {
+            Issue.record("parked payload did not parse")
+            return
+        }
+        #expect(parked.isMoving == false)
+        #expect(parked.pressure.rawValue == 229)
+    }
+
+    @Test("the flag never corrupts a legitimate high pressure byte")
+    func flagDoesNotEatPressureBits() {
+        // 0x8113 from the ride: flag set over 0x0113 = 275 kPa, whose high byte is a real 0x01.
+        let t = parseTyreAdvertisement(payload("0015880984" + "5f" + "1e" + "45" + "8113"))
+        #expect(t?.isMoving == true)
+        #expect(t?.pressure.rawValue == 275)
+        #expect(abs((t?.psi.rawValue ?? 0) - 39.89) < 0.05)
+    }
+
     @Test("a payload without the FOBO header is rejected rather than misread")
     func rejectsForeignPayloads() {
         #expect(parseTyreAdvertisement(payload("00158809")) == nil)          // too short
@@ -93,8 +123,8 @@ struct TyreThresholdTests {
             TyreSensor(serial: "09845f", position: .rear)
         ]
         let bands: [TyrePosition: TyreThresholds] = [.front: front, .rear: rear]
-        let mine = TyreTelemetry(serial: "097d12", pressure: KPa(229), temperature: Celsius(30))
-        let theirs = TyreTelemetry(serial: "0aee60", pressure: KPa(120), temperature: Celsius(25))
+        let mine = TyreTelemetry(serial: "097d12", pressure: KPa(229), temperature: Celsius(30), isMoving: false)
+        let theirs = TyreTelemetry(serial: "0aee60", pressure: KPa(120), temperature: Celsius(25), isMoving: false)
 
         #expect(resolveTyreReading(mine, sensors: sensors, thresholds: bands)?.position == .front)
         #expect(resolveTyreReading(theirs, sensors: sensors, thresholds: bands) == nil)
