@@ -1,6 +1,7 @@
 import AVFoundation
 import ReactiveConcurrency
 import Core
+import CoreBluetooth
 import CoreLocation
 import AppDomain
 import FP
@@ -111,6 +112,7 @@ extension World {
                     decoder: decoder
                 )
             },
+            bluetoothAuthorization: { CBManager.authorization.domain },
             indimateEvents: { makeIndimateStream(central: indimate) },
             playIndicatorLoop: { side in
                 Publisher.future { DispatchQueue.main.async { ticks.play(side) } }

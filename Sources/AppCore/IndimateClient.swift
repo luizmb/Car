@@ -99,11 +99,22 @@ final class IndimateCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
 
     // MARK: CBCentralManagerDelegate
 
+    /// Called before `centralManagerDidUpdateState` when iOS relaunches us into an existing
+    /// central. Re-adopting the peripheral is not enough: our `CBCharacteristic` objects died with
+    /// the old process, so notifications would never reach us again even though the subscription is
+    /// still live on the peripheral's side. Re-discovering re-attaches the callbacks.
     func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
         let restored = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] ?? []
-        restored.first.map { device in
-            lock.withLock { peripheral = device }
-            device.delegate = self
+        guard let device = restored.first else { return }
+        lock.withLock { peripheral = device }
+        device.delegate = self
+
+        if device.state == .connected {
+            send(.connected)
+            device.discoverServices([Indimate.service])
+        } else {
+            // Still pending from before we were killed — re-assert it so the connect survives.
+            central.connect(device, options: nil)
         }
     }
 
@@ -176,6 +187,18 @@ final class IndimateCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
         characteristic.value
             .flatMap(parseIndimatePayload)
             .map(send)
+    }
+}
+
+extension CBManagerAuthorization {
+    var domain: BluetoothAuthorization {
+        switch self {
+        case .allowedAlways: .allowed
+        case .denied:        .denied
+        case .restricted:    .restricted
+        case .notDetermined: .notDetermined
+        @unknown default:    .notDetermined
+        }
     }
 }
 

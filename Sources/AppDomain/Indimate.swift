@@ -46,6 +46,28 @@ public extension BluetoothAvailability {
     }
 }
 
+// MARK: - Bluetooth authorization
+
+/// Whether the user has been asked for Bluetooth yet, and what they said.
+///
+/// Distinct from ``BluetoothAvailability``: that describes whether the radio can be *used* right
+/// now, this describes whether a **system dialog is still pending**. The distinction is what makes
+/// background relaunch work — once this is anything but `notDetermined`, constructing a central can
+/// no longer put a prompt on screen, so it is safe to do at launch with no UI involved.
+@Prisms
+public enum BluetoothAuthorization: Sendable, Equatable {
+    case notDetermined
+    case denied
+    case restricted
+    case allowed
+}
+
+public extension BluetoothAuthorization {
+    /// True once asking can no longer produce a dialog — so ordering against the location prompt
+    /// stops mattering and the central may be built immediately, including on a background launch.
+    var isDecided: Bool { self != .notDetermined }
+}
+
 // MARK: - Indimate events
 
 /// What the Indimate unit tells us. `indicator(nil)` means both lamps are off — which is distinct

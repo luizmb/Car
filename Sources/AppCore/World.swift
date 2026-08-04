@@ -15,6 +15,9 @@ public struct World: Sendable {
     // Road speed
     public let subscribeToRoadSpeed: @Sendable () -> Publisher<RoadInfo, Never>
     // Indimate (BLE indicator unit on the bike)
+    /// Reads `CBManager.authorization`. A pure snapshot — unlike constructing a central, reading
+    /// this never puts a permission dialog on screen.
+    public let bluetoothAuthorization: @Sendable () -> BluetoothAuthorization
     public let indimateEvents: @Sendable () -> Publisher<IndimateEvent, Never>
     /// Starts the looping tick for a side, replacing whatever was playing. Runs on its own
     /// `AVAudioPlayer`, so speech neither stops it nor is stopped by it.

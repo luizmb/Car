@@ -47,6 +47,9 @@ public enum AppFeature {
 
     /// Flat action space. Navigation is its own case, a sibling of every screen — not a parent wrapper.
     public enum Action: Sendable {
+        /// Dispatched once at store creation — which includes the background relaunches iOS
+        /// performs for BLE state restoration, where no view ever appears.
+        case appLaunch
         case navigation(NavigationAction)
         case speedMonitor(SpeedMonitorFeature.Action)
         case indicator(IndicatorFeature.Action)
@@ -69,7 +72,6 @@ public enum AppFeature {
     // and the root view also needs its router. This is the one place holding the `World`, so it is the
     // one place that can build a router — and the `World` goes no further.
 
-    @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
     @MainActor
     public static func view(store: any StoreType<Action, State>, environment: World) -> some View {
         AppRootView(
@@ -96,6 +98,7 @@ public enum AppFeature {
             .on(.action(\.speedMonitor.readyToMonitor), dispatch: .action(\.indicator.start))
 
         <> AppScopes.indicator.behavior(of: IndicatorFeature.self)
+            .on(.action(\.appLaunch), dispatch: .action(\.indicator.launch))
     }
 }
 
@@ -125,6 +128,21 @@ public extension MainStore {
             behavior: AppFeature.behavior(),
             environment: world
         )
+        .dispatching(.appLaunch)
+    }
+}
+
+private extension Store<AppAction, AppState, World> {
+    /// Fires an action as the store is built. Needed because BLE state restoration relaunches the
+    /// app with no UI at all — nothing driven by `onAppear` will ever run in that case.
+    func dispatching(
+        _ action: AppAction,
+        file: String = #file,
+        function: String = #function,
+        line: UInt = #line
+    ) -> Self {
+        dispatch(action, source: .init(file: file, function: function, line: line))
+        return self
     }
 }
 
@@ -158,6 +176,7 @@ public enum AppScopes: Rig {
     public static let indicator = ScopeOf<AppScopes>
         .action(\.indicator).state(\.indicator)
         .environment(fanout(
-            \.indimateEvents, \.playIndicatorLoop, \.stopIndicatorLoop, \.speak
+            \.bluetoothAuthorization, \.indimateEvents,
+            \.playIndicatorLoop, \.stopIndicatorLoop, \.speak
         ) >>> IndicatorFeature.Environment.init)
 }

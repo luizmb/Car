@@ -42,8 +42,13 @@ public enum IndicatorFeature {
     /// pushes `event`s, and the app tells us when it is our turn to ask for Bluetooth.
     @Prisms
     public enum Action: Sendable {
-        /// Location has been resolved — go ahead and request Bluetooth. Constructing the central
-        /// is the request, so this action is what actually triggers the system dialog.
+        /// Every launch, foreground or background. If Bluetooth has already been decided there is
+        /// no dialog left to order, so the central is built immediately — which is the only reason
+        /// a background relaunch works: iOS restores us with no UI, so nothing else would ever
+        /// trigger `start`.
+        case launch
+        /// Location has been resolved — now it is Bluetooth's turn to ask. Constructing the central
+        /// *is* the request, so this is what actually puts the dialog on screen.
         case start
         case event(IndimateEvent)
     }
@@ -51,17 +56,20 @@ public enum IndicatorFeature {
     // MARK: Environment
 
     public struct Environment: Sendable {
+        public let bluetoothAuthorization: @Sendable () -> BluetoothAuthorization
         public let indimateEvents: @Sendable () -> Publisher<IndimateEvent, Never>
         public let playIndicatorLoop: @Sendable (Side) -> Publisher<Void, Never>
         public let stopIndicatorLoop: @Sendable () -> Publisher<Void, Never>
         public let speak: @Sendable (String) -> Publisher<Void, Never>
 
         public init(
+            bluetoothAuthorization: @escaping @Sendable () -> BluetoothAuthorization,
             indimateEvents: @escaping @Sendable () -> Publisher<IndimateEvent, Never>,
             playIndicatorLoop: @escaping @Sendable (Side) -> Publisher<Void, Never>,
             stopIndicatorLoop: @escaping @Sendable () -> Publisher<Void, Never>,
             speak: @escaping @Sendable (String) -> Publisher<Void, Never>
         ) {
+            self.bluetoothAuthorization = bluetoothAuthorization
             self.indimateEvents = indimateEvents
             self.playIndicatorLoop = playIndicatorLoop
             self.stopIndicatorLoop = stopIndicatorLoop
@@ -82,6 +90,17 @@ public enum IndicatorFeature {
             let before = context.stateBefore
 
             switch action {
+            case .launch:
+                // Reading authorization cannot raise a dialog, so this is safe on a background
+                // launch. If it is already decided we go straight to `start`; if not, we stay put
+                // and let the location chain order the prompts.
+                guard before?.hasStarted != true else { return .doNothing }
+                return .produce { ctx in
+                    ctx.environment.bluetoothAuthorization().isDecided
+                        ? Effect.just(.start)
+                        : .empty
+                }
+
             case .start:
                 // Idempotent — the trigger is a location transition, which can recur.
                 guard before?.hasStarted != true else { return .doNothing }
