@@ -44,16 +44,27 @@ final class ChigeeCentral: NSObject, CBCentralManagerDelegate, @unchecked Sendab
     private let lock = NSLock()
     private var central: CBCentralManager?
     private var emit: (@Sendable (ChigeeEvent) -> Void)?
+    /// Raw observation sink, written straight to the ride log rather than through the store.
+    /// Diagnostic volume (every advertisement, every poll) has no business driving supervision
+    /// reconciliation, and the previous ride proved the store only records *transitions* — which is
+    /// exactly the data that cannot distinguish "signal absent" from "never checked".
+    private var log: (@Sendable (String) -> Void)?
+    private var probe: CBPeripheral?
+    private var pollCount = 0
     private var lastSeen: Date?
     private var reportedPresent = false
     private var hasReported = false
     private var startedAt: Date?
     private var timer: Timer?
 
-    func start(_ emit: @escaping @Sendable (ChigeeEvent) -> Void) {
+    func start(
+        _ emit: @escaping @Sendable (ChigeeEvent) -> Void,
+        log: @escaping @Sendable (String) -> Void
+    ) {
         let running = lock.withLock { () -> Bool in
             guard central == nil else { return true }
             self.emit = emit
+            self.log = log
             return false
         }
         guard !running else { return }
@@ -92,6 +103,11 @@ final class ChigeeCentral: NSObject, CBCentralManagerDelegate, @unchecked Sendab
 
     // MARK: Presence bookkeeping
 
+    private func note(_ event: String, _ fields: [String: Any] = [:]) {
+        let parts = fields.keys.sorted().map { "\($0)=\(fields[$0]!)" }
+        lock.withLock { log }?(([event] + parts).joined(separator: " "))
+    }
+
     private func sighted(via signal: ChigeeSignal) {
         let shouldReport = lock.withLock { () -> Bool in
             lastSeen = Date()
@@ -106,12 +122,27 @@ final class ChigeeCentral: NSObject, CBCentralManagerDelegate, @unchecked Sendab
     /// Polls the system's own connections, then expires presence once the grace period lapses.
     private func tick() {
         let manager = lock.withLock { central }
+        let n = lock.withLock { () -> Int in pollCount += 1; return pollCount }
+
         if let manager, manager.state == .poweredOn {
             let connected = manager.retrieveConnectedPeripherals(withServices: [Chigee.hid])
+            // Every peripheral, not just the first match — a second CHIGEE-named entry would be the
+            // handlebar remote, which is one of the live explanations for presence never expiring.
+            let names = connected.map { "\($0.name ?? "?")|\($0.identifier.uuidString.prefix(8))|\($0.state.rawValue)" }
+            let probeState = lock.withLock { probe?.state.rawValue } ?? -1
+            // Logged on *every* tick, even when empty. Last time the poll left no trace at all, so
+            // "the timer stopped" and "the device kept being seen" were indistinguishable.
+            note("chigee-poll", [
+                "n": n,
+                "found": names.isEmpty ? "-" : names.joined(separator: ";"),
+                "probeState": probeState
+            ])
             if connected.contains(where: { ($0.name ?? "").hasPrefix(Chigee.namePrefix) }) {
                 sighted(via: .systemConnection)
                 return
             }
+        } else {
+            note("chigee-poll", ["n": n, "found": "-", "ble": "off"])
         }
 
         let shouldReportAbsent = lock.withLock { () -> Bool in
@@ -142,8 +173,42 @@ final class ChigeeCentral: NSObject, CBCentralManagerDelegate, @unchecked Sendab
     }
 
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        note("chigee-ble-state", ["state": central.state.rawValue])
         guard central.state == .poweredOn else { return }
         central.scanForPeripherals(withServices: [Chigee.hid], options: nil)
+    }
+
+    func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        note("chigee-probe-connected", ["id": peripheral.identifier.uuidString.prefix(8)])
+    }
+
+    func centralManager(
+        _ central: CBCentralManager,
+        didFailToConnect peripheral: CBPeripheral,
+        error: (any Error)?
+    ) {
+        let ns = error as NSError?
+        note("chigee-probe-failed", [
+            "id": peripheral.identifier.uuidString.prefix(8),
+            "domain": ns?.domain ?? "-", "code": ns?.code ?? 0
+        ])
+        central.connect(peripheral, options: nil)   // stays pending; re-arm
+    }
+
+    func centralManager(
+        _ central: CBCentralManager,
+        didDisconnectPeripheral peripheral: CBPeripheral,
+        error: (any Error)?
+    ) {
+        // The error code is the discriminator: 6 (connectionTimeout) means the peripheral vanished,
+        // 7 means it disconnected us deliberately — the difference between a power cut and
+        // something else taking the link.
+        let ns = error as NSError?
+        note("chigee-probe-disconnected", [
+            "id": peripheral.identifier.uuidString.prefix(8),
+            "domain": ns?.domain ?? "-", "code": ns?.code ?? 0
+        ])
+        central.connect(peripheral, options: nil)   // re-arm so a reconnect is visible too
     }
 
     func centralManager(
@@ -159,16 +224,42 @@ final class ChigeeCentral: NSObject, CBCentralManagerDelegate, @unchecked Sendab
             ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String
             ?? ""
         guard name.hasPrefix(Chigee.namePrefix) else { return }
+
+        // Logged unconditionally, including while parked. Whether this unit advertises with the
+        // ignition off is the single observation that separates "ignition-gated" from
+        // "battery-alive", and it has never been sampled for longer than 54 seconds.
+        let services = (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? [])
+            .map(\.uuidString).joined(separator: ",")
+        note("chigee-adv", [
+            "name": name,
+            "id": peripheral.identifier.uuidString.prefix(8),
+            "rssi": RSSI.intValue,
+            "svc": services.isEmpty ? "-" : services,
+            "connectable": advertisementData[CBAdvertisementDataIsConnectable] as? Bool ?? false
+        ])
         sighted(via: .advertisement)
+
+        // A liveness probe, kept deliberately separate from presence. A pending connect reports
+        // when the link *actually* dies, which polling demonstrably does not — and in the garage it
+        // dropped 22s and 19s after key-off. Whether that was the ignition or the remote
+        // interfering is precisely what this ride decides.
+        if lock.withLock({ probe == nil }) {
+            lock.withLock { probe = peripheral }
+            note("chigee-probe-connecting", ["id": peripheral.identifier.uuidString.prefix(8)])
+            central.connect(peripheral, options: nil)
+        }
     }
 }
 
 // MARK: - Cold publisher
 
-func makeChigeeStream(central: ChigeeCentral) -> Publisher<ChigeeEvent, Never> {
+func makeChigeeStream(
+    central: ChigeeCentral,
+    log: @escaping @Sendable (String) -> Void
+) -> Publisher<ChigeeEvent, Never> {
     Publisher { continuation in
         let (stream, streamContinuation) = AsyncStream<ChigeeEvent>.makeStream()
-        central.start { streamContinuation.yield($0) }
+        central.start({ streamContinuation.yield($0) }, log: log)
         await continuation.yieldAll(stream)
         central.stop()
     }
