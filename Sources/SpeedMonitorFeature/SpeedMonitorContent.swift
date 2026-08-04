@@ -27,7 +27,6 @@ public struct SpeedMonitorContent: View {
             map
 
             VStack(alignment: .leading, spacing: 0) {
-                roadNameStrip
                 HStack {
                     Spacer()
                     limitSignArea
@@ -38,7 +37,10 @@ public struct SpeedMonitorContent: View {
                 footerPanel
             }
         }
-        .ignoresSafeArea(edges: .bottom)
+        // Full bleed. The road name used to sit in a strip up here and collided with the status
+        // overlays; it now lives in the overlay stack with everything else, which leaves the map
+        // free to run edge to edge.
+        .ignoresSafeArea()
     }
 
     // MARK: - Map
@@ -61,36 +63,24 @@ public struct SpeedMonitorContent: View {
             }
         }
         .mapControlVisibility(.hidden)
-    }
-
-    // MARK: - Road name strip (top)
-
-    @ViewBuilder
-    private var roadNameStrip: some View {
-        if let text = roadDisplayText {
-            Text(text)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.primary)
-                .multilineTextAlignment(.leading)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.ultraThinMaterial)
-        }
+        .ignoresSafeArea()
     }
 
     /// "A505 - High Street", "M25", "High Street", or nil. Never shows duplicates.
-    private var roadDisplayText: String? {
-        switch (roadRef, roadName) {
-        case (nil, nil):                        return nil
-        case (let r?, nil):                     return r
-        case (nil, let n?):                     return n
-        case (let r?, let n?) where r == n:     return r
-        case (let r?, let n?):                  return "\(r) - \(n)"
+    ///
+    /// Public so the overlay stack can render it: it used to be a strip inside this view and
+    /// collided with the status bubbles, so it now lives alongside them instead.
+    public static func roadDisplayText(ref: String?, name: String?) -> String? {
+        switch (ref, name) {
+        case (nil, nil):                    nil
+        case (let r?, nil):                 r
+        case (nil, let n?):                 n
+        case (let r?, let n?) where r == n: r
+        case (let r?, let n?):              "\(r) - \(n)"
         }
     }
 
-    // MARK: - Speed limit sign(s) (top-right, below road name)
+    // MARK: - Speed limit sign(s) (top-right)
 
     @ViewBuilder
     private var limitSignArea: some View {

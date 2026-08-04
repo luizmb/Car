@@ -139,7 +139,8 @@ struct FuelLogTests {
             refuels: [fill(12, odometer: 22100, at: 1)],
             reserves: [ReserveEvent(
                 id: UUID(), date: Date(timeIntervalSince1970: 200_000),
-                odometer: Kilometres(22090), latitude: Latitude(51.7), longitude: Longitude(-0.4)
+                odometer: Kilometres(22090), gpsKilometres: Kilometres(248.5),
+                latitude: Latitude(51.7), longitude: Longitude(-0.4)
             )]
         )
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
