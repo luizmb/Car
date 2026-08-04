@@ -1,6 +1,7 @@
 import AppDomain
 import SwiftRex
 import SwiftRexArchitecture
+import SpeedMonitorFeature
 import SwiftRexSwiftUI
 import SwiftUI
 
@@ -31,16 +32,22 @@ public struct AppRootView: View, Routable {
             path: viewStore.binding(.state(\.routes), dispatch: .action(\.navigation.setPath))
         ) {
             router.root()
+                // Hidden on the root so the map runs edge to edge. The road name used to be a
+                // strip inside the speed screen and collided with the status bubbles; it is now
+                // one of them. Pushed screens keep their bar, and their back button with it.
+                .toolbar(.hidden, for: .navigationBar)
                 .navigationDestination(for: AppRoute.self) { route in
                     router.destination(for: route)
                 }
+                .overlay(alignment: .topLeading) { roadBubble }
                 // The first thing to actually use the navigation machinery — until now every
                 // route enum was uninhabited.
                 .overlay(alignment: .bottomTrailing) {
                     VStack(spacing: 10) {
-                        // Full briefing on demand. Tap speaks every provider including the silent
-                        // ones, which is how a quietly-broken source identifies itself; long-press
-                        // gives the short exception report for comparison.
+                        // Two plain buttons rather than tap/long-press on one. A
+                        // `simultaneousGesture(LongPressGesture())` attached to a Button competes
+                        // with the button's own tap recognition and can swallow it outright —
+                        // which is exactly what happened: the full report did nothing on tap.
                         Button {
                             viewStore.dispatch(.speakFlightPlan(.full))
                         } label: {
@@ -49,9 +56,15 @@ public struct AppRootView: View, Routable {
                                 .padding(14)
                                 .glassEffect(.regular, in: .circle)
                         }
-                        .simultaneousGesture(LongPressGesture().onEnded { _ in
+
+                        Button {
                             viewStore.dispatch(.speakFlightPlan(.exceptions))
-                        })
+                        } label: {
+                            Image(systemName: "exclamationmark.bubble")
+                                .font(.title3)
+                                .padding(14)
+                                .glassEffect(.regular, in: .circle)
+                        }
 
                         Button {
                             viewStore.dispatch(.navigation(.push(.fuel)))
@@ -65,6 +78,25 @@ public struct AppRootView: View, Routable {
                     .padding(.trailing, 16)
                     .padding(.bottom, 190)
                 }
+        }
+    }
+
+    /// Road and limit, as a bubble alongside the other status overlays.
+    ///
+    /// It used to be a strip inside the speed screen, where it collided with the status bubbles
+    /// overlaid on top of it. Moving it here makes it one of them, and lets the map run edge to edge.
+    @ViewBuilder
+    private var roadBubble: some View {
+        let display = viewStore.state.speedMonitor.display
+        if let road = SpeedMonitorContent.roadDisplayText(ref: display.roadRef, name: display.roadName) {
+            Text(road)
+                .font(.caption2.bold())
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .glassEffect(.regular, in: .capsule)
+                .fixedSize()
+                .padding(.leading, 12)
+                .padding(.top, 6)
         }
     }
 }

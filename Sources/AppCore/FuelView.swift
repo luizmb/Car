@@ -14,6 +14,29 @@ struct FuelView: View {
 
     var body: some View {
         Form {
+            Picker("", selection: viewStore.binding(.state(\.tab), dispatch: .action(\.setTab))) {
+                ForEach(FuelTab.allCases, id: \.self) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .listRowBackground(Color.clear)
+
+            switch viewStore.state.tab {
+            case .refuel:  refuelTab
+            case .reserve: reserveTab
+            }
+
+            history
+        }
+        .navigationTitle("Fuel")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear { viewStore.dispatch(.appeared) }
+    }
+
+    // MARK: - Refuel
+
+    @ViewBuilder
+    private var refuelTab: some View {
+        Group {
             Section("This fill") {
                 field("Litres", text: viewStore.binding(.state(\.litres), dispatch: .action(\.setLitres)))
                 field("£ / litre", text: viewStore.binding(.state(\.pricePerLitre), dispatch: .action(\.setPrice)))
@@ -50,25 +73,51 @@ struct FuelView: View {
                     Text("Save fill").frame(maxWidth: .infinity)
                 }
                 .disabled(!viewStore.state.isValid)
+            }
 
+            errorSection
+        }
+    }
+
+    // MARK: - Reserve
+
+    /// Its own tab, not a button on the refuel form. Switching to reserve is a different event
+    /// entirely — it records that the main tank ran dry, which is the thing this feature exists to
+    /// prevent, and it shares no fields with a fill.
+    @ViewBuilder
+    private var reserveTab: some View {
+        Group {
+            Section {
+                field("Bike odometer (km)", text: viewStore.binding(
+                    .state(\.reserveOdometer), dispatch: .action(\.setReserveOdometer)
+                ))
+                LabeledContent("Date", value: "recorded automatically")
+                    .font(.caption).foregroundStyle(.secondary)
+                LabeledContent("Position", value: viewStore.state.latitude == nil ? "waiting for GPS" : "captured")
+                    .font(.caption).foregroundStyle(.secondary)
+            } header: {
+                Text("Switched to reserve")
+            } footer: {
+                Text("A sharper calibration point than a brim fill: it pins consumption to the main tank's exact capacity, with no dependence on how carefully the last fill was topped off. Distance is recorded from both GPS and the bike's odometer — GPS is what the maths uses, the odometer is what is being calibrated.")
+            }
+
+            Section {
                 Button(role: .destructive) {
                     viewStore.dispatch(.engageReserve)
                 } label: {
-                    Text("Switched to reserve").frame(maxWidth: .infinity)
+                    Text("Record reserve switch").frame(maxWidth: .infinity)
                 }
-            } footer: {
-                Text("Reserve is a sharper calibration point than a brim fill — it pins consumption to the main tank's exact capacity. It is also the event this whole feature exists to prevent.")
             }
 
-            if let error = viewStore.state.saveError {
-                Section { Text(error).foregroundStyle(.red).font(.caption) }
-            }
-
-            history
+            errorSection
         }
-        .navigationTitle("Fuel")
-        .navigationBarTitleDisplayMode(.inline)
-        .onAppear { viewStore.dispatch(.appeared) }
+    }
+
+    @ViewBuilder
+    private var errorSection: some View {
+        if let error = viewStore.state.saveError {
+            Section { Text(error).foregroundStyle(.red).font(.caption) }
+        }
     }
 
     private func field(_ label: String, text: Binding<String>) -> some View {
@@ -106,6 +155,21 @@ struct FuelView: View {
                         }
                         .font(.caption2).foregroundStyle(.secondary)
                     }
+                }
+            }
+        }
+
+        if !log.reserves.isEmpty {
+            Section("Reserve switches") {
+                ForEach(log.reserves.sorted { $0.date > $1.date }) { event in
+                    HStack {
+                        Text(event.date, format: .dateTime.day().month().hour().minute())
+                        Spacer()
+                        if let odometer = event.odometer {
+                            Text(String(format: "%.0f km", odometer.rawValue))
+                        }
+                    }
+                    .font(.caption.monospacedDigit())
                 }
             }
         }

@@ -26,6 +26,16 @@ public enum FuelGrade: String, Sendable, Equatable, CaseIterable, Codable {
     public var label: String { rawValue }
 }
 
+/// Switching to reserve is not a refuel — different data, different meaning, different moment —
+/// so the two are separate tabs rather than a destructive button on a form about something else.
+@Prisms
+public enum FuelTab: String, Sendable, Equatable, CaseIterable, Codable {
+    case refuel = "Refuel"
+    case reserve = "Reserve"
+
+    public var label: String { rawValue }
+}
+
 // MARK: - Refuel record
 
 /// One visit to a pump.
@@ -85,17 +95,25 @@ public struct RefuelRecord: Sendable, Equatable, Codable, Identifiable {
 public struct ReserveEvent: Sendable, Equatable, Codable, Identifiable {
     public let id: UUID
     public let date: Date
+    /// The bike's own reading, for the odometer-drift comparison.
     public let odometer: Kilometres?
+    /// Distance measured by the app since the last fill.
+    ///
+    /// Recorded *alongside* the odometer rather than instead of it. This is the number the fuel
+    /// maths will actually use — the odometer shows whole kilometres and is the thing being
+    /// calibrated, not the thing to calibrate against.
+    public let gpsKilometres: Kilometres?
     public let latitude: Latitude?
     public let longitude: Longitude?
 
     public init(
-        id: UUID, date: Date, odometer: Kilometres?,
+        id: UUID, date: Date, odometer: Kilometres?, gpsKilometres: Kilometres? = nil,
         latitude: Latitude?, longitude: Longitude?
     ) {
         self.id = id
         self.date = date
         self.odometer = odometer
+        self.gpsKilometres = gpsKilometres
         self.latitude = latitude
         self.longitude = longitude
     }

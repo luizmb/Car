@@ -36,6 +36,12 @@ public enum FuelFeature {
         public var latitude: Latitude?
         public var longitude: Longitude?
 
+        /// The reserve tab keeps its own odometer field. Switching to reserve is not a refuel and
+        /// shares nothing with one but the log it lands in, so a half-typed fill must not leak
+        /// into a reserve record or vice versa.
+        public var reserveOdometer: String = ""
+        public var tab: FuelTab = .refuel
+
         public var log: FuelLog = .empty
         public var saveError: String?
 
@@ -57,6 +63,8 @@ public enum FuelFeature {
     @Prisms
     public enum Action: Sendable {
         case appeared
+        case setTab(FuelTab)
+        case setReserveOdometer(String)
         case setLitres(String)
         case setPrice(String)
         case setOdometer(String)
@@ -117,6 +125,8 @@ public enum FuelFeature {
             case let .setLitres(value):        return .reduce { $0.litres = value }
             case let .setPrice(value):         return .reduce { $0.pricePerLitre = value }
             case let .setOdometer(value):      return .reduce { $0.odometer = value }
+            case let .setReserveOdometer(value): return .reduce { $0.reserveOdometer = value }
+            case let .setTab(tab):             return .reduce { $0.tab = tab }
             case let .setGrade(grade):         return .reduce { $0.grade = grade }
             case let .setFilledToBrim(value):  return .reduce { $0.filledToBrim = value }
             case let .setPosition(lat, lon):
@@ -155,11 +165,12 @@ public enum FuelFeature {
 
             case .saved:
                 return .reduce {
-                    // Clear the form but keep the log, so a second fill can be entered immediately
+                    // Clear the forms but keep the log, so another entry can follow immediately
                     // and the history stays on screen as confirmation it landed.
                     $0.litres = ""
                     $0.pricePerLitre = ""
                     $0.odometer = ""
+                    $0.reserveOdometer = ""
                     $0.saveError = nil
                 }
                 .produce { ctx in
@@ -178,7 +189,8 @@ public enum FuelFeature {
                     let event = ReserveEvent(
                         id: ctx.environment.newID(),
                         date: ctx.environment.now(),
-                        odometer: Double(state.odometer).map { Kilometres($0) },
+                        odometer: Double(state.reserveOdometer).map { Kilometres($0) },
+                        gpsKilometres: nil,
                         latitude: state.latitude,
                         longitude: state.longitude
                     )

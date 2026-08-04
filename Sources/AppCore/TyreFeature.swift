@@ -107,12 +107,6 @@ struct TyreStatusView: View {
             ForEach(TyrePosition.allCases, id: \.self) { position in
                 row(position)
             }
-            // Hardware wheel rotation — steadier than GPS, which random-walks when parked.
-            if viewStore.state.readings.values.contains(where: \.telemetry.isMoving) {
-                Text("wheels turning")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.green)
-            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
@@ -133,6 +127,16 @@ struct TyreStatusView: View {
                 Text(formatTemperature(reading.telemetry.temperature))
                     .font(.system(size: 9).monospacedDigit())
                     .foregroundStyle(.secondary)
+                // Per wheel rather than a single combined line: a hardware rotation signal beats
+                // GPS for movement, and per-wheel makes a stuck or unreported sensor obvious.
+                Text(reading.telemetry.isMoving ? "rolling" : "still")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(reading.telemetry.isMoving ? .green : .secondary)
+                // Byte 7 — the last undecoded field. Shown so it can be watched against the FOBO
+                // app's battery indicator; the obvious battery reading does not fit the evidence.
+                Text("b\(reading.telemetry.statusByte)")
+                    .font(.system(size: 9).monospacedDigit())
+                    .foregroundStyle(.tertiary)
             } else {
                 // These sleep between broadcasts, so "not heard yet" is a real state and must not
                 // be rendered as zero.

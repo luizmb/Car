@@ -81,6 +81,12 @@ public struct TyreTelemetry: Sendable, Equatable {
     public let serial: String
     public let pressure: KPa
     public let temperature: Celsius
+    /// Byte 7, undecoded. The obvious reading — battery percentage — does not survive the
+    /// evidence: the FOBO app showed one bike's pair full and the other's half, yet the values were
+    /// 69/67 and 193/64, and 64 cannot be "half" while 67 is "full". Surfaced raw rather than
+    /// guessed at, so it can be watched against the app's own battery indicator over time. It is
+    /// the last undecoded field in the payload.
+    public let statusByte: Int
     /// Bit 15 of the pressure field: the wheel is turning.
     ///
     /// A **hardware** motion signal, and more trustworthy than GPS for the purpose. A stationary
@@ -89,11 +95,15 @@ public struct TyreTelemetry: Sendable, Equatable {
     /// that cleanly, and it also survives tunnels and urban canyons where GPS does not.
     public let isMoving: Bool
 
-    public init(serial: String, pressure: KPa, temperature: Celsius, isMoving: Bool) {
+    public init(
+        serial: String, pressure: KPa, temperature: Celsius,
+        isMoving: Bool, statusByte: Int = 0
+    ) {
         self.serial = serial
         self.pressure = pressure
         self.temperature = temperature
         self.isMoving = isMoving
+        self.statusByte = statusByte
     }
 
     public var psi: PSI { Iso<KPa, PSI>.convert.get(pressure) }
@@ -178,6 +188,7 @@ public func parseTyreAdvertisement(_ data: Data) -> TyreTelemetry? {
         serial: serial,
         pressure: KPa(Double(kilopascals)),
         temperature: Celsius(Double(bytes[6])),
-        isMoving: isMoving
+        isMoving: isMoving,
+        statusByte: Int(bytes[7])
     )
 }

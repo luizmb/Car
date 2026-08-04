@@ -52,7 +52,22 @@ private final class SpeechBox: @unchecked Sendable {
     /// mid-sentence.
     func speakSequence(_ texts: [String], gap: TimeInterval) {
         guard !texts.isEmpty else { return }
-        synth.stopSpeaking(at: .immediate)
+        // Only stop if something is actually speaking, and let the stop settle before enqueuing.
+        // `stopSpeaking` is asynchronous, and utterances submitted while the synthesiser is still
+        // tearing down are silently dropped — a stop issued when nothing was playing could
+        // therefore swallow the entire briefing.
+        if synth.isSpeaking {
+            synth.stopSpeaking(at: .immediate)
+            let queued = texts
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                self?.enqueue(queued, gap: gap)
+            }
+            return
+        }
+        enqueue(texts, gap: gap)
+    }
+
+    private func enqueue(_ texts: [String], gap: TimeInterval) {
         for text in texts {
             let u = AVSpeechUtterance(string: text)
             u.voice = AVSpeechSynthesisVoice(language: "en-GB")
