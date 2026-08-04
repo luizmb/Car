@@ -39,6 +39,13 @@ public enum AppFeature {
         /// Ignition state, from the CarPlay head unit — the only dependable bike-on signal here.
         public var chigee: ChigeeFeature.State
 
+        /// Tyre pressure and temperature. Passive, and independent of the bike being on.
+        public var tyres: TyreFeature.State
+
+        /// Barometer, inertial motion and activity classification. Collection-first: its job is to
+        /// put raw samples into the ride log so inference can be worked out offline.
+        public var motion: MotionFeature.State
+
         /// The pushed screens, each carrying its own state. One source of truth: there is no parallel
         /// table to keep in step, so a route and its data cannot disagree.
         public var path: [StackEntry]
@@ -48,6 +55,8 @@ public enum AppFeature {
             indicator = IndicatorFeature.initialState(with: ())
             cardo = CardoFeature.initialState(with: ())
             chigee = ChigeeFeature.initialState(with: ())
+            tyres = TyreFeature.initialState(with: ())
+            motion = MotionFeature.initialState(with: ())
             path = []
         }
     }
@@ -64,6 +73,8 @@ public enum AppFeature {
         case indicator(IndicatorFeature.Action)
         case cardo(CardoFeature.Action)
         case chigee(ChigeeFeature.Action)
+        case tyres(TyreFeature.Action)
+        case motion(MotionFeature.Action)
     }
 
     // MARK: - Environment
@@ -98,7 +109,16 @@ public enum AppFeature {
         // feature's row tells you everything it participates in, without a separate bridge to cross-check.
         // A screen that navigates gains a `.on(.action(\.x.tapped), dispatch: .action(\.navigation.push.y))`
         // here and nothing else changes.
-        navigationBehavior()
+        // Every observation reaches the store as an action, so one handler captures GPS, road
+        // info, Indimate, Cardo, CHIGEE and tyres in true interleaved order — the whole raw
+        // timeline, with no per-source wiring. Temporary, until the real recorder exists.
+        Behavior<AppAction, AppState, World>.handle { action, _ in
+            .produce { ctx in
+                ctx.environment.logAction(String(describing: action)) |> Effect.fireAndForget
+            }
+        }
+
+        <> navigationBehavior()
 
         // Bluetooth is requested only once location has resolved. Constructing a `CBCentralManager`
         // *is* the permission request, so chaining the two here is what keeps the system dialogs
@@ -114,6 +134,10 @@ public enum AppFeature {
         <> AppScopes.cardo.behavior(of: CardoFeature.self)
 
         <> AppScopes.chigee.behavior(of: ChigeeFeature.self)
+
+        <> AppScopes.tyres.behavior(of: TyreFeature.self)
+
+        <> AppScopes.motion.behavior(of: MotionFeature.self)
     }
 }
 
@@ -202,4 +226,15 @@ public enum AppScopes: Rig {
     public static let chigee = ScopeOf<AppScopes>
         .action(\.chigee).state(\.chigee)
         .environment(\.chigeeEvents >>> ChigeeFeature.Environment.init)
+
+    public static let tyres = ScopeOf<AppScopes>
+        .action(\.tyres).state(\.tyres)
+        .environment(fanout(
+            keypaths: \.tyreReadings, \.speak, \.formatPressure, \.formatTemperature,
+            into: TyreFeature.Environment.init
+        ))
+
+    public static let motion = ScopeOf<AppScopes>
+        .action(\.motion).state(\.motion)
+        .environment(fanout(\.barometer, \.motion, \.motionActivity) >>> MotionFeature.Environment.init)
 }

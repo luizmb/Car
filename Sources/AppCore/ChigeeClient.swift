@@ -46,6 +46,8 @@ final class ChigeeCentral: NSObject, CBCentralManagerDelegate, @unchecked Sendab
     private var emit: (@Sendable (ChigeeEvent) -> Void)?
     private var lastSeen: Date?
     private var reportedPresent = false
+    private var hasReported = false
+    private var startedAt: Date?
     private var timer: Timer?
 
     func start(_ emit: @escaping @Sendable (ChigeeEvent) -> Void) {
@@ -71,6 +73,7 @@ final class ChigeeCentral: NSObject, CBCentralManagerDelegate, @unchecked Sendab
         lock.withLock {
             central = manager
             timer = poll
+            startedAt = Date()
         }
     }
 
@@ -94,6 +97,7 @@ final class ChigeeCentral: NSObject, CBCentralManagerDelegate, @unchecked Sendab
             lastSeen = Date()
             guard !reportedPresent else { return false }
             reportedPresent = true
+            hasReported = true
             return true
         }
         if shouldReport { lock.withLock { emit }?(.present(via: signal)) }
@@ -111,10 +115,22 @@ final class ChigeeCentral: NSObject, CBCentralManagerDelegate, @unchecked Sendab
         }
 
         let shouldReportAbsent = lock.withLock { () -> Bool in
-            guard reportedPresent, let seen = lastSeen else { return false }
-            guard Date().timeIntervalSince(seen) > Chigee.absenceGrace else { return false }
-            reportedPresent = false
-            return true
+            let now = Date()
+            // Presence went stale.
+            if reportedPresent, let seen = lastSeen, now.timeIntervalSince(seen) > Chigee.absenceGrace {
+                reportedPresent = false
+                hasReported = true
+                return true
+            }
+            // Never saw anything at all since starting. Without this the UI sits on "Unknown"
+            // forever whenever the app opens away from the bike — which is most of the time.
+            // Silence for the whole grace period is a real answer: the ignition is off.
+            if !hasReported, let started = startedAt,
+               now.timeIntervalSince(started) > Chigee.absenceGrace {
+                hasReported = true
+                return true
+            }
+            return false
         }
         if shouldReportAbsent { lock.withLock { emit }?(.absent) }
     }

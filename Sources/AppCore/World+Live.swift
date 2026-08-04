@@ -43,6 +43,23 @@ private final class SpeechBox: @unchecked Sendable {
     }
 }
 
+// MARK: - Tyre configuration
+//
+// Serials and bands read off the FOBO app for "Milky Way". The other bike parks in the same garage
+// and broadcasts on the same scan; its sensors (serial prefix `0a`) are simply not listed, so they
+// are discarded rather than filtered by signal strength — which measured −99 to −59 dBm on a single
+// sensor and is far too noisy to sort tyres by.
+
+private let milkyWaySensors: [TyreSensor] = [
+    TyreSensor(serial: "097d12", position: .front),
+    TyreSensor(serial: "09845f", position: .rear)
+]
+
+private let milkyWayBands: [TyrePosition: TyreThresholds] = [
+    .front: TyreThresholds(minimum: PSI(29), recommended: PSI(31), maximum: PSI(39)),
+    .rear:  TyreThresholds(minimum: PSI(33), recommended: PSI(36), maximum: PSI(45))
+]
+
 // MARK: - Live world
 
 extension World {
@@ -53,6 +70,9 @@ extension World {
         let indimate  = IndimateCentral()
         let cardo     = CardoCentral()
         let chigee    = ChigeeCentral()
+        let tyres     = TyreCentral()
+        let rideLog   = ActionLogBox()
+        let motionBox = MotionBox()
         let ticks     = IndicatorAudioBox()
 
         // Locale captured once — all formatters below are pure closures over this snapshot
@@ -122,9 +142,21 @@ extension World {
             stopIndicatorLoop: {
                 Publisher.future { DispatchQueue.main.async { ticks.stop() } }
             },
+            tyreReadings: {
+                makeTyreStream(central: tyres)
+                    .compactMap { resolveTyreReading($0, sensors: milkyWaySensors, thresholds: milkyWayBands) }
+            },
+            formatPressure: { numFmt1dp.format($0.rawValue) + " psi" },
+            formatTemperature: { numFmt0dp.format($0.rawValue) + "°C" },
             chigeeEvents: { makeChigeeStream(central: chigee) },
             cardoEvents: { makeCardoStream(central: cardo) },
             audioRouteChanges: { makeAudioRouteStream() },
+            barometer: { makeBarometerStream(box: motionBox) },
+            motion: { makeMotionStream(box: motionBox) },
+            motionActivity: { makeActivityStream(box: motionBox) },
+            logAction: { line in
+                Publisher.future { rideLog.append(line) }
+            },
             speak: { text in
                 Publisher.future { DispatchQueue.main.async { speech.speak(text) } }
             },
