@@ -19,7 +19,6 @@ import SwiftUI
 ///
 /// Nothing is cached. `destination(for:)` runs per visible route, projecting the child's store and
 /// narrowing `World` on the spot — a screen off the stack has no store, no view and no environment.
-@available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
 @MainActor
 public struct AppRouter {
     private let store: MainStoreType
@@ -31,8 +30,19 @@ public struct AppRouter {
     }
 
     /// The root screen — always on screen, so a total lift rather than an affine one.
+    ///
+    /// The indicator pill is composed here rather than built into the speed screen: they are
+    /// sibling features in app state, and neither should have to know the other exists. When
+    /// CHIGEE gets the same treatment it stacks alongside without either view changing.
+    ///
+    /// It floats over the map rather than insetting it, so the map keeps its full height.
     public func root() -> some View {
         AppScopes.speedMonitor.view(of: SpeedMonitorFeature.self, from: store, world: world)
+            .overlay(alignment: .topLeading) {
+                AppScopes.indicator.view(of: IndicatorFeature.self, from: store, world: world)
+                    .padding(.leading, 12)
+                    .padding(.top, 6)
+            }
     }
 
     /// The screen for `route`. `@ViewBuilder` keeps the concrete per-route types without `AnyView`.
@@ -54,7 +64,6 @@ public struct AppRouter {
 ///
 /// `transpose()` holds the last value steady while SwiftUI animates the pop, so a screen never blanks on
 /// its way out; the outer `nil` then tears it down once the element is gone.
-@available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
 extension Relay.Scope where
     ActionStrategy: Relay.ActionAxis.EmbedsProtocol,
     StateStrategy: Relay.StateAxis.WritesProtocol,

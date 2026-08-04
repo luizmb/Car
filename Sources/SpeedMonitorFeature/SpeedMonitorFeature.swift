@@ -80,7 +80,6 @@ public enum SpeedMonitorFeature {
         case locationReady(LocationUpdate, State.Display)
         // Road speed
         case roadSpeedChanged(RoadInfo)
-        case _noop
     }
 
     // MARK: - Environment
@@ -213,7 +212,7 @@ public enum SpeedMonitorFeature {
             case .start:
                 guard context.stateBefore?.authorizationPhase == .unknown else { return .doNothing }
                 return .reduce { $0.authorizationPhase = .requesting }
-                    .produce { ctx in ctx.environment.requestAuthorization() |> asNoopEffect }
+                    .produce { ctx in ctx.environment.requestAuthorization() |> Effect.fireAndForget }
 
             // ── 2. Authorization status update ────────────────────────────────────
             case let .authorizationChanged(update):
@@ -272,9 +271,6 @@ public enum SpeedMonitorFeature {
                         } ?? .empty
                         return announce <> refresh
                     }
-
-            case ._noop:
-                return .doNothing
             }
         }
     }
@@ -306,10 +302,6 @@ public enum SpeedMonitorFeature {
 
 // MARK: - Effect helpers
 
-private let asNoopEffect: @Sendable (Publisher<Void, Never>) -> Effect<SpeedMonitorFeature.Action> =
-    { $0.asEffect { (_: Void) in SpeedMonitorFeature.Action._noop } }
-
-
 // MARK: - Audio
 
 /// Announces the road: its limit, its name, or both — "thirty zone, High Street".
@@ -328,7 +320,7 @@ private func announceRoadInfo(
     }
     let spoken = [limitText, info.roadLabel].compactMap(id).joined(separator: ", ")
     guard !spoken.isEmpty else { return .empty }
-    return spoken |> (env.speak >>> asNoopEffect)
+    return spoken |> (env.speak >>> Effect.fireAndForget)
 }
 
 /// All audio effects for a speed change: TTS up, k down, beeps — combined.
@@ -355,7 +347,7 @@ private func ttsUp(
     env: SpeedMonitorFeature.Environment
 ) -> Effect<SpeedMonitorFeature.Action> {
     thresholds.first { prevMph < $0 && newMph >= $0 }
-        .map { $0 |> (env.formatSpeedSpeech >>> env.speak >>> asNoopEffect) }
+        .map { $0 |> (env.formatSpeedSpeech >>> env.speak >>> Effect.fireAndForget) }
     ?? .empty
 }
 
@@ -369,10 +361,10 @@ private func kDown(
     switch roadLimit {
     case .value(let limit):
         guard prevMph >= limit && newMph < limit else { return .empty }
-        return env.speak("k") |> asNoopEffect
+        return env.speak("k") |> Effect.fireAndForget
     case .unknown, .national:
         return thresholds.first { prevMph >= $0 && newMph < $0 }
-            .map { _ in env.speak("k") |> asNoopEffect }
+            .map { _ in env.speak("k") |> Effect.fireAndForget }
         ?? .empty
     }
 }
@@ -390,9 +382,9 @@ private func beeps(
     case .unknown:          return .empty
     }
     let up   = beepLimits.first { prevMph < $0 && newMph >= $0 }
-        .map { _ in env.announceOverLimit()  |> asNoopEffect } ?? .empty
+        .map { _ in env.announceOverLimit()  |> Effect<SpeedMonitorFeature.Action>.fireAndForget } ?? .empty
     let down = beepLimits.first { prevMph >= $0 && newMph < $0 }
-        .map { _ in env.announceUnderLimit() |> asNoopEffect } ?? .empty
+        .map { _ in env.announceUnderLimit() |> Effect<SpeedMonitorFeature.Action>.fireAndForget } ?? .empty
     return up <> down
 }
 

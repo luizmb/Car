@@ -61,7 +61,8 @@ let package = Package(
                 .product(name: "Core",          package: "NetworkTools"),
                 .product(name: "NetworkClient", package: "NetworkTools"),
             ] + sharedFP + sharedSwiftRex + sharedRC,
-            path: "Sources/AppCore"
+            path: "Sources/AppCore",
+            resources: [.process("Resources")]
         ),
 
         // MARK: - Tests

@@ -17,7 +17,6 @@ import SwiftUI
 ///
 /// Holding the router rather than reading it from `@Environment` is deliberate: it is deterministic
 /// across sheet and cover boundaries, exactly where SwiftUI's environment propagation is not.
-@available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
 public struct AppRootView: View, Routable {
     let viewStore: ViewStore<AppState, AppAction>
     public let router: AppRouter

@@ -1,6 +1,7 @@
 import AVFoundation
 import ReactiveConcurrency
 import Core
+import CoreBluetooth
 import CoreLocation
 import AppDomain
 import FP
@@ -25,6 +26,10 @@ private final class SpeechBox: @unchecked Sendable {
     nonisolated(unsafe) let synth = AVSpeechSynthesizer()
 
     init() {
+        // `.duckOthers` (not `.mixWithOthers`) is what lets Music and Apple Maps keep playing
+        // while dipping under our audio — the arrangement the rider already runs four apps on.
+        // The session is activated once and never deactivated: `setActive(false)` would cut the
+        // indicator loop as well as speech, and the app spends whole journeys backgrounded.
         try? AVAudioSession.sharedInstance().setCategory(.playback, options: [.duckOthers])
         try? AVAudioSession.sharedInstance().setActive(true)
     }
@@ -45,6 +50,8 @@ extension World {
         let loc       = LocationBox()
         let roadSpeed = RoadSpeedBox(minDistance: Meters(300), minTime: 20)
         let speech    = SpeechBox()
+        let indimate  = IndimateCentral()
+        let ticks     = IndicatorAudioBox()
 
         // Locale captured once — all formatters below are pure closures over this snapshot
         let locale     = Locale.current
@@ -104,6 +111,14 @@ extension World {
                     httpClient: httpClient,
                     decoder: decoder
                 )
+            },
+            bluetoothAuthorization: { CBManager.authorization.domain },
+            indimateEvents: { makeIndimateStream(central: indimate) },
+            playIndicatorLoop: { side in
+                Publisher.future { DispatchQueue.main.async { ticks.play(side) } }
+            },
+            stopIndicatorLoop: {
+                Publisher.future { DispatchQueue.main.async { ticks.stop() } }
             },
             speak: { text in
                 Publisher.future { DispatchQueue.main.async { speech.speak(text) } }
