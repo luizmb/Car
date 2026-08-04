@@ -36,6 +36,9 @@ public enum AppFeature {
         /// concern contributes its own pill.
         public var cardo: CardoFeature.State
 
+        /// Ignition state, from the CarPlay head unit — the only dependable bike-on signal here.
+        public var chigee: ChigeeFeature.State
+
         /// The pushed screens, each carrying its own state. One source of truth: there is no parallel
         /// table to keep in step, so a route and its data cannot disagree.
         public var path: [StackEntry]
@@ -44,6 +47,7 @@ public enum AppFeature {
             speedMonitor = SpeedMonitorFeature.initialState(with: ())
             indicator = IndicatorFeature.initialState(with: ())
             cardo = CardoFeature.initialState(with: ())
+            chigee = ChigeeFeature.initialState(with: ())
             path = []
         }
     }
@@ -59,6 +63,7 @@ public enum AppFeature {
         case speedMonitor(SpeedMonitorFeature.Action)
         case indicator(IndicatorFeature.Action)
         case cardo(CardoFeature.Action)
+        case chigee(ChigeeFeature.Action)
     }
 
     // MARK: - Environment
@@ -107,6 +112,8 @@ public enum AppFeature {
             .on(.action(\.appLaunch), dispatch: .action(\.indicator.launch))
 
         <> AppScopes.cardo.behavior(of: CardoFeature.self)
+
+        <> AppScopes.chigee.behavior(of: ChigeeFeature.self)
     }
 }
 
@@ -191,4 +198,8 @@ public enum AppScopes: Rig {
     public static let cardo = ScopeOf<AppScopes>
         .action(\.cardo).state(\.cardo)
         .environment(fanout(\.audioRouteChanges, \.cardoEvents) >>> CardoFeature.Environment.init)
+
+    public static let chigee = ScopeOf<AppScopes>
+        .action(\.chigee).state(\.chigee)
+        .environment(\.chigeeEvents >>> ChigeeFeature.Environment.init)
 }
