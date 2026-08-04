@@ -107,6 +107,12 @@ struct TyreStatusView: View {
             ForEach(TyrePosition.allCases, id: \.self) { position in
                 row(position)
             }
+            // Hardware wheel rotation — steadier than GPS, which random-walks when parked.
+            if viewStore.state.readings.values.contains(where: \.telemetry.isMoving) {
+                Text("wheels turning")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.green)
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
