@@ -118,26 +118,29 @@ public enum AppFeature {
             }
         }
 
-        <> navigationBehavior()
-
-        // Bluetooth is requested only once location has resolved. Constructing a `CBCentralManager`
-        // *is* the permission request, so chaining the two here is what keeps the system dialogs
-        // sequential and in order of importance — the speedometer's permission first, the
-        // indicator enhancement second. Ungated, the Bluetooth prompt would appear at store
-        // creation, i.e. ahead of the one the app cannot function without.
-        <> AppScopes.speedMonitor.behavior(of: SpeedMonitorFeature.self)
-            .on(.action(\.speedMonitor.readyToMonitor), dispatch: .action(\.indicator.start))
-
-        <> AppScopes.indicator.behavior(of: IndicatorFeature.self)
-            .on(.action(\.appLaunch), dispatch: .action(\.indicator.launch))
-
-        <> AppScopes.cardo.behavior(of: CardoFeature.self)
-
-        <> AppScopes.chigee.behavior(of: ChigeeFeature.self)
-
-        <> AppScopes.tyres.behavior(of: TyreFeature.self)
-
-        <> AppScopes.motion.behavior(of: MotionFeature.self)
+        // Publish a snapshot for App Intents. Siri constructs intents itself and cannot be handed
+        // a store, so state is mirrored into a plain value they can read — including when the app
+        // is suspended, where a stale answer beats a hang.
+        <> Behavior<AppAction, AppState, World>.handle { _, context in
+            guard let state = context.stateBefore else { return .doNothing }
+            return .produce { ctx in
+                let display = state.speedMonitor.display
+                let tyres = state.tyres.readings.reduce(
+                    into: [TyrePosition: (psi: String, status: TyreStatus)]()
+                ) {
+                    $0[$1.key] = (ctx.environment.formatPressure($1.value.telemetry.psi), $1.value.status)
+                }
+                IntentSnapshot.shared.update(
+                    speed: display.speedText,
+                    limit: display.roadLimitDisplay.spokenLimit,
+                    road: display.roadRef ?? display.roadName,
+                    tyres: tyres,
+                    ignition: state.chigee.isIgnitionOn,
+                    indimate: state.indicator.isConnected
+                )
+                return .empty
+            }
+        }
     }
 }
 
