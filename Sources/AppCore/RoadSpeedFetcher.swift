@@ -31,6 +31,8 @@ final class RoadSpeedBox: @unchecked Sendable {
 final class RoadSpeedLocationDelegate: NSObject, CLLocationManagerDelegate, @unchecked Sendable {
     nonisolated(unsafe) var continuation: AsyncStream<LocationUpdate>.Continuation?
     nonisolated(unsafe) var lastUpdateTime: Date = .distantPast
+    /// Set by ``forceRefresh(box:)``. The next fix restores the distance filter it lifted.
+    nonisolated(unsafe) var restoreDistanceAfterNextFix: Double?
     private let minTime: TimeInterval
 
     init(minTime: TimeInterval) { self.minTime = minTime }
@@ -50,8 +52,36 @@ final class RoadSpeedLocationDelegate: NSObject, CLLocationManagerDelegate, @unc
             Date().timeIntervalSince(lastUpdateTime) >= minTime
         else { return }
         lastUpdateTime = Date()
+        // A forced refresh lifted the distance filter to get this one fix promptly; put it back so
+        // the next lookup is throttled normally again.
+        if let distance = restoreDistanceAfterNextFix {
+            manager.distanceFilter = distance
+            restoreDistanceAfterNextFix = nil
+        }
         continuation?.yield(LocationUpdate(location))
     }
+}
+
+// MARK: - Forced refresh
+
+/// Brings the next Overpass lookup forward to the next GPS fix, about a second away.
+///
+/// Needed because completing a turn is a *semantic* road change that the throttle cannot see. The
+/// throttle is a 300 m distance filter plus a 20 s gate — sensible for riding straight, useless at a
+/// junction, where it means the new road is not fetched until 300 m later. At 20 mph that is
+/// thirty-three seconds of announcing nothing while sitting on a road whose limit may have changed.
+///
+/// Both gates are lifted rather than one: clearing `lastUpdateTime` alone achieves nothing, because
+/// no fix is delivered at all until the distance filter is satisfied.
+///
+/// `requestLocation()` is deliberately not used — it is documented as incompatible with an active
+/// `startUpdatingLocation`, which this manager relies on.
+func forceRoadRefresh(box: RoadSpeedBox) {
+    box.delegate.lastUpdateTime = .distantPast
+    if box.delegate.restoreDistanceAfterNextFix == nil {
+        box.delegate.restoreDistanceAfterNextFix = box.manager.distanceFilter
+    }
+    box.manager.distanceFilter = kCLDistanceFilterNone
 }
 
 // MARK: - Road speed stream builder

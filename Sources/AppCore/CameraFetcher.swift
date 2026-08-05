@@ -26,7 +26,7 @@ func makeCameraStream(
     httpClient: HTTPClient,
     decoder: DataDecoder<OverpassCameraResponse>,
     radius: Meters
-) -> Publisher<[SpeedCamera], Never> {
+) -> Publisher<CameraSet, Never> {
     throttledLocations(box: box)
         .map(fetchCameras(httpClient: httpClient, decoder: decoder, radius: radius))
         .switchToLatest()
@@ -42,7 +42,7 @@ private func fetchCameras(
     httpClient: HTTPClient,
     decoder: DataDecoder<OverpassCameraResponse>,
     radius: Meters
-) -> @Sendable (LocationUpdate) -> Publisher<[SpeedCamera], Never> {
+) -> @Sendable (LocationUpdate) -> Publisher<CameraSet, Never> {
     { location in
         httpClient(
             overpassCameraRequest(
@@ -53,8 +53,8 @@ private func fetchCameras(
         )
         .validateStatusCode()
         .decode(using: decoder)
-        .map(parseCameras)
+        .map(parseCameraSet)
         .retry(2)
-        .catch { _ in Publisher<[SpeedCamera], Never>.empty() }
+        .catch { _ in Publisher<CameraSet, Never>.empty() }
     }
 }

@@ -64,7 +64,7 @@ struct CameraKindTests {
     func enforcedLimit() {
         // The point of carrying it separately: a camera can enforce something the road does not.
         let response = OverpassCameraResponse(elements: [
-            .init(id: 1, lat: 51.75, lon: -0.47, center: nil,
+            .init(id: 1, lat: 51.75, lon: -0.47, center: nil, geometry: nil, members: nil,
                   tags: tags(enforcement: "maxspeed", maxspeed: "40 mph"))
         ])
         #expect(parseCameras(response).first?.limit == MPH(40))
@@ -73,7 +73,7 @@ struct CameraKindTests {
     @Test("a relation with only a center still yields a camera")
     func relationCenter() {
         let response = OverpassCameraResponse(elements: [
-            .init(id: 2, lat: nil, lon: nil, center: .init(lat: 51.75, lon: -0.47),
+            .init(id: 2, lat: nil, lon: nil, center: .init(lat: 51.75, lon: -0.47), geometry: nil, members: nil,
                   tags: tags(enforcement: "average_speed", maxspeed: "50 mph"))
         ])
         let camera = parseCameras(response).first
@@ -85,7 +85,7 @@ struct CameraKindTests {
     func noPositionDropped() {
         // Cannot warn about something we cannot locate; guessing would be worse than omitting.
         let response = OverpassCameraResponse(elements: [
-            .init(id: 3, lat: nil, lon: nil, center: nil, tags: tags(highway: "speed_camera"))
+            .init(id: 3, lat: nil, lon: nil, center: nil, geometry: nil, members: nil, tags: tags(highway: "speed_camera"))
         ])
         #expect(parseCameras(response).isEmpty)
     }
@@ -217,5 +217,100 @@ struct CameraAnnouncementTests {
                 .hasPrefix("Mobile camera site"))
         #expect(cameraAnnouncement(camera(.unknown, limit: nil), currentSpeed: MPH(29), formatSpeed: speak)
                 .hasPrefix("Camera"))
+    }
+}
+
+@Suite("Average-speed zones")
+struct AverageZoneTests {
+
+    private func at(_ metresNorth: Double) -> Coordinate {
+        Coordinate(latitude: Latitude(51.75 + metresNorth / 111_320), longitude: Longitude(-0.475))
+    }
+
+    private func zone(start: Double?, end: Double?, limit: MPH? = MPH(50)) -> AverageZone {
+        AverageZone(
+            id: 7, limit: limit,
+            start: start.map(at), end: end.map(at)
+        )
+    }
+
+    @Test("from and to members are read off the relation")
+    func membersParsed() {
+        let response = OverpassCameraResponse(elements: [
+            .init(id: 7, lat: nil, lon: nil, center: nil, geometry: nil, members: [
+                .init(type: "node", role: "from", lat: 51.75, lon: -0.475, geometry: nil),
+                .init(type: "node", role: "to", lat: 51.80, lon: -0.475, geometry: nil),
+                .init(type: "node", role: "device", lat: 51.77, lon: -0.475, geometry: nil)
+            ], tags: tags(enforcement: "average_speed", maxspeed: "50 mph"))
+        ])
+        let parsed = parseAverageZones(response).first
+        #expect(parsed?.limit == MPH(50))
+        #expect(parsed?.start?.latitude == Latitude(51.75))
+        #expect(parsed?.end?.latitude == Latitude(51.80))
+    }
+
+    @Test("a way member contributes its first point")
+    func wayMemberPosition() {
+        // `from`/`to` are often ways rather than nodes, in which case the geometry is where the
+        // boundary is.
+        let response = OverpassCameraResponse(elements: [
+            .init(id: 7, lat: nil, lon: nil, center: nil, geometry: nil, members: [
+                .init(type: "way", role: "from", lat: nil, lon: nil,
+                      geometry: [.init(lat: 51.75, lon: -0.475), .init(lat: 51.76, lon: -0.475)])
+            ], tags: tags(enforcement: "average_speed"))
+        ])
+        #expect(parseAverageZones(response).first?.start?.latitude == Latitude(51.75))
+    }
+
+    @Test("entering is detected at the start gantry")
+    func enters() {
+        let z = zone(start: 0, end: 5_000)
+        #expect(averageZoneEntered(zones: [z], cameras: [], at: at(100), currentZone: nil)?.id == 7)
+        #expect(averageZoneEntered(zones: [z], cameras: [], at: at(3_000), currentZone: nil) == nil)
+    }
+
+    @Test("the zone you are already in is not re-entered")
+    func noReentry() {
+        let z = zone(start: 0, end: 5_000)
+        #expect(averageZoneEntered(zones: [z], cameras: [], at: at(100), currentZone: z) == nil)
+    }
+
+    @Test("with no from member, the first average camera is the entrance")
+    func fallsBackToCameras() {
+        // Plenty of zones are mapped as devices only; erring toward warning early is the right way
+        // to be wrong here.
+        let z = zone(start: nil, end: 5_000)
+        let device = SpeedCamera(
+            id: 9, kind: .average,
+            latitude: at(50).latitude, longitude: at(50).longitude,
+            limit: MPH(50), direction: nil
+        )
+        #expect(averageZoneEntered(zones: [z], cameras: [device], at: at(0), currentZone: nil)?.id == 7)
+    }
+
+    @Test("leaving is detected at the end gantry")
+    func exits() {
+        let z = zone(start: 0, end: 5_000)
+        #expect(averageZoneExited(z, at: at(4_900)))
+        #expect(!averageZoneExited(z, at: at(2_000)))
+    }
+
+    @Test("a zone with no end is never exited on geometry")
+    func noEndNeverExits() {
+        // Nothing to measure against. The feature drops it when the zone leaves the fetched area;
+        // announcing an end we cannot see would be worse than staying quiet.
+        #expect(!averageZoneExited(zone(start: 0, end: nil), at: at(9_999)))
+    }
+
+    @Test("the wording distinguishes beginning, being inside, and ending")
+    func wording() {
+        let speak: (MPH) -> String = { String(Int($0.rawValue)) }
+        let z = zone(start: 0, end: 5_000)
+        #expect(averageZoneStartAnnouncement(z, currentSpeed: MPH(48), formatSpeed: speak)
+                == "Average speed check begins, 50, you're at 48.")
+        // Not "slow down" — inside a zone the instantaneous reading is not the offence.
+        #expect(averageZoneOverLimitAnnouncement(z, currentSpeed: MPH(54), formatSpeed: speak)
+                .contains("your average is what counts"))
+        #expect(averageZoneEndAnnouncement(z) == "Average speed check ends.")
     }
 }

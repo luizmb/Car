@@ -14,6 +14,7 @@ public extension World {
             locationUpdates: { .empty() },
             subscribeToRoadSpeed: { .empty() },
             subscribeToCameras: { .empty() },
+            refreshRoadNow: { .empty() },
             bluetoothAuthorization: { .notDetermined },
             indimateEvents: { .empty() },
             playIndicatorLoop: { _ in .empty() },

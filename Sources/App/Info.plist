@@ -6,6 +6,13 @@
 	<string>Connects to the Indimate unit on the bike to play indicator sounds in your helmet.</string>
 	<key>NSMotionUsageDescription</key>
 	<string>Records barometric pressure and motion during rides, to learn how conditions affect fuel consumption.</string>
+	<!-- Declares that the app uses no non-exempt encryption, which is true: the only cryptography
+	     involved is standard TLS via URLSession, and that is exempt. Without this key App Store
+	     Connect asks the same question on every single TestFlight upload and holds the build until
+	     it is answered by hand. The answer never changes, so it belongs here rather than in a
+	     workflow making an authenticated API call to say "no" again. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>UIFileSharingEnabled</key>
 	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>

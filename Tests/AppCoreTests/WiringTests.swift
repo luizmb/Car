@@ -53,14 +53,14 @@ struct WiringTests {
             latitude: Latitude(51.75), longitude: Longitude(-0.475),
             limit: MPH(30), direction: nil
         )
-        store.dispatch(.speedMonitor(.camerasChanged([camera])), source: .init(file: #file, function: #function, line: #line))
+        store.dispatch(.speedMonitor(.camerasChanged(CameraSet(cameras: [camera], zones: []))), source: .init(file: #file, function: #function, line: #line))
         #expect(store.state.speedMonitor.cameras.map(\.id) == [42])
 
         // And the spoken-once bookkeeping prunes when a camera leaves the fetched set, otherwise
         // riding back the other way would stay silent for ever.
         store.dispatch(.speedMonitor(.camerasAnnounced([42])), source: .init(file: #file, function: #function, line: #line))
         #expect(store.state.speedMonitor.announcedCameraIDs == [42])
-        store.dispatch(.speedMonitor(.camerasChanged([])), source: .init(file: #file, function: #function, line: #line))
+        store.dispatch(.speedMonitor(.camerasChanged(.empty)), source: .init(file: #file, function: #function, line: #line))
         #expect(store.state.speedMonitor.announcedCameraIDs.isEmpty)
 
         // Cardo, via an audio route carrying a Bluetooth headset.
