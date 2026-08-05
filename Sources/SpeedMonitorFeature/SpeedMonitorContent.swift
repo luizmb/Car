@@ -98,6 +98,21 @@ public struct SpeedMonitorContent: View {
             }
         case .nationalOnly:
             SpeedSignNational(size: 68)
+        case let .variable(text, value):
+            // Marked "VAR" because the number is OSM's default rather than what the gantries are
+            // showing. Displaying it unqualified would assert something we cannot know.
+            VStack(spacing: 2) {
+                if let text {
+                    SpeedSignKnown(text: text, value: value, size: 60)
+                } else {
+                    SpeedSignNational(size: 60)
+                }
+                Text("VAR")
+                    .font(.system(size: 10, weight: .black, design: .rounded))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6).padding(.vertical, 1)
+                    .background(.orange, in: Capsule())
+            }
         }
     }
 

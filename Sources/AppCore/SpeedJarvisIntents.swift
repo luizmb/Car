@@ -190,6 +190,7 @@ extension RoadLimitDisplay {
         case .nationalOnly:                 "national speed limit"
         case let .known(text, _):           "\(text) miles per hour"
         case let .national(text, _):        "\(text), national"
+        case let .variable(text, _):        text.map { "\($0), variable" } ?? "variable limit"
         }
     }
 }
