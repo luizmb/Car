@@ -36,21 +36,27 @@ public struct AppRouter {
     /// CHIGEE gets the same treatment it stacks alongside without either view changing.
     ///
     /// It floats over the map rather than insetting it, so the map keeps its full height.
+    ///
+    /// The bubbles are *not* attached here. They are handed to ``AppRootView`` to place, because the
+    /// road name belongs in the same column and only that view can observe it — two separate
+    /// top-leading overlays with the same padding drew directly on top of each other, which is
+    /// exactly what happened to the road name and the ignition bubble.
     public func root() -> some View {
         AppScopes.speedMonitor.view(of: SpeedMonitorFeature.self, from: store, world: world)
-            .overlay(alignment: .topLeading) {
-                VStack(alignment: .leading, spacing: 6) {
-                    AppScopes.chigee.view(of: ChigeeFeature.self, from: store, world: world)
-                    AppScopes.indicator.view(of: IndicatorFeature.self, from: store, world: world)
-                    AppScopes.tyres.view(of: TyreFeature.self, from: store, world: world)
-                    AppScopes.motion.view(of: MotionFeature.self, from: store, world: world)
-                    AppScopes.weather.view(of: WeatherFeature.self, from: store, world: world)
-                    AppScopes.trip.view(of: TripFeature.self, from: store, world: world)
-                    AppScopes.cardo.view(of: CardoFeature.self, from: store, world: world)
-                }
-                .padding(.leading, 12)
-                .padding(.top, 6)
-            }
+    }
+
+    /// The status column: one bubble per feature, each built from its own scope and none of them
+    /// aware the others exist.
+    public func statusBubbles() -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            AppScopes.chigee.view(of: ChigeeFeature.self, from: store, world: world)
+            AppScopes.indicator.view(of: IndicatorFeature.self, from: store, world: world)
+            AppScopes.tyres.view(of: TyreFeature.self, from: store, world: world)
+            AppScopes.motion.view(of: MotionFeature.self, from: store, world: world)
+            AppScopes.weather.view(of: WeatherFeature.self, from: store, world: world)
+            AppScopes.trip.view(of: TripFeature.self, from: store, world: world)
+            AppScopes.cardo.view(of: CardoFeature.self, from: store, world: world)
+        }
     }
 
     /// The screen for `route`. `@ViewBuilder` keeps the concrete per-route types without `AnyView`.

@@ -39,7 +39,17 @@ public struct AppRootView: View, Routable {
                 .navigationDestination(for: AppRoute.self) { route in
                     router.destination(for: route)
                 }
-                .overlay(alignment: .topLeading) { roadBubble }
+                // One column, one overlay. Two top-leading overlays with the same padding — the
+                // road name here and the status bubbles inside `root()` — drew on top of each
+                // other, so the ignition bubble and the road name occupied the same pixels.
+                .overlay(alignment: .topLeading) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        roadBubble
+                        router.statusBubbles()
+                    }
+                    .padding(.leading, 12)
+                    .padding(.top, 6)
+                }
                 // The first thing to actually use the navigation machinery — until now every
                 // route enum was uninhabited.
                 .overlay(alignment: .bottomTrailing) {
@@ -95,8 +105,6 @@ public struct AppRootView: View, Routable {
                 .padding(.vertical, 7)
                 .glassEffect(.regular, in: .capsule)
                 .fixedSize()
-                .padding(.leading, 12)
-                .padding(.top, 6)
         }
     }
 }
