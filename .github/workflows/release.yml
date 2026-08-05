@@ -213,30 +213,32 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Notes go to a file, never through `${{ }}` interpolation into a shell string.
+      # v0.5.1 failed here: a commit subject contained double quotes — `stop calling a 30
+      # "national speed"` — which closed the `--notes "..."` argument early and left `speed"`
+      # to be read as an asset glob, so the release step died with `no matches found for
+      # speed`. Any commit subject with a quote, backtick or `$(` would do the same, and the
+      # failure lands after the tag is already pushed.
       - name: Generate Release Notes
-        id: notes
         run: |
-          TAG="${{ github.ref_name }}"
-          PREV_TAG=$(git describe --tags --abbrev=0 ${TAG}^ 2>/dev/null || echo "")
+          TAG="$GITHUB_REF_NAME"
+          PREV_TAG=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || echo "")
 
           if [ -z "$PREV_TAG" ]; then
-            BODY="Initial release"
+            echo "Initial release" > release-notes.md
           else
-            COMMITS=$(git log ${PREV_TAG}..${TAG} --oneline)
-            BODY="## Changes
-
-          ${COMMITS}"
+            {
+              echo "## Changes"
+              echo
+              git log "${PREV_TAG}..${TAG}" --oneline
+            } > release-notes.md
           fi
-
-          echo "body<<EOF" >> $GITHUB_OUTPUT
-          echo "$BODY" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Create Release
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --title "Release ${{ github.ref_name }}" \
-            --notes "${{ steps.notes.outputs.body }}"
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Release $GITHUB_REF_NAME" \
+            --notes-file release-notes.md
         env:
           GH_TOKEN: ${{ github.token }}
 
