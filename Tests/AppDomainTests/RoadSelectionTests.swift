@@ -144,3 +144,99 @@ struct HeadingTests {
         #expect(abs(headingDelta(10, 350) - 20) < 0.001)
     }
 }
+
+// Reproduced from a live Overpass response at 51.86967,-0.41654 — the rider's own doorstep. Opening
+// the app there announced "built-up area, 30" with no road name, on a road that is signed 20 and
+// called Ormsby Close. Five ways are within 40 m and only one of them is right:
+//
+//   51985021    residential  maxspeed=20 mph  Ormsby Close   ← the answer
+//   858832685   service      —                (unnamed)
+//   911763041   residential  —                Ormsby Close
+//   1256332960  residential  —                Ormsby Close
+//   1256332961  service      —                (unnamed)
+//
+// Two independent failures met here: an unnamed driveway won on distance because a stationary phone
+// reports no course, and the road itself is split into three ways of which only one carries the limit.
+
+@Suite("The doorstep case")
+struct DoorstepTests {
+
+    private let here = (Latitude(51.86967), Longitude(-0.41654))
+
+    private func tags(
+        name: String?, maxspeed: String? = nil, highway: String
+    ) -> OverpassResponse.Element.Tags {
+        .init(maxspeed: maxspeed, name: name, ref: nil, highway: highway,
+              maxspeedType: nil, maxspeedVariable: nil)
+    }
+
+    /// A way `metres` north of the origin, running east–west.
+    private func way(
+        _ t: OverpassResponse.Element.Tags, metresAway: Double
+    ) -> RoadCandidate {
+        let lat = 51.86967 + metresAway / 111_320
+        return RoadCandidate(tags: t, points: [
+            (Latitude(lat), Longitude(-0.4170)),
+            (Latitude(lat), Longitude(-0.4160))
+        ])
+    }
+
+    /// The five ways, with the driveways deliberately closer than the road.
+    private var candidates: [RoadCandidate] {
+        [
+            way(tags(name: nil, highway: "service"), metresAway: 4),
+            way(tags(name: nil, highway: "service"), metresAway: 9),
+            way(tags(name: "Ormsby Close", highway: "residential"), metresAway: 18),
+            way(tags(name: "Ormsby Close", maxspeed: "20 mph", highway: "residential"), metresAway: 22),
+            way(tags(name: "Ormsby Close", highway: "residential"), metresAway: 30)
+        ]
+    }
+
+    @Test("parked outside the house, the road wins over the driveway")
+    func roadBeatsDriveway() {
+        // Stationary, so CoreLocation reports no course and there is no heading to discriminate on.
+        // Without the service penalty the nearest thing — an unnamed driveway four metres away —
+        // wins, and the rider is told "built-up area, 30" with no name at all.
+        let chosen = selectRoad(from: candidates, at: here, course: nil)
+        #expect(chosen?.tags.name == "Ormsby Close")
+    }
+
+    @Test("the limit is borrowed from the segment that carries it")
+    func limitBorrowedFromSibling() {
+        // Two of the three Ormsby Close ways have no maxspeed. Landing on either produced 30 — the
+        // built-up default — for a road signed 20.
+        let info = roadInfo(
+            from: selectRoad(from: candidates, at: here, course: nil),
+            among: candidates
+        )
+        #expect(info.roadLabel == "Ormsby Close")
+        #expect(info.limit == .value(MPH(20)))
+        #expect(info.origin == .signed)
+    }
+
+    @Test("a footpath is never a candidate, however close")
+    func footpathIgnored() {
+        // Being two metres from a pavement says nothing about which road you are on.
+        let withPath = candidates + [way(tags(name: "Footpath", highway: "footway"), metresAway: 1)]
+        #expect(selectRoad(from: withPath, at: here, course: nil)?.tags.name == "Ormsby Close")
+    }
+
+    @Test("a service road you are genuinely on can still be chosen")
+    func servicePenaltyIsNotExclusion() {
+        // The penalty must not become a ban — car parks and long driveways are real places to ride.
+        let onlyService = [way(tags(name: nil, highway: "service"), metresAway: 4)]
+        #expect(selectRoad(from: onlyService, at: here, course: nil) != nil)
+    }
+
+    @Test("borrowing never crosses roads")
+    func noCrossRoadBorrowing() {
+        // A limit taken from a different road would be worse than the default it replaced.
+        let mixed = [
+            way(tags(name: "Ormsby Close", highway: "residential"), metresAway: 18),
+            way(tags(name: "Whitehill Avenue", maxspeed: "40 mph", highway: "residential"), metresAway: 25)
+        ]
+        let info = roadInfo(from: selectRoad(from: mixed, at: here, course: nil), among: mixed)
+        #expect(info.roadLabel == "Ormsby Close")
+        #expect(info.limit == .value(MPH(30)))   // the built-up default, not the neighbour's 40
+    }
+}

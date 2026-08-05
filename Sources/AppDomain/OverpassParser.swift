@@ -72,7 +72,7 @@ public func parseRoadInfo(
             points: (element.geometry ?? []).map { (Latitude($0.lat), Longitude($0.lon)) }
         )
     }
-    return roadInfo(from: selectRoad(from: candidates, at: position, course: course))
+    return roadInfo(from: selectRoad(from: candidates, at: position, course: course), among: candidates)
 }
 
 // MARK: - Private helpers
