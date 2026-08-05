@@ -121,7 +121,7 @@ extension World {
         let cardo     = CardoCentral()
         let chigee    = ChigeeCentral()
         let tyres     = TyreCentral()
-        let rideLog   = ActionLogBox()
+        let rideLog   = ActionLogBox(now: { Date() })
         let motionBox = MotionBox()
         let device    = DeviceBox()
         let ticks     = IndicatorAudioBox()
