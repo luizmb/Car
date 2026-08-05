@@ -128,6 +128,29 @@ public struct MotionActivitySample: Sendable, Equatable {
         self.activity = activity
         self.confidence = confidence
     }
+
+    /// Whether this sample is worth recording at all.
+    ///
+    /// CoreMotion emits a great deal that says nothing about riding. On the 2026-08-05 ride, 77
+    /// samples arrived: 41 `automotive`, 18 `unknown`, 10 `stationary`, 6 `walking`, 2 `cycling` —
+    /// and 17 of those carried confidence 0, which is CoreMotion openly guessing.
+    ///
+    /// Two things are dropped:
+    ///
+    /// - **Confidence 0.** It flapped between `automotive` and `stationary` within the same second
+    ///   while the bike sat still, so it is noise with a timestamp.
+    /// - **Pedestrian activities.** Walking and running are the rider between the door and the bike,
+    ///   or the walk home afterwards. They describe the human, not the machine.
+    ///
+    /// `cycling` is kept because iOS genuinely cannot decide what a motorcycle is — it called this
+    /// ride both. `stationary` and `unknown` are kept because they are what the classifier reports
+    /// when the engine stops, which is the only edge it detects promptly.
+    public var isWorthRecording: Bool {
+        switch activity {
+        case .automotive, .cycling, .stationary, .unknown: confidence >= 1
+        case .walking, .running: false
+        }
+    }
 }
 
 // MARK: - Air density

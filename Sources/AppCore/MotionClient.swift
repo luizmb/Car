@@ -89,12 +89,17 @@ func makeActivityStream(box: MotionBox) -> Publisher<MotionActivitySample, Never
         }
         let (stream, streamContinuation) = AsyncStream<MotionActivitySample>.makeStream()
 
+        // Filtered at the source rather than downstream: a sample CoreMotion is openly guessing at,
+        // or one describing the rider walking to the bike, has no consumer — letting it into the
+        // store only to ignore it would still cost a log line and a state diff.
         box.activity.startActivityUpdates(to: .main) { activity in
             guard let activity else { return }
-            streamContinuation.yield(MotionActivitySample(
+            let sample = MotionActivitySample(
                 activity: activity.domain,
                 confidence: activity.confidence.rawValue
-            ))
+            )
+            guard sample.isWorthRecording else { return }
+            streamContinuation.yield(sample)
         }
 
         await continuation.yieldAll(stream)
