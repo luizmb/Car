@@ -49,6 +49,9 @@ public enum AppFeature {
         /// Conditions along the route. Feeds air density, which drives how rich the carb runs.
         public var weather: WeatherFeature.State
 
+        /// GPS distance since the last fill — the figure the fuel maths will use.
+        public var trip: TripFeature.State
+
         /// Whether the pre-ride briefing has been spoken this session. It fires once, when the last
         /// of CHIGEE and Cardo connects — no Cardo means no greeting, but also no ears, so nothing
         /// is lost.
@@ -66,6 +69,7 @@ public enum AppFeature {
             tyres = TyreFeature.initialState(with: ())
             motion = MotionFeature.initialState(with: ())
             weather = WeatherFeature.initialState(with: ())
+            trip = TripFeature.initialState(with: ())
             path = []
         }
     }
@@ -85,6 +89,7 @@ public enum AppFeature {
         case tyres(TyreFeature.Action)
         case motion(MotionFeature.Action)
         case weather(WeatherFeature.Action)
+        case trip(TripFeature.Action)
         case fuel(FuelFeature.Action)
         /// Speak the briefing on demand, at either verbosity.
         case speakFlightPlan(FlightPlanVerbosity)
@@ -142,6 +147,20 @@ public enum AppFeature {
         <> AppScopes.indicator.behavior(of: IndicatorFeature.self)
             .on(.action(\.appLaunch), dispatch: .action(\.indicator.launch))
 
+        // An indicator cancelling means a turn was completed, which is a *semantic* signal that
+        // the road has changed — where the distance/time throttle is only a proxy. Positive-only:
+        // it can bring a refresh forward but never gates one, because the rider is human and does
+        // not always indicate.
+        <> Behavior<AppAction, AppState, World>.handle { action, context in
+            guard
+                let indicatorAction = AppAction.prism.indicator.preview(action),
+                case let .event(.indicator(side)) = indicatorAction,
+                side == nil,
+                context.stateBefore?.indicator.side != nil
+            else { return .doNothing }
+            return .produce { _ in Effect.just(.speedMonitor(.roadMayHaveChanged)) }
+        }
+
         <> AppScopes.cardo.behavior(of: CardoFeature.self)
 
         <> AppScopes.chigee.behavior(of: ChigeeFeature.self)
@@ -151,6 +170,22 @@ public enum AppFeature {
         <> AppScopes.motion.behavior(of: MotionFeature.self)
 
         <> AppScopes.weather.behavior(of: WeatherFeature.self)
+
+        // Keep the fuel form's distance in step with the counter, so whatever is on screen when
+        // Save is pressed is what gets recorded.
+        <> Behavior<AppAction, AppState, World>.handle { action, context in
+            guard
+                AppAction.prism.trip.preview(action) != nil,
+                let state = context.stateBefore
+            else { return .doNothing }
+            return .produce { _ in
+                Effect.just(.fuel(.setGPSDistance(state.trip.kilometresSinceFill)))
+            }
+        }
+
+        <> AppScopes.trip.behavior(of: TripFeature.self)
+            // A fill or a reserve switch starts a fresh measurement.
+            .on(.action(\.fuel.saved), dispatch: .action(review: const(.trip(.reset))))
 
         <> AppScopes.fuel.behavior(of: FuelFeature.self)
 
@@ -165,6 +200,7 @@ public enum AppFeature {
             return .produce { ctx in
                 Effect.just(.weather(.located(update.latitude, update.longitude, ctx.environment.now())))
                     <> Effect.just(.fuel(.setPosition(update.latitude, update.longitude)))
+                    <> Effect.just(.trip(.located(update)))
             }
         }
 
@@ -252,6 +288,7 @@ public extension AppState {
     /// on-demand paths cannot drift apart.
     func flightPlanInputs(_ world: World) -> FlightPlanInputs {
         let display = speedMonitor.display
+        let gpsAccuracy = speedMonitor.lastLocation?.horizontalAccuracy?.rawValue
         return FlightPlanInputs(
             ignitionOn: chigee.isIgnitionOn,
             indimateConnected: indicator.isConnected,
@@ -263,7 +300,7 @@ public extension AppState {
             bikeMillivolts: indicator.battery?.hexMillivolts,
             phoneBattery: world.phoneBattery(),
             lowPowerMode: world.isLowPowerMode(),
-            gpsAccuracy: nil
+            gpsAccuracy: gpsAccuracy
         )
     }
 }
@@ -334,7 +371,8 @@ public enum AppScopes: Rig {
         .action(\.speedMonitor).state(\.speedMonitor)
         .environment(fanout(
             keypaths: \.requestAuthorization, \.authorizationUpdates, \.locationUpdates, \.subscribeToRoadSpeed,
-                      \.speak, \.announceOverLimit, \.announceUnderLimit, \.thresholds, \.formatSpeed,
+                      \.speak, \.speakQueued, \.announceOverLimit, \.announceUnderLimit,
+                      \.thresholds, \.formatSpeed,
                       \.formatSpeedSpeech, \.formatAltitude, \.formatBearing, \.formatCoordinate,
             into: SpeedMonitorFeature.Environment.init
         ))
@@ -343,7 +381,7 @@ public enum AppScopes: Rig {
         .action(\.indicator).state(\.indicator)
         .environment(fanout(
             \.bluetoothAuthorization, \.indimateEvents,
-            \.playIndicatorLoop, \.stopIndicatorLoop, \.speak
+            \.playIndicatorLoop, \.stopIndicatorLoop, \.speakQueued
         ) >>> IndicatorFeature.Environment.init)
 
     public static let cardo = ScopeOf<AppScopes>
@@ -357,13 +395,17 @@ public enum AppScopes: Rig {
     public static let tyres = ScopeOf<AppScopes>
         .action(\.tyres).state(\.tyres)
         .environment(fanout(
-            keypaths: \.tyreReadings, \.speak, \.formatPressure, \.formatTemperature,
+            keypaths: \.tyreReadings, \.speakQueued, \.formatPressure, \.formatTemperature,
             into: TyreFeature.Environment.init
         ))
 
     public static let motion = ScopeOf<AppScopes>
         .action(\.motion).state(\.motion)
         .environment(fanout(\.barometer, \.motion, \.motionActivity) >>> MotionFeature.Environment.init)
+
+    public static let trip = ScopeOf<AppScopes>
+        .action(\.trip).state(\.trip)
+        .environment(fanout(\.loadTripDistance, \.saveTripDistance) >>> TripFeature.Environment.init)
 
     public static let weather = ScopeOf<AppScopes>
         .action(\.weather).state(\.weather)

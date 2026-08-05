@@ -35,6 +35,9 @@ public enum FuelFeature {
         /// pump when they open it and sitting on the bike when they finish.
         public var latitude: Latitude?
         public var longitude: Longitude?
+        /// GPS distance since the last fill, pushed in from the trip counter. This is what the
+        /// consumption maths uses; the odometer field beside it is what is being calibrated.
+        public var gpsKilometres: Kilometres?
 
         /// The reserve tab keeps its own odometer field. Switching to reserve is not a refuel and
         /// shares nothing with one but the log it lands in, so a half-typed fill must not leak
@@ -71,6 +74,7 @@ public enum FuelFeature {
         case setGrade(FuelGrade)
         case setFilledToBrim(Bool)
         case setPosition(Latitude, Longitude)
+        case setGPSDistance(Kilometres)
         case loaded(FuelLog)
         case save
         case saved
@@ -129,6 +133,9 @@ public enum FuelFeature {
             case let .setTab(tab):             return .reduce { $0.tab = tab }
             case let .setGrade(grade):         return .reduce { $0.grade = grade }
             case let .setFilledToBrim(value):  return .reduce { $0.filledToBrim = value }
+            case let .setGPSDistance(distance):
+                return .reduce { $0.gpsKilometres = distance }
+
             case let .setPosition(lat, lon):
                 return .reduce {
                     // Only the first fix — the position wanted is the forecourt, not wherever the
@@ -149,6 +156,7 @@ public enum FuelFeature {
                         grade: state.grade,
                         filledToBrim: state.filledToBrim,
                         odometer: Double(state.odometer).map { Kilometres($0) },
+                        gpsKilometres: state.gpsKilometres,
                         latitude: state.latitude,
                         longitude: state.longitude
                     )
@@ -190,7 +198,7 @@ public enum FuelFeature {
                         id: ctx.environment.newID(),
                         date: ctx.environment.now(),
                         odometer: Double(state.reserveOdometer).map { Kilometres($0) },
-                        gpsKilometres: nil,
+                        gpsKilometres: state.gpsKilometres,
                         latitude: state.latitude,
                         longitude: state.longitude
                     )

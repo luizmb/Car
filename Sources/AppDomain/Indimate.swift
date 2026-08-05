@@ -123,6 +123,58 @@ public struct BatteryReading: Sendable, Equatable {
     public var provesHex: Bool {
         raw.uppercased().contains { "ABCDEF".contains($0) }
     }
+
+    /// Volts, on the hex reading. `nil` if the payload parses as neither.
+    public var volts: Double? {
+        hexMillivolts.map { Double($0) / 1000 }
+    }
+}
+
+// MARK: - Charging system
+
+/// What the supply voltage says about the bike's electrical system.
+///
+/// On a bike with no warning light, this is the only way a failing regulator or stator announces
+/// itself before it strands you. The bands are the standard ones for a 12 V lead-acid system.
+///
+/// The distinction that matters is **resting versus charging**: a healthy battery reads ~12.6 V
+/// stopped and ~13.8–14.4 V with the engine running. A battery that looks fine at rest but never
+/// rises is a charging fault, and it is invisible unless you compare the two.
+@Prisms
+public enum ChargingState: Sendable, Equatable {
+    /// Engine off, battery healthy.
+    case resting
+    /// Engine off, battery low — it will get worse, not better.
+    case restingLow
+    /// Engine running and charging normally.
+    case charging
+    /// Engine running but the voltage has not risen — regulator or stator.
+    case notCharging
+    /// Above ~15 V. An overcharge cooks the battery, and is a regulator failure in the other
+    /// direction.
+    case overcharging
+}
+
+/// Classifies a voltage reading. `engineRunning` cannot be measured directly on this bike, so the
+/// caller supplies its best guess — currently "the wheels are turning".
+public func chargingState(volts: Double, engineRunning: Bool) -> ChargingState {
+    if volts >= 15.0 { return .overcharging }
+    if engineRunning {
+        return volts >= 13.2 ? .charging : .notCharging
+    }
+    return volts >= 12.2 ? .resting : .restingLow
+}
+
+public extension ChargingState {
+    /// What to say aloud, or `nil` when there is nothing worth interrupting for.
+    var spokenWarning: String? {
+        switch self {
+        case .resting, .charging: nil
+        case .restingLow:         "Bike battery low"
+        case .notCharging:        "Bike not charging"
+        case .overcharging:       "Bike overcharging"
+        }
+    }
 }
 
 // MARK: - Payload parsing

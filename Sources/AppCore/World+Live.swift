@@ -35,12 +35,27 @@ private final class SpeechBox: @unchecked Sendable {
         try? AVAudioSession.sharedInstance().setActive(true)
     }
 
+    /// Interrupts whatever is playing. For time-critical announcements only — a speed threshold
+    /// spoken late is worse than useless, because the number no longer matches the moment.
     func speak(_ text: String) {
+        synth.stopSpeaking(at: .immediate)
+        synth.speak(utterance(text))
+    }
+
+    /// Queues behind whatever is playing, interrupting nothing.
+    ///
+    /// Everything informational goes through here: road names, Indimate connect/disconnect, tyre
+    /// warnings. Previously all speech interrupted all other speech, so a road announcement and a
+    /// threshold crossing simply cut each other in half and the rider heard neither.
+    func enqueue(_ text: String) {
+        synth.speak(utterance(text))
+    }
+
+    private func utterance(_ text: String) -> AVSpeechUtterance {
         let u = AVSpeechUtterance(string: text)
         u.voice = AVSpeechSynthesisVoice(language: "en-GB")
         u.rate  = 0.65
-        synth.stopSpeaking(at: .immediate)
-        synth.speak(u)
+        return u
     }
 
     /// Speaks a sequence with a pause between each item.
@@ -193,6 +208,8 @@ extension World {
             motion: { makeMotionStream(box: motionBox) },
             motionActivity: { makeActivityStream(box: motionBox) },
             fetchWeather: weatherFetch,
+            loadTripDistance: { makeFileReader(Double.self, filename: TripStore.filename) },
+            saveTripDistance: { makeFileWriter($0, filename: TripStore.filename) },
             loadFuelLog: { makeFileReader(FuelLog.self, filename: FuelStore.filename) },
             saveFuelLog: { makeFileWriter($0, filename: FuelStore.filename) },
             phoneBattery: { device.batteryLevel },
@@ -204,6 +221,9 @@ extension World {
             },
             speak: { text in
                 Publisher.future { DispatchQueue.main.async { speech.speak(text) } }
+            },
+            speakQueued: { text in
+                Publisher.future { DispatchQueue.main.async { speech.enqueue(text) } }
             },
             speakSequence: { texts, gap in
                 Publisher.future { DispatchQueue.main.async { speech.speakSequence(texts, gap: gap) } }

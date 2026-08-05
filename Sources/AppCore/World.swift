@@ -52,6 +52,9 @@ public struct World: Sendable {
     /// carburettor runs — the single physically-motivated feature that replaces temperature,
     /// pressure and altitude as three weak statistical ones.
     public let fetchWeather: @Sendable (Latitude, Longitude) -> Publisher<WeatherObservation, Never>
+    /// Distance since the last fill, in metres. Survives relaunch — the app is killed constantly.
+    public let loadTripDistance: @Sendable () -> Publisher<Result<Double, FileError>, Never>
+    public let saveTripDistance: @Sendable (Double) -> Publisher<Result<Void, FileError>, Never>
     /// Persisted fuel log. Plain JSON in Documents, so it can be inspected or corrected by hand.
     public let loadFuelLog: @Sendable () -> Publisher<Result<FuelLog, FileError>, Never>
     public let saveFuelLog: @Sendable (FuelLog) -> Publisher<Result<Void, FileError>, Never>
@@ -68,6 +71,9 @@ public struct World: Sendable {
     public let logAction: @Sendable (String) -> Publisher<Void, Never>
     // Audio
     public let speak: @Sendable (String) -> Publisher<Void, Never>
+    /// Queues behind whatever is playing rather than interrupting it. Everything informational
+    /// uses this; only time-critical speed announcements use `speak`.
+    public let speakQueued: @Sendable (String) -> Publisher<Void, Never>
     /// Speaks several lines with a pause between each. Used for the briefing, where a beat between
     /// sources is what makes it followable through a helmet.
     public let speakSequence: @Sendable ([String], TimeInterval) -> Publisher<Void, Never>
