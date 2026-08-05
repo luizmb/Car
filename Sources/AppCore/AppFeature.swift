@@ -371,7 +371,8 @@ public enum AppScopes: Rig {
         .action(\.speedMonitor).state(\.speedMonitor)
         .environment(fanout(
             keypaths: \.requestAuthorization, \.authorizationUpdates, \.locationUpdates, \.subscribeToRoadSpeed,
-                      \.speak, \.speakQueued, \.announceOverLimit, \.announceUnderLimit,
+                      \.subscribeToCameras,
+                      \.speak, \.speakQueued, \.speakQueued, \.announceOverLimit, \.announceUnderLimit,
                       \.thresholds, \.formatSpeed,
                       \.formatSpeedSpeech, \.formatAltitude, \.formatBearing, \.formatCoordinate,
             into: SpeedMonitorFeature.Environment.init

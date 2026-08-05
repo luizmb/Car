@@ -116,6 +116,9 @@ extension World {
     public static var real: World {
         let loc       = LocationBox()
         let roadSpeed = RoadSpeedBox(minDistance: Meters(300), minTime: 20)
+        // Cameras are fetched over a wide radius and rarely: 1 km of travel or two minutes. The set
+        // barely changes over that distance, and the per-fix "is one ahead" test needs no network.
+        let cameraLoc = RoadSpeedBox(minDistance: Meters(1_000), minTime: 120)
         let speech    = SpeechBox()
         let indimate  = IndimateCentral()
         let cardo     = CardoCentral()
@@ -146,6 +149,7 @@ extension World {
         // Overpass API client — HTTPClient over URLSession (NetworkTools 0.7)
         let httpClient = HTTPClient.live(session: .shared)
         let decoder       = JSONDecoder().dataDecoder(for: OverpassResponse.self)
+        let cameraDecoder = JSONDecoder().dataDecoder(for: OverpassCameraResponse.self)
         let weatherDecoder = JSONDecoder().dataDecoder(for: OpenMeteoResponse.self)
         let weatherFetch   = makeWeatherFetch(httpClient: httpClient, decoder: weatherDecoder)
 
@@ -188,6 +192,14 @@ extension World {
                     box: roadSpeed,
                     httpClient: httpClient,
                     decoder: decoder
+                )
+            },
+            subscribeToCameras: {
+                makeCameraStream(
+                    box: cameraLoc,
+                    httpClient: httpClient,
+                    decoder: cameraDecoder,
+                    radius: Meters(3_000)
                 )
             },
             bluetoothAuthorization: { CBManager.authorization.domain },

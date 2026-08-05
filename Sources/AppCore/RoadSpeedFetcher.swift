@@ -72,7 +72,7 @@ func makeRoadSpeedStream(
     httpClient: HTTPClient,
     decoder: DataDecoder<OverpassResponse>
 ) -> Publisher<RoadInfo, Never> {
-    roadSpeedLocations(box: box)
+    throttledLocations(box: box)
         .map(fetchRoadInfo(httpClient: httpClient, decoder: decoder))
         .switchToLatest()
 }
@@ -82,7 +82,10 @@ func makeRoadSpeedStream(
 /// The throttled fixes that trigger an Overpass lookup, as a cold publisher. The manager is wired on
 /// subscribe and torn down when the subscription ends, so the delegate's continuation always points at
 /// the stream someone is actually reading.
-private func roadSpeedLocations(box: RoadSpeedBox) -> Publisher<LocationUpdate, Never> {
+///
+/// Shared with the camera fetcher, which wants the same behaviour on a much coarser throttle — the
+/// box carries the distance and time gates, so one function serves both.
+func throttledLocations(box: RoadSpeedBox) -> Publisher<LocationUpdate, Never> {
     Publisher { continuation in
         let (stream, streamContinuation) = AsyncStream<LocationUpdate>.makeStream()
 

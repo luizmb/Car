@@ -46,6 +46,13 @@ public enum SpeedMonitorFeature {
         public var authorizationPhase: AuthorizationPhase
         public var lastLocation: LocationUpdate?
         public var currentRoadInfo: RoadInfo?   // nil = not yet fetched
+        /// Every enforcement camera within the last fetch radius, ahead or behind. Filtered per fix
+        /// rather than per fetch, so a camera does not vanish because the network did.
+        public var cameras: [SpeedCamera]
+        /// Cameras already spoken on this approach, so a warning is given once rather than once per
+        /// GPS fix. Pruned when a camera leaves the fetched set — which means riding back the other
+        /// way legitimately announces it again.
+        public var announcedCameraIDs: Set<Int>
         public var display: Display
 
         public struct Display: Sendable, Equatable {
@@ -90,6 +97,9 @@ public enum SpeedMonitorFeature {
         /// signal, where the 300m/20s throttle is only a proxy: a turn means a new road
         /// immediately, whereas distance alone might not notice for a quarter of a mile.
         case roadMayHaveChanged
+        // Cameras
+        case camerasChanged([SpeedCamera])
+        case camerasAnnounced(Set<Int>)
     }
 
     // MARK: - Environment
@@ -99,10 +109,14 @@ public enum SpeedMonitorFeature {
         public let authorizationUpdates: @Sendable () -> Publisher<AuthorizationUpdate, Never>
         public let locationUpdates: @Sendable () -> Publisher<LocationUpdate, Never>
         public let subscribeToRoadSpeed: @Sendable () -> Publisher<RoadInfo, Never>
+        public let subscribeToCameras: @Sendable () -> Publisher<[SpeedCamera], Never>
         public let speak: @Sendable (String) -> Publisher<Void, Never>
         /// Queues rather than interrupts. Road announcements are informational and must not cut a
         /// threshold crossing in half — nor be cut by one.
         public let announceRoad: @Sendable (String) -> Publisher<Void, Never>
+        /// Also queued. A camera warning must never cut a threshold announcement in half, nor be cut
+        /// by one — and unlike a speed call it stays useful a second late.
+        public let announceCamera: @Sendable (String) -> Publisher<Void, Never>
         public let announceOverLimit: @Sendable () -> Publisher<Void, Never>
         public let announceUnderLimit: @Sendable () -> Publisher<Void, Never>
         public let thresholds: [MPH]
@@ -117,8 +131,10 @@ public enum SpeedMonitorFeature {
             authorizationUpdates: @escaping @Sendable () -> Publisher<AuthorizationUpdate, Never>,
             locationUpdates:      @escaping @Sendable () -> Publisher<LocationUpdate, Never>,
             subscribeToRoadSpeed: @escaping @Sendable () -> Publisher<RoadInfo, Never>,
+            subscribeToCameras:   @escaping @Sendable () -> Publisher<[SpeedCamera], Never>,
             speak:                @escaping @Sendable (String) -> Publisher<Void, Never>,
             announceRoad:         @escaping @Sendable (String) -> Publisher<Void, Never>,
+            announceCamera:       @escaping @Sendable (String) -> Publisher<Void, Never>,
             announceOverLimit:    @escaping @Sendable () -> Publisher<Void, Never>,
             announceUnderLimit:   @escaping @Sendable () -> Publisher<Void, Never>,
             thresholds:           [MPH],
@@ -132,8 +148,10 @@ public enum SpeedMonitorFeature {
             self.authorizationUpdates = authorizationUpdates
             self.locationUpdates      = locationUpdates
             self.subscribeToRoadSpeed = subscribeToRoadSpeed
+            self.subscribeToCameras   = subscribeToCameras
             self.speak                = speak
             self.announceRoad         = announceRoad
+            self.announceCamera       = announceCamera
             self.announceOverLimit    = announceOverLimit
             self.announceUnderLimit   = announceUnderLimit
             self.thresholds           = thresholds
@@ -207,6 +225,8 @@ public enum SpeedMonitorFeature {
             authorizationPhase: .unknown,
             lastLocation: nil,
             currentRoadInfo: nil,
+            cameras: [],
+            announcedCameraIDs: [],
             display: .empty
         )
     }
@@ -255,12 +275,18 @@ public enum SpeedMonitorFeature {
             case let .locationUpdate(newLocation):
                 let prevLocation = context.stateBefore?.lastLocation
                 let roadInfo     = context.stateBefore?.currentRoadInfo
+                let cameras      = context.stateBefore?.cameras ?? []
+                let announced    = context.stateBefore?.announcedCameraIDs ?? []
                 return .produce { ctx in
                     let display = buildDisplay(newLocation, roadInfo: roadInfo, env: ctx.environment)
                     return Effect.just(.locationReady(newLocation, display))
                         <> audioEffects(
                             prev: prevLocation, new: newLocation,
                             roadInfo: roadInfo, env: ctx.environment
+                        )
+                        <> cameraEffects(
+                            at: newLocation, cameras: cameras,
+                            announced: announced, env: ctx.environment
                         )
                 }
 
@@ -286,6 +312,17 @@ public enum SpeedMonitorFeature {
                         } ?? .empty
                         return announce <> refresh
                     }
+
+            case let .camerasChanged(cameras):
+                return .reduce {
+                    $0.cameras = cameras
+                    // Keep the spoken flags only for cameras still in range. Anything that has
+                    // dropped out has been left behind, so approaching it again should speak again.
+                    $0.announcedCameraIDs.formIntersection(Set(cameras.map(\.id)))
+                }
+
+            case let .camerasAnnounced(ids):
+                return .reduce { $0.announcedCameraIDs.formUnion(ids) }
 
             case .roadMayHaveChanged:
                 // Marking the current info stale is enough — the next Overpass answer replaces it,
@@ -313,6 +350,7 @@ public enum SpeedMonitorFeature {
                 if state.authorizationPhase == .granted {
                     channels.append(env.locationUpdates().asChannel(id: "location", Action.locationUpdate))
                     channels.append(env.subscribeToRoadSpeed().asChannel(id: "road-speed", Action.roadSpeedChanged))
+                    channels.append(env.subscribeToCameras().asChannel(id: "cameras", Action.camerasChanged))
                 }
                 return channels
             }
@@ -338,6 +376,40 @@ private func announceRoadInfo(
     let spoken = roadAnnouncement(info, formatSpeed: env.formatSpeedSpeech)
     guard !spoken.isEmpty else { return .empty }
     return spoken |> (env.announceRoad >>> Effect.fireAndForget)
+}
+
+/// Warns about the nearest camera not yet announced on this approach.
+///
+/// **One per fix, nearest first.** Announcing every fresh camera at once would deliver three
+/// sentences in a breath at the one moment attention is worth most; taking only the nearest lets the
+/// following fixes deal with the rest, a second apart, in the order you will reach them.
+///
+/// The speed spoken is the one from *this* fix, so "you're at thirty-four" is true when said rather
+/// than when the camera was fetched.
+private func cameraEffects(
+    at location: LocationUpdate,
+    cameras: [SpeedCamera],
+    announced: Set<Int>,
+    env: SpeedMonitorFeature.Environment
+) -> Effect<SpeedMonitorFeature.Action> {
+    guard !cameras.isEmpty else { return .empty }
+
+    let speed = location.speed ?? MPS(0)
+    let ahead = camerasAhead(
+        cameras,
+        at: (location.latitude, location.longitude),
+        course: location.course,
+        speed: speed
+    )
+    guard let next = ahead.first(where: { !announced.contains($0.id) }) else { return .empty }
+
+    let spoken = cameraAnnouncement(
+        next,
+        currentSpeed: speed |> Iso<MPS, MPH>.convert.get,
+        formatSpeed: env.formatSpeedSpeech
+    )
+    return (spoken |> (env.announceCamera >>> Effect.fireAndForget))
+        <> Effect.just(.camerasAnnounced([next.id]))
 }
 
 /// All audio effects for a speed change: TTS up, k down, beeps — combined.

@@ -14,6 +14,9 @@ public struct World: Sendable {
     public let locationUpdates: @Sendable () -> Publisher<LocationUpdate, Never>
     // Road speed
     public let subscribeToRoadSpeed: @Sendable () -> Publisher<RoadInfo, Never>
+    /// Enforcement cameras over a wide radius, refreshed rarely. Held in state and filtered per fix —
+    /// see `makeCameraStream` for why the cadence is the opposite of the road lookup's.
+    public let subscribeToCameras: @Sendable () -> Publisher<[SpeedCamera], Never>
     // Indimate (BLE indicator unit on the bike)
     /// Reads `CBManager.authorization`. A pure snapshot — unlike constructing a central, reading
     /// this never puts a permission dialog on screen.
