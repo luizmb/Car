@@ -371,7 +371,7 @@ public enum AppScopes: Rig {
         .action(\.speedMonitor).state(\.speedMonitor)
         .environment(fanout(
             keypaths: \.requestAuthorization, \.authorizationUpdates, \.locationUpdates, \.subscribeToRoadSpeed,
-                      \.subscribeToCameras,
+                      \.subscribeToCameras, \.refreshRoadNow,
                       \.speak, \.speakQueued, \.speakQueued, \.announceOverLimit, \.announceUnderLimit,
                       \.thresholds, \.formatSpeed,
                       \.formatSpeedSpeech, \.formatAltitude, \.formatBearing, \.formatCoordinate,

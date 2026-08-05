@@ -209,6 +209,20 @@ final class ChigeeCentral: NSObject, CBCentralManagerDelegate, @unchecked Sendab
 enum ChigeePeripheralStore {
     static let filename = "chigee-peripheral.txt"
 
+    /// The identifier captured in the 2026-08-04 garage session.
+    ///
+    /// Seeded because the store is otherwise unfillable in practice, and two rides proved it. The
+    /// only ways to learn an identifier are an advertisement or `retrieveConnectedPeripherals`; a
+    /// bonded unit never advertises, and the retrieve call is filtered on the HID service, which iOS
+    /// restricts for third-party apps. So the file stayed empty, no pending connect was ever armed,
+    /// and both rides logged a single `chigee-ble-state` line and nothing else — a mechanism built
+    /// correctly and never given the one value it needed.
+    ///
+    /// `CBPeripheral` identifiers are stable per phone, and this was recorded on the same phone, so
+    /// it should still resolve. If the unit is ever replaced, delete `chigee-peripheral.txt` and the
+    /// scan path will learn the new one.
+    static let knownFromGarage = UUID(uuidString: "730B2168-081A-A4FB-76A4-6BF86A73B790")
+
     private static var url: URL {
         FileManager.default
             .urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -219,6 +233,7 @@ enum ChigeePeripheralStore {
         (try? String(contentsOf: url, encoding: .utf8))
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .flatMap(UUID.init(uuidString:))
+            ?? knownFromGarage
     }
 
     static func save(_ identifier: UUID) {

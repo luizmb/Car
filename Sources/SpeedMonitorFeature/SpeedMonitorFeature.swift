@@ -53,6 +53,14 @@ public enum SpeedMonitorFeature {
         /// GPS fix. Pruned when a camera leaves the fetched set — which means riding back the other
         /// way legitimately announces it again.
         public var announcedCameraIDs: Set<Int>
+        /// Average-speed zones known from the last fetch.
+        public var averageZones: [AverageZone]
+        /// The zone you are inside, if any. Being *inside* is the state that matters — a point
+        /// warning cannot describe a measurement taken over kilometres.
+        public var activeAverageZone: AverageZone?
+        /// Whether the last fix was above the active zone's limit, so the reminder fires on the
+        /// crossing rather than on every fix while you sit above it.
+        public var wasOverAverageLimit: Bool
         public var display: Display
 
         public struct Display: Sendable, Equatable {
@@ -98,8 +106,12 @@ public enum SpeedMonitorFeature {
         /// immediately, whereas distance alone might not notice for a quarter of a mile.
         case roadMayHaveChanged
         // Cameras
-        case camerasChanged([SpeedCamera])
+        case camerasChanged(CameraSet)
         case camerasAnnounced(Set<Int>)
+        /// Entering or leaving an average-speed zone. `nil` means left.
+        case averageZoneChanged(AverageZone?)
+        /// Crossed above or back below the active zone's limit.
+        case averageZoneOverLimitChanged(Bool)
     }
 
     // MARK: - Environment
@@ -109,7 +121,8 @@ public enum SpeedMonitorFeature {
         public let authorizationUpdates: @Sendable () -> Publisher<AuthorizationUpdate, Never>
         public let locationUpdates: @Sendable () -> Publisher<LocationUpdate, Never>
         public let subscribeToRoadSpeed: @Sendable () -> Publisher<RoadInfo, Never>
-        public let subscribeToCameras: @Sendable () -> Publisher<[SpeedCamera], Never>
+        public let subscribeToCameras: @Sendable () -> Publisher<CameraSet, Never>
+        public let refreshRoadNow: @Sendable () -> Publisher<Void, Never>
         public let speak: @Sendable (String) -> Publisher<Void, Never>
         /// Queues rather than interrupts. Road announcements are informational and must not cut a
         /// threshold crossing in half — nor be cut by one.
@@ -131,7 +144,8 @@ public enum SpeedMonitorFeature {
             authorizationUpdates: @escaping @Sendable () -> Publisher<AuthorizationUpdate, Never>,
             locationUpdates:      @escaping @Sendable () -> Publisher<LocationUpdate, Never>,
             subscribeToRoadSpeed: @escaping @Sendable () -> Publisher<RoadInfo, Never>,
-            subscribeToCameras:   @escaping @Sendable () -> Publisher<[SpeedCamera], Never>,
+            subscribeToCameras:   @escaping @Sendable () -> Publisher<CameraSet, Never>,
+            refreshRoadNow:       @escaping @Sendable () -> Publisher<Void, Never>,
             speak:                @escaping @Sendable (String) -> Publisher<Void, Never>,
             announceRoad:         @escaping @Sendable (String) -> Publisher<Void, Never>,
             announceCamera:       @escaping @Sendable (String) -> Publisher<Void, Never>,
@@ -149,6 +163,7 @@ public enum SpeedMonitorFeature {
             self.locationUpdates      = locationUpdates
             self.subscribeToRoadSpeed = subscribeToRoadSpeed
             self.subscribeToCameras   = subscribeToCameras
+            self.refreshRoadNow       = refreshRoadNow
             self.speak                = speak
             self.announceRoad         = announceRoad
             self.announceCamera       = announceCamera
@@ -227,6 +242,9 @@ public enum SpeedMonitorFeature {
             currentRoadInfo: nil,
             cameras: [],
             announcedCameraIDs: [],
+            averageZones: [],
+            activeAverageZone: nil,
+            wasOverAverageLimit: false,
             display: .empty
         )
     }
@@ -277,6 +295,9 @@ public enum SpeedMonitorFeature {
                 let roadInfo     = context.stateBefore?.currentRoadInfo
                 let cameras      = context.stateBefore?.cameras ?? []
                 let announced    = context.stateBefore?.announcedCameraIDs ?? []
+                let zones        = context.stateBefore?.averageZones ?? []
+                let activeZone   = context.stateBefore?.activeAverageZone
+                let wasOver      = context.stateBefore?.wasOverAverageLimit ?? false
                 return .produce { ctx in
                     let display = buildDisplay(newLocation, roadInfo: roadInfo, env: ctx.environment)
                     return Effect.just(.locationReady(newLocation, display))
@@ -286,7 +307,11 @@ public enum SpeedMonitorFeature {
                         )
                         <> cameraEffects(
                             at: newLocation, cameras: cameras,
-                            announced: announced, env: ctx.environment
+                            announced: announced, roadInfo: roadInfo, env: ctx.environment
+                        )
+                        <> averageZoneEffects(
+                            at: newLocation, zones: zones, cameras: cameras,
+                            active: activeZone, wasOver: wasOver, env: ctx.environment
                         )
                 }
 
@@ -313,23 +338,47 @@ public enum SpeedMonitorFeature {
                         return announce <> refresh
                     }
 
-            case let .camerasChanged(cameras):
+            case let .camerasChanged(set):
                 return .reduce {
-                    $0.cameras = cameras
+                    $0.cameras = set.cameras
+                    $0.averageZones = set.zones
                     // Keep the spoken flags only for cameras still in range. Anything that has
                     // dropped out has been left behind, so approaching it again should speak again.
-                    $0.announcedCameraIDs.formIntersection(Set(cameras.map(\.id)))
+                    $0.announcedCameraIDs.formIntersection(Set(set.cameras.map(\.id)))
+                    // A zone that has fallen out of the fetched area is behind us. This is the only
+                    // exit available for zones mapped without a `to` member.
+                    if let active = $0.activeAverageZone, !set.zones.contains(where: { $0.id == active.id }) {
+                        $0.activeAverageZone = nil
+                        $0.wasOverAverageLimit = false
+                    }
+                }
+
+            case let .averageZoneOverLimitChanged(over):
+                return .reduce { $0.wasOverAverageLimit = over }
+
+            case let .averageZoneChanged(zone):
+                return .reduce {
+                    $0.activeAverageZone = zone
+                    $0.wasOverAverageLimit = false
                 }
 
             case let .camerasAnnounced(ids):
                 return .reduce { $0.announcedCameraIDs.formUnion(ids) }
 
             case .roadMayHaveChanged:
-                // Marking the current info stale is enough — the next Overpass answer replaces it,
-                // and the display rebuilds on the next fix. Forcing an out-of-band fetch would
-                // hammer the API on a roundabout, where the indicator cancels repeatedly.
-                guard context.stateBefore?.currentRoadInfo != nil else { return .doNothing }
-                return .reduce { $0.currentRoadInfo = .unknown }
+                // Bring the lookup forward instead of blanking what we know.
+                //
+                // Blanking used to be the whole response, on the theory that the next Overpass answer
+                // would replace it. It would — up to 300 m later, because that is the road manager's
+                // distance filter. So every turn was followed by a third of a minute with no limit,
+                // no beeps and no announcement, ending long after the turn it belonged to.
+                //
+                // Keeping the old road until the new one arrives is strictly better: the limit stays
+                // live across the junction, and `roadSpeedChanged` still announces on any genuine
+                // change because it compares announcements, not identity. A roundabout cancelling
+                // the indicator repeatedly costs a few extra fixes, not a fetch storm — the 20 s
+                // gate is restored the moment the forced fix lands.
+                return .produce { ctx in ctx.environment.refreshRoadNow() |> Effect.fireAndForget }
             }
         }
     }
@@ -390,6 +439,7 @@ private func cameraEffects(
     at location: LocationUpdate,
     cameras: [SpeedCamera],
     announced: Set<Int>,
+    roadInfo: RoadInfo?,
     env: SpeedMonitorFeature.Environment
 ) -> Effect<SpeedMonitorFeature.Action> {
     guard !cameras.isEmpty else { return .empty }
@@ -406,6 +456,7 @@ private func cameraEffects(
     let spoken = cameraAnnouncement(
         next,
         currentSpeed: speed |> Iso<MPS, MPH>.convert.get,
+        roadInfo: roadInfo,
         formatSpeed: env.formatSpeedSpeech
     )
     return (spoken |> (env.announceCamera >>> Effect.fireAndForget))
@@ -537,3 +588,42 @@ private func buildDisplay(
 }
 
 // The @Feature macro generates the members but does not add the conformance.
+/// Entering, leaving, and going too fast inside an average-speed zone.
+///
+/// These are three different sentences because they answer three different questions, and the middle
+/// one is the reason a point warning is not enough: inside a zone a moment above the limit is not the
+/// offence — the mean between the gantries is. So the reminder fires on the *crossing*, not on every
+/// fix, and says what is actually being measured.
+private func averageZoneEffects(
+    at location: LocationUpdate,
+    zones: [AverageZone],
+    cameras: [SpeedCamera],
+    active: AverageZone?,
+    wasOver: Bool,
+    env: SpeedMonitorFeature.Environment
+) -> Effect<SpeedMonitorFeature.Action> {
+    let position = Coordinate(latitude: location.latitude, longitude: location.longitude)
+    let mph = (location.speed ?? MPS(0)) |> Iso<MPS, MPH>.convert.get
+
+    // Leaving takes precedence: if the same fix is near this zone's end and another's start, the one
+    // being left is the one you are certainly in.
+    if let active, averageZoneExited(active, at: position) {
+        return (averageZoneEndAnnouncement(active) |> (env.announceCamera >>> Effect.fireAndForget))
+            <> Effect.just(.averageZoneChanged(nil))
+    }
+
+    if let entered = averageZoneEntered(zones: zones, cameras: cameras, at: position, currentZone: active) {
+        let spoken = averageZoneStartAnnouncement(entered, currentSpeed: mph, formatSpeed: env.formatSpeedSpeech)
+        return (spoken |> (env.announceCamera >>> Effect.fireAndForget))
+            <> Effect.just(.averageZoneChanged(entered))
+    }
+
+    guard let active, let limit = active.limit else { return .empty }
+    let over = mph.rawValue > limit.rawValue
+    guard over != wasOver else { return .empty }
+    guard over else { return Effect.just(.averageZoneOverLimitChanged(false)) }
+
+    let spoken = averageZoneOverLimitAnnouncement(active, currentSpeed: mph, formatSpeed: env.formatSpeedSpeech)
+    return (spoken |> (env.announceCamera >>> Effect.fireAndForget))
+        <> Effect.just(.averageZoneOverLimitChanged(true))
+}
