@@ -201,7 +201,14 @@ extension World {
             },
             formatPressure: { numFmt1dp.format($0.rawValue) + " psi" },
             formatTemperature: { numFmt0dp.format($0.rawValue) + "°C" },
-            chigeeEvents: { makeChigeeStream(central: chigee, log: rideLog.append) },
+            chigeeEvents: {
+                makeChigeeStream(
+                    central: chigee,
+                    knownIdentifier: ChigeePeripheralStore.load(),
+                    log: rideLog.append,
+                    onLearn: ChigeePeripheralStore.save
+                )
+            },
             cardoEvents: { makeCardoStream(central: cardo) },
             audioRouteChanges: { makeAudioRouteStream() },
             barometer: { makeBarometerStream(box: motionBox) },

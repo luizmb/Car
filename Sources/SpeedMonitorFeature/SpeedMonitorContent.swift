@@ -98,6 +98,17 @@ public struct SpeedMonitorContent: View {
             }
         case .nationalOnly:
             SpeedSignNational(size: 68)
+        case let .assumed(text, value):
+            // No NSL sign — that sign means 60 or 70, and this is the built-up default. Labelled
+            // instead, so the figure is never mistaken for one read off a real sign.
+            VStack(spacing: 2) {
+                SpeedSignKnown(text: text, value: value, size: 60)
+                Text("ASSUMED")
+                    .font(.system(size: 9, weight: .black, design: .rounded))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6).padding(.vertical, 1)
+                    .background(.gray, in: Capsule())
+            }
         case let .variable(text, value):
             // Marked "VAR" because the number is OSM's default rather than what the gantries are
             // showing. Displaying it unqualified would assert something we cannot know.

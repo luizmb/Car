@@ -15,7 +15,7 @@ struct RoadInfoAnnouncementTests {
         ref: String? = nil,
         name: String? = nil
     ) -> RoadInfo {
-        RoadInfo(limit: limit, ref: ref, name: name, resolvedFromNational: false)
+        RoadInfo(limit: limit, ref: ref, name: name, origin: .signed)
     }
 
     @Test("ref wins over name — 'A40' is quicker to hear than 'Western Avenue'")
@@ -100,7 +100,7 @@ struct OverpassParsingTests {
         let parsed = parseRoadInfo(response(maxspeed: "30 mph", name: "High Street"), at: here, course: course)
         #expect(parsed.limit == .value(MPH(30)))
         #expect(parsed.roadLabel == "High Street")
-        #expect(parsed.resolvedFromNational == false)
+        #expect(parsed.origin == .signed)
     }
 
     @Test("a km/h limit is converted to mph")
@@ -120,21 +120,23 @@ struct OverpassParsingTests {
             maxspeedType: "gb:nsl_single"
         ), at: here, course: course)
         #expect(parsed.limit == .value(MPH(60)))
-        #expect(parsed.resolvedFromNational)
+        #expect(parsed.origin == .nationalSpeedLimit)
     }
 
     @Test("highway classification resolves national when maxspeed:type is absent")
     func highwayResolvesNational() {
         let parsed = parseRoadInfo(response(maxspeed: "national", highway: "residential"), at: here, course: course)
         #expect(parsed.limit == .value(MPH(30)))
-        #expect(parsed.resolvedFromNational)
+        // A residential 30 is the built-up-area default, *not* the national speed limit — which
+        // means 60 or 70. Announcing "national speed, 30" in a housing estate was flatly wrong.
+        #expect(parsed.origin == .builtUpArea)
     }
 
     @Test("a national limit with nothing to resolve it stays ambiguous")
     func unresolvableNationalStaysNational() {
         let parsed = parseRoadInfo(response(maxspeed: "national"), at: here, course: course)
         #expect(parsed.limit == .national)
-        #expect(parsed.resolvedFromNational == false)
+        #expect(parsed.origin == .unattributed)
     }
 
     @Test("no elements at all means unknown, not a guess")
@@ -153,15 +155,15 @@ struct OverpassParsingTests {
         #expect(parsed.roadLabel == "Back Lane")
     }
 
-    @Test("an untagged residential road resolves to 30 and is flagged as inferred")
+    @Test("an untagged residential road resolves to 30, attributed to the built-up default")
     func untaggedResidentialResolves() {
         let parsed = parseRoadInfo(
             response(name: "Back Lane", highway: "residential"), at: here, course: course
         )
         #expect(parsed.limit == .value(MPH(30)))
-        // Flagged so the announcement says "national speed, 30" — the rider knows the figure was
-        // inferred from the road's class rather than read off a sign.
-        #expect(parsed.resolvedFromNational)
+        // Attributed so the announcement can say "built-up area, 30" — inferred from the road's
+        // class, and distinguishable from both a surveyed sign and the national speed limit.
+        #expect(parsed.origin == .builtUpArea)
     }
 
     @Test("a smart motorway is flagged as variable")

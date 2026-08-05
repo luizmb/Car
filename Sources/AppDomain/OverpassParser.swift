@@ -77,54 +77,59 @@ public func parseRoadInfo(
 
 // MARK: - Private helpers
 
-/// Returns the parsed limit and whether it was resolved from a `national` tag.
-func parseLimitAndOrigin(maxspeed: String?, highway: String?, maxspeedType: String?) -> (RoadSpeedLimit, Bool) {
+/// Returns the parsed limit together with how it was arrived at.
+func parseLimitAndOrigin(
+    maxspeed: String?, highway: String?, maxspeedType: String?
+) -> (RoadSpeedLimit, LimitOrigin) {
     guard let raw = maxspeed?.lowercased().trimmingCharacters(in: .whitespaces), !raw.isEmpty else {
         // No explicit tag does not mean no limit. In the UK an untagged road is subject to the
-        // national limit for its class, and that class is known — so resolve it rather than
-        // reporting `.unknown` and losing the over/under announcements entirely.
-        let resolved = resolveNational(highway: highway, maxspeedType: maxspeedType)
-        return (resolved, resolved != .national)
+        // default for its class, and that class is known — so resolve it rather than reporting
+        // `.unknown` and losing the over/under announcements entirely.
+        return resolveUntagged(highway: highway, maxspeedType: maxspeedType)
     }
     if raw == "national" {
-        let resolved = resolveNational(highway: highway, maxspeedType: maxspeedType)
-        let wasResolved = resolved != .national
-        return (resolved, wasResolved)
+        return resolveUntagged(highway: highway, maxspeedType: maxspeedType)
     }
     let parts = raw.components(separatedBy: " ")
-    guard let value = Double(parts[0]) else { return (.unknown, false) }
+    guard let value = Double(parts[0]) else { return (.unknown, .unattributed) }
     let isKph = parts.count > 1 && parts[1].hasPrefix("km")
-    let mph   = isKph ? Iso<MPH, KPH>.convert.reverseGet(KPH(value)) : MPH(value)
-    return (.value(mph), false)
+    let mph = isKph ? Iso<MPH, KPH>.convert.reverseGet(KPH(value)) : MPH(value)
+    return (.value(mph), .signed)
 }
 
-/// Resolves the UK national speed limit.
-/// Three tiers: 70 dual/motorway, 60 rural single carriageway, 30 urban.
-/// Priority: maxspeed:type > highway classification > .national (truly ambiguous).
-private func resolveNational(highway: String?, maxspeedType: String?) -> RoadSpeedLimit {
-    // maxspeed:type is the most authoritative — set by mappers who know the exact context
+/// Resolves the limit for a road with no usable `maxspeed`, and says which default was applied.
+///
+/// Three tiers: 70 dual/motorway, 60 rural single carriageway, 30 built-up. The first two are the
+/// *national speed limit*; the third is not, and keeping them apart is the whole point of returning
+/// an origin rather than a boolean — see `LimitOrigin`.
+///
+/// Priority: `maxspeed:type` > `highway` classification > `.national` (truly ambiguous).
+private func resolveUntagged(
+    highway: String?, maxspeedType: String?
+) -> (RoadSpeedLimit, LimitOrigin) {
+    // maxspeed:type is the most authoritative — set by mappers who know the exact context.
     if let type = maxspeedType?.lowercased() {
         switch type {
-        case "gb:motorway", "gb:nsl_dual":   return .value(MPH(70))
-        case "gb:nsl_single":                return .value(MPH(60))
-        case "gb:urban", "gb:living_street": return .value(MPH(30))
+        case "gb:motorway", "gb:nsl_dual": return (.value(MPH(70)), .nationalSpeedLimit)
+        case "gb:nsl_single": return (.value(MPH(60)), .nationalSpeedLimit)
+        case "gb:urban", "gb:living_street": return (.value(MPH(30)), .builtUpArea)
         default: break
         }
     }
-    // Fall back to highway classification
-    switch highway?.lowercased() {
+    let resolved: (RoadSpeedLimit, LimitOrigin) = switch highway?.lowercased() {
     case "motorway", "motorway_link":
-        return .value(MPH(70))
+        (.value(MPH(70)), .nationalSpeedLimit)
     case "trunk":
-        return .value(MPH(70))   // dual carriageway
+        (.value(MPH(70)), .nationalSpeedLimit)   // dual carriageway
     case "primary", "primary_link",
          "secondary", "secondary_link",
          "tertiary", "tertiary_link":
-        return .value(MPH(60))   // rural single carriageway
+        (.value(MPH(60)), .nationalSpeedLimit)   // rural single carriageway
     case "residential", "unclassified",
          "living_street", "service":
-        return .value(MPH(30))   // urban
+        (.value(MPH(30)), .builtUpArea)
     default:
-        return .national         // genuinely ambiguous — beep at 30, 60 and 70
+        (.national, .unattributed)               // genuinely ambiguous — beep at 30, 60 and 70
     }
+    return resolved
 }

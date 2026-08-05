@@ -143,12 +143,12 @@ public func selectRoad(
 /// Builds `RoadInfo` from the chosen candidate.
 public func roadInfo(from candidate: RoadCandidate?) -> RoadInfo {
     guard let tags = candidate?.tags else { return .unknown }
-    let (limit, resolvedFromNational) = parseLimitAndOrigin(
+    let (limit, origin) = parseLimitAndOrigin(
         maxspeed: tags.maxspeed, highway: tags.highway, maxspeedType: tags.maxspeedType
     )
     return RoadInfo(
         limit: limit, ref: tags.ref, name: tags.name,
-        resolvedFromNational: resolvedFromNational,
+        origin: origin,
         isVariable: (tags.maxspeedVariable?.lowercased()).map { $0 != "no" } ?? false
     )
 }
