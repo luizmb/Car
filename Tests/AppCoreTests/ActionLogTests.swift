@@ -21,6 +21,15 @@ private final class TestClock: @unchecked Sendable {
 @Suite("Ride log filing")
 struct ActionLogFilingTests {
 
+    /// A directory of this test's own. Swift Testing runs tests in parallel, and two of these write
+    /// the same day's file — sharing Documents meant one deleted the file another was reading.
+    private func scratch() -> URL {
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ride-log-tests-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
     private func date(_ iso: String) -> Date {
         let formatter = ISO8601DateFormatter()
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
@@ -69,8 +78,9 @@ struct ActionLogFilingTests {
 
     @Test("appending twice in a day keeps both lines in one file")
     func appendsAccumulate() throws {
+        let directory = scratch()
         let clock = TestClock(date("2026-08-05T10:00:00Z"))
-        let log = ActionLogBox(now: { clock.now })
+        let log = ActionLogBox(directory: directory, now: { clock.now })
         log.append("first")
         clock.now = date("2026-08-05T10:00:01Z")
         log.append("second")
@@ -78,17 +88,18 @@ struct ActionLogFilingTests {
         let url = try #require(log.url)
         let lines = try String(contentsOf: url, encoding: .utf8)
             .split(separator: "\n", omittingEmptySubsequences: true)
-        #expect(lines.count >= 2)
+        #expect(lines.count == 2)
         #expect(lines.suffix(2).allSatisfy { $0.contains("2026-08-05T10:00:0") })
-        try? FileManager.default.removeItem(at: url)
+        try? FileManager.default.removeItem(at: directory)
     }
 
     @Test("crossing midnight while running rolls to a new file")
     func rollsWhileRunning() throws {
         // The app stays alive across midnight — for a night rider that is the normal case, not an
         // edge one, so the roll cannot happen only at launch.
+        let directory = scratch()
         let clock = TestClock(date("2026-08-05T23:59:59Z"))
-        let log = ActionLogBox(now: { clock.now })
+        let log = ActionLogBox(directory: directory, now: { clock.now })
         log.append("before")
         let first = try #require(log.url)
 
@@ -99,7 +110,6 @@ struct ActionLogFilingTests {
         #expect(first != second)
         #expect(first.lastPathComponent == "ride-2026-08-05.jsonl")
         #expect(second.lastPathComponent == "ride-2026-08-06.jsonl")
-        try? FileManager.default.removeItem(at: first)
-        try? FileManager.default.removeItem(at: second)
+        try? FileManager.default.removeItem(at: directory)
     }
 }

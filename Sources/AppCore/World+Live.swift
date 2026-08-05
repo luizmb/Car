@@ -121,7 +121,10 @@ extension World {
         let cardo     = CardoCentral()
         let chigee    = ChigeeCentral()
         let tyres     = TyreCentral()
-        let rideLog   = ActionLogBox(now: { Date() })
+        let rideLog   = ActionLogBox(
+            directory: FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0],
+            now: { Date() }
+        )
         let motionBox = MotionBox()
         let device    = DeviceBox()
         let ticks     = IndicatorAudioBox()

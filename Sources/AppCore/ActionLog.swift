@@ -45,6 +45,7 @@ func utcDayStamp(_ dayIndex: Int) -> String {
 /// rather than truncated on relaunch, since a day's file usually already exists.
 final class ActionLogBox: @unchecked Sendable {
     private let lock = NSLock()
+    private let directory: URL
     private let now: @Sendable () -> Date
     private let timestampFormatter: ISO8601DateFormatter
     private var handle: FileHandle?
@@ -53,7 +54,10 @@ final class ActionLogBox: @unchecked Sendable {
 
     var url: URL? { lock.withLock { _url } }
 
-    init(now: @escaping @Sendable () -> Date) {
+    /// The directory is injected rather than looked up, for the same reason the clock is: two
+    /// instances pointed at the shared Documents folder fight over the same day's file.
+    init(directory: URL, now: @escaping @Sendable () -> Date) {
+        self.directory = directory
         self.now = now
         let formatter = ISO8601DateFormatter()
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
@@ -84,9 +88,7 @@ final class ActionLogBox: @unchecked Sendable {
 
         try? handle?.close()
 
-        let file = FileManager.default
-            .urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("ride-\(utcDayStamp(today)).jsonl")
+        let file = directory.appendingPathComponent("ride-\(utcDayStamp(today)).jsonl")
 
         if !FileManager.default.fileExists(atPath: file.path) {
             FileManager.default.createFile(atPath: file.path, contents: nil)
