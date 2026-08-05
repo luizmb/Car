@@ -247,16 +247,23 @@ enum ChigeePeripheralStore {
 
 // MARK: - Cold publisher
 
+/// - Parameter knownIdentifier: a **closure**, not a value, and deliberately so.
+///
+///   Supervision calls this factory on every reconciliation — after every state change, several
+///   times a second while riding — purely to describe the channel set. An eager `UUID?` argument
+///   would therefore have been a synchronous disk read on the store's hot path at that cadence.
+///   Evaluating it inside `Publisher { }` means the file is read once per subscription, which is
+///   also the only moment its value can matter.
 func makeChigeeStream(
     central: ChigeeCentral,
-    knownIdentifier: UUID?,
+    knownIdentifier: @escaping @Sendable () -> UUID?,
     log: @escaping @Sendable (String) -> Void,
     onLearn: @escaping @Sendable (UUID) -> Void
 ) -> Publisher<ChigeeEvent, Never> {
     Publisher { continuation in
         let (stream, streamContinuation) = AsyncStream<ChigeeEvent>.makeStream()
         central.start(
-            knownIdentifier: knownIdentifier,
+            knownIdentifier: knownIdentifier(),
             emit: { streamContinuation.yield($0) },
             log: log,
             onLearn: onLearn
