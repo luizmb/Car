@@ -202,6 +202,9 @@ extension World {
                     radius: Meters(3_000)
                 )
             },
+            refreshRoadNow: {
+                Publisher.future { DispatchQueue.main.async { forceRoadRefresh(box: roadSpeed) } }
+            },
             bluetoothAuthorization: { CBManager.authorization.domain },
             indimateEvents: { makeIndimateStream(central: indimate) },
             playIndicatorLoop: { side in

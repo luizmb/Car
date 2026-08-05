@@ -65,8 +65,9 @@ public struct SpeedCamera: Sendable, Equatable, Identifiable {
 /// - `type=enforcement` relations — the richer form, and the one that carries its own `maxspeed`
 /// - `highway=speed_camera` ways — rare, but they exist (gantries mapped as structures)
 ///
-/// `out center tags` gives nodes their `lat`/`lon` and ways/relations a `center`, so one decode
-/// handles all of them.
+/// `out geom` rather than `out center`, because an `average_speed` relation's **members** are the
+/// point: the `from` and `to` roles are what say where a zone begins and ends, and a bare centre
+/// cannot tell you that you have left one.
 public func overpassCameraRequest(
     latitude: Latitude, longitude: Longitude, radius: Meters
 ) -> URLRequest {
@@ -78,7 +79,7 @@ public func overpassCameraRequest(
     node(\(around))["enforcement"];\
     way(\(around))["highway"="speed_camera"];\
     relation(\(around))["type"="enforcement"];\
-    );out center tags;
+    );out geom;
     """
     let escaped = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
     // Fixed template over numeric rawValues — cannot fail.
@@ -91,6 +92,23 @@ public struct OverpassCameraResponse: Decodable, Sendable {
         public struct Center: Decodable, Sendable {
             public let lat: Double
             public let lon: Double
+        }
+        /// A relation member. `role` is what matters — `from` and `to` bound an average-speed zone,
+        /// `device` marks the cameras themselves.
+        public struct Member: Decodable, Sendable {
+            public let type: String?
+            public let role: String?
+            public let lat: Double?
+            public let lon: Double?
+            public let geometry: [Center]?
+
+            /// Where the member is. A way contributes its first point, which for a `from`/`to` role
+            /// is the end of the road segment the zone starts or stops at.
+            public var position: Coordinate? {
+                if let lat, let lon { return Coordinate(latitude: Latitude(lat), longitude: Longitude(lon)) }
+                guard let point = geometry?.first else { return nil }
+                return Coordinate(latitude: Latitude(point.lat), longitude: Longitude(point.lon))
+            }
         }
         public struct Tags: Decodable, Sendable {
             public let highway: String?
@@ -109,18 +127,103 @@ public struct OverpassCameraResponse: Decodable, Sendable {
         public let lat: Double?
         public let lon: Double?
         public let center: Center?
+        public let geometry: [Center]?
+        public let members: [Member]?
         public let tags: Tags?
+
+        /// A single position for the element, however it was mapped.
+        public var position: Coordinate? {
+            if let lat, let lon { return Coordinate(latitude: Latitude(lat), longitude: Longitude(lon)) }
+            if let center { return Coordinate(latitude: Latitude(center.lat), longitude: Longitude(center.lon)) }
+            if let point = geometry?.first {
+                return Coordinate(latitude: Latitude(point.lat), longitude: Longitude(point.lon))
+            }
+            // A relation: take a device if one is named, otherwise anything with a position.
+            let devices = members?.filter { $0.role == "device" } ?? []
+            return (devices.first ?? members?.first { $0.position != nil })?.position
+        }
     }
     public let elements: [Element]
 }
 
+// MARK: - Coordinate
+
+public struct Coordinate: Sendable, Equatable {
+    public let latitude: Latitude
+    public let longitude: Longitude
+
+    public init(latitude: Latitude, longitude: Longitude) {
+        self.latitude = latitude
+        self.longitude = longitude
+    }
+
+    var pair: (Latitude, Longitude) { (latitude, longitude) }
+}
+
+// MARK: - Average-speed zones
+
+/// A stretch between two gantries, where your **mean** speed is what is measured.
+///
+/// A point warning is the wrong shape for these: you can be under the limit at both cameras and
+/// still be fined, and being told about them once tells you nothing about how you are doing. So the
+/// zone is modelled as something you are inside or outside of, with a beginning and an end.
+public struct AverageZone: Sendable, Equatable, Identifiable {
+    public let id: Int
+    public let limit: MPH?
+    /// Where the zone begins and ends, from the relation's `from` and `to` members. Either may be
+    /// absent — plenty of zones are mapped with only devices — in which case entry falls back to the
+    /// first camera and exit to leaving the fetched area entirely.
+    public let start: Coordinate?
+    public let end: Coordinate?
+
+    public init(id: Int, limit: MPH?, start: Coordinate?, end: Coordinate?) {
+        self.id = id
+        self.limit = limit
+        self.start = start
+        self.end = end
+    }
+}
+
+public func parseAverageZones(_ response: OverpassCameraResponse) -> [AverageZone] {
+    response.elements.compactMap { element -> AverageZone? in
+        guard
+            let tags = element.tags,
+            tags.enforcement?.lowercased() == "average_speed"
+        else { return nil }
+
+        let members = element.members ?? []
+        return AverageZone(
+            id: element.id,
+            limit: parseMaxspeedMPH(tags.maxspeed),
+            start: members.first { $0.role == "from" }?.position,
+            end: members.first { $0.role == "to" }?.position
+        )
+    }
+}
+
+/// Everything one fetch produced. Cameras and zones come from the same query and are stored
+/// together, so they can never disagree about what is currently known.
+public struct CameraSet: Sendable, Equatable {
+    public let cameras: [SpeedCamera]
+    public let zones: [AverageZone]
+
+    public init(cameras: [SpeedCamera], zones: [AverageZone]) {
+        self.cameras = cameras
+        self.zones = zones
+    }
+
+    public static let empty = CameraSet(cameras: [], zones: [])
+}
+
+public func parseCameraSet(_ response: OverpassCameraResponse) -> CameraSet {
+    CameraSet(cameras: parseCameras(response), zones: parseAverageZones(response))
+}
+
 public func parseCameras(_ response: OverpassCameraResponse) -> [SpeedCamera] {
     response.elements.compactMap { element -> SpeedCamera? in
-        // A relation with no `center` has no position we can use; a camera without a position cannot
-        // be warned about, so it is dropped rather than guessed at.
+        // A camera without a position cannot be warned about, so it is dropped rather than guessed at.
         guard
-            let latitude = element.lat ?? element.center?.lat,
-            let longitude = element.lon ?? element.center?.lon,
+            let position = element.position,
             let tags = element.tags,
             let kind = cameraKind(from: tags)
         else { return nil }
@@ -128,8 +231,8 @@ public func parseCameras(_ response: OverpassCameraResponse) -> [SpeedCamera] {
         return SpeedCamera(
             id: element.id,
             kind: kind,
-            latitude: Latitude(latitude),
-            longitude: Longitude(longitude),
+            latitude: position.latitude,
+            longitude: position.longitude,
             limit: parseMaxspeedMPH(tags.maxspeed),
             direction: parseDirection(tags.direction)
         )
@@ -253,6 +356,7 @@ public func camerasAhead(
 public func cameraAnnouncement(
     _ camera: SpeedCamera,
     currentSpeed: MPH,
+    roadInfo: RoadInfo? = nil,
     formatSpeed: (MPH) -> String
 ) -> String {
     let noun: String = switch camera.kind {
@@ -265,11 +369,100 @@ public func cameraAnnouncement(
 
     let you = "you're at \(formatSpeed(currentSpeed))"
 
-    guard let limit = camera.limit else { return "\(noun) ahead, \(you)." }
+    // Most cameras carry no `maxspeed` of their own — smart-motorway gantries especially, since the
+    // limit they enforce is whatever the signs currently read. Falling back to the road's limit is
+    // better than saying nothing, but it must not be stated as though the camera said it.
+    let roadLimit: MPH? = if case let .value(mph) = roadInfo?.limit { mph } else { nil }
+    let variable = camera.limit == nil && (roadInfo?.isVariable ?? false)
 
-    let over = currentSpeed.rawValue > limit.rawValue
+    guard let limit = camera.limit ?? roadLimit else {
+        // No figure anywhere. The camera is still announced — that was the explicit requirement, and
+        // an unknown limit is a reason to say less, not to stay silent.
+        return "\(noun) ahead, \(you)."
+    }
+
     let spokenLimit = formatSpeed(limit)
-    return over
+    guard !variable else {
+        // The gantries win. The number is OSM's default, so it is offered as a hint rather than
+        // asserted, and no instruction is given against a limit we cannot read.
+        return "\(noun) ahead, variable limit, normally \(spokenLimit), \(you)."
+    }
+
+    return currentSpeed.rawValue > limit.rawValue
         ? "\(noun) ahead, \(spokenLimit), \(you), slow down."
         : "\(noun) ahead, \(spokenLimit), \(you)."
+}
+
+// MARK: - Zone transitions
+
+/// How close to a gantry counts as reaching it.
+///
+/// Generous, because fixes arrive about once a second: at 70 mph that is 31 m of travel per fix, so
+/// a tight window could be stepped straight over between two fixes and the transition missed
+/// entirely. Missing the *end* of a zone is the worse failure — it would leave you being warned
+/// about an average you are no longer accumulating.
+let zoneBoundaryMetres: Double = 250
+
+/// The zone you have just entered, if any.
+///
+/// Falls back to the cameras themselves when the relation has no `from` member, which is common —
+/// plenty of zones are mapped as devices only. In that case the first camera of the zone is the
+/// beginning, which is the best available answer and errs toward warning early.
+public func averageZoneEntered(
+    zones: [AverageZone],
+    cameras: [SpeedCamera],
+    at position: Coordinate,
+    currentZone: AverageZone?
+) -> AverageZone? {
+    zones.first { zone in
+        guard zone.id != currentZone?.id else { return false }
+        if let start = zone.start {
+            return distanceMetres(from: position.pair, to: start.pair) <= zoneBoundaryMetres
+        }
+        return cameras.contains { camera in
+            camera.kind == .average
+                && distanceMetres(from: position.pair, to: (camera.latitude, camera.longitude)) <= zoneBoundaryMetres
+        }
+    }
+}
+
+/// Whether the active zone has been left.
+///
+/// With no `to` member there is nothing to measure against, so the zone is never exited on geometry
+/// alone — the feature drops it when the zone falls out of the fetched set instead. Announcing an
+/// end we cannot see would be worse than staying quiet about it.
+public func averageZoneExited(_ zone: AverageZone, at position: Coordinate) -> Bool {
+    guard let end = zone.end else { return false }
+    return distanceMetres(from: position.pair, to: end.pair) <= zoneBoundaryMetres
+}
+
+// MARK: - Zone announcements
+
+public func averageZoneStartAnnouncement(
+    _ zone: AverageZone,
+    currentSpeed: MPH,
+    formatSpeed: (MPH) -> String
+) -> String {
+    let you = "you're at \(formatSpeed(currentSpeed))"
+    guard let limit = zone.limit else { return "Average speed check begins, \(you)." }
+    return "Average speed check begins, \(formatSpeed(limit)), \(you)."
+}
+
+public func averageZoneEndAnnouncement(_ zone: AverageZone) -> String {
+    "Average speed check ends."
+}
+
+/// Spoken when you cross above the limit *inside* a zone.
+///
+/// Deliberately different from the ordinary over-limit call. In an average-speed zone a moment above
+/// the limit is not itself the problem — the mean between the gantries is — so the wording says what
+/// is actually being measured rather than implying a single reading has caught you.
+public func averageZoneOverLimitAnnouncement(
+    _ zone: AverageZone,
+    currentSpeed: MPH,
+    formatSpeed: (MPH) -> String
+) -> String {
+    let you = "you're at \(formatSpeed(currentSpeed))"
+    guard let limit = zone.limit else { return "Still in the average speed check, \(you)." }
+    return "Average speed check, \(formatSpeed(limit)), \(you), your average is what counts."
 }
