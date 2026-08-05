@@ -80,6 +80,10 @@ public enum SpeedMonitorFeature {
         case locationReady(LocationUpdate, State.Display)
         // Road speed
         case roadSpeedChanged(RoadInfo)
+        /// Something suggests the road has changed — an indicator cancelling, say. A *semantic*
+        /// signal, where the 300m/20s throttle is only a proxy: a turn means a new road
+        /// immediately, whereas distance alone might not notice for a quarter of a mile.
+        case roadMayHaveChanged
     }
 
     // MARK: - Environment
@@ -90,6 +94,9 @@ public enum SpeedMonitorFeature {
         public let locationUpdates: @Sendable () -> Publisher<LocationUpdate, Never>
         public let subscribeToRoadSpeed: @Sendable () -> Publisher<RoadInfo, Never>
         public let speak: @Sendable (String) -> Publisher<Void, Never>
+        /// Queues rather than interrupts. Road announcements are informational and must not cut a
+        /// threshold crossing in half — nor be cut by one.
+        public let announceRoad: @Sendable (String) -> Publisher<Void, Never>
         public let announceOverLimit: @Sendable () -> Publisher<Void, Never>
         public let announceUnderLimit: @Sendable () -> Publisher<Void, Never>
         public let thresholds: [MPH]
@@ -105,6 +112,7 @@ public enum SpeedMonitorFeature {
             locationUpdates:      @escaping @Sendable () -> Publisher<LocationUpdate, Never>,
             subscribeToRoadSpeed: @escaping @Sendable () -> Publisher<RoadInfo, Never>,
             speak:                @escaping @Sendable (String) -> Publisher<Void, Never>,
+            announceRoad:         @escaping @Sendable (String) -> Publisher<Void, Never>,
             announceOverLimit:    @escaping @Sendable () -> Publisher<Void, Never>,
             announceUnderLimit:   @escaping @Sendable () -> Publisher<Void, Never>,
             thresholds:           [MPH],
@@ -119,6 +127,7 @@ public enum SpeedMonitorFeature {
             self.locationUpdates      = locationUpdates
             self.subscribeToRoadSpeed = subscribeToRoadSpeed
             self.speak                = speak
+            self.announceRoad         = announceRoad
             self.announceOverLimit    = announceOverLimit
             self.announceUnderLimit   = announceUnderLimit
             self.thresholds           = thresholds
@@ -271,6 +280,13 @@ public enum SpeedMonitorFeature {
                         } ?? .empty
                         return announce <> refresh
                     }
+
+            case .roadMayHaveChanged:
+                // Marking the current info stale is enough — the next Overpass answer replaces it,
+                // and the display rebuilds on the next fix. Forcing an out-of-band fetch would
+                // hammer the API on a roundabout, where the indicator cancels repeatedly.
+                guard context.stateBefore?.currentRoadInfo != nil else { return .doNothing }
+                return .reduce { $0.currentRoadInfo = .unknown }
             }
         }
     }
@@ -320,7 +336,7 @@ private func announceRoadInfo(
     }
     let spoken = [limitText, info.roadLabel].compactMap(id).joined(separator: ", ")
     guard !spoken.isEmpty else { return .empty }
-    return spoken |> (env.speak >>> Effect.fireAndForget)
+    return spoken |> (env.announceRoad >>> Effect.fireAndForget)
 }
 
 /// All audio effects for a speed change: TTS up, k down, beeps — combined.

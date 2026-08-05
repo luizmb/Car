@@ -33,6 +33,9 @@ public enum IndicatorFeature {
         /// kept because the journey recorder will want it, and because a charging fault on a bike
         /// with no warning light is worth surfacing once the encoding is settled.
         public var battery: BatteryReading?
+        /// Last charging state announced, so a fault is spoken on the transition rather than on
+        /// every voltage report — the same rule as the tyre warnings.
+        public var announcedCharging: ChargingState?
 
         public init() {}
     }
@@ -147,7 +150,20 @@ public enum IndicatorFeature {
                     }
 
             case let .event(.voltage(reading)):
-                return .reduce { $0.battery = reading }
+                // `engineRunning` is not directly observable on this bike. Wheels turning is the
+                // best available proxy, and it is supplied from outside so this stays pure; until
+                // the trip counter feeds it, resting is assumed, which errs toward silence.
+                guard let volts = reading.volts else { return .reduce { $0.battery = reading } }
+                let state = chargingState(volts: volts, engineRunning: false)
+                let previous = before?.announcedCharging
+                return .reduce {
+                    $0.battery = reading
+                    $0.announcedCharging = state
+                }
+                .produce { ctx in
+                    guard previous != state, let warning = state.spokenWarning else { return .empty }
+                    return ctx.environment.speak(warning) |> Effect.fireAndForget
+                }
 
             case .event(.info):
                 return .doNothing

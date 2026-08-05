@@ -72,6 +72,13 @@ func makeFileWriter<A: Encodable & Sendable>(
     }
 }
 
+public enum TripStore {
+    /// Kept in its own tiny file rather than inside the fuel log: it is written every few hundred
+    /// metres, and rewriting the whole fill history at that rate would be both wasteful and a
+    /// needless risk to the only durable record of every refuel.
+    public static let filename = "trip-distance.json"
+}
+
 public enum FuelStore {
     /// Plain JSON in Documents, visible in the Files app — so the record can be inspected, backed
     /// up, or corrected by hand without needing the app at all.

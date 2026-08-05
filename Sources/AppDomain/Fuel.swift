@@ -56,6 +56,12 @@ public struct RefuelRecord: Sendable, Equatable, Codable, Identifiable {
     /// than assumed — even though it is true almost every time.
     public let filledToBrim: Bool
 
+    /// GPS distance since the previous fill, measured by the app.
+    ///
+    /// The figure consumption is computed from. Recorded alongside the odometer rather than
+    /// instead of it, so the two can be compared and the odometer's drift measured over time.
+    public let gpsKilometres: Kilometres?
+
     /// The bike's own odometer, recorded for comparison only.
     ///
     /// Never an input to any calculation. It is a slowly-converging calibration measurement: the
@@ -69,7 +75,8 @@ public struct RefuelRecord: Sendable, Equatable, Codable, Identifiable {
 
     public init(
         id: UUID, date: Date, litres: Litres, pricePerLitre: Double, grade: FuelGrade,
-        filledToBrim: Bool, odometer: Kilometres?, latitude: Latitude?, longitude: Longitude?
+        filledToBrim: Bool, odometer: Kilometres?, gpsKilometres: Kilometres? = nil,
+        latitude: Latitude?, longitude: Longitude?
     ) {
         self.id = id
         self.date = date
@@ -78,6 +85,7 @@ public struct RefuelRecord: Sendable, Equatable, Codable, Identifiable {
         self.grade = grade
         self.filledToBrim = filledToBrim
         self.odometer = odometer
+        self.gpsKilometres = gpsKilometres
         self.latitude = latitude
         self.longitude = longitude
     }
@@ -148,6 +156,12 @@ public extension FuelLog {
     /// fills with odometer readings — which is correct: one fill measures nothing.
     var consumptionSamples: [(kilometres: Double, litres: Double, to: RefuelRecord)] {
         zip(brimToBrimFills, brimToBrimFills.dropFirst()).compactMap { previous, current in
+            // GPS first: it is continuous, whereas the odometer shows whole kilometres and carries
+            // ±1 km of quantisation per fill. The odometer is the fallback for fills recorded
+            // before distance tracking existed.
+            if let gps = current.gpsKilometres?.rawValue, gps > 0 {
+                return (gps, current.litres.rawValue, current)
+            }
             guard
                 let from = previous.odometer?.rawValue,
                 let to = current.odometer?.rawValue,

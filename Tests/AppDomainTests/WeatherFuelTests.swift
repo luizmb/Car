@@ -79,7 +79,7 @@ struct FuelLogTests {
             id: UUID(), date: Date(timeIntervalSince1970: Double(day) * 86400),
             litres: Litres(litres), pricePerLitre: 1.5, grade: .e5,
             filledToBrim: brim, odometer: odometer.map { Kilometres($0) },
-            latitude: nil, longitude: nil
+            gpsKilometres: nil, latitude: nil, longitude: nil
         )
     }
 
@@ -124,6 +124,22 @@ struct FuelLogTests {
             fill(10, odometer: 22350, at: 5)
         ])
         #expect(log.consumptionSamples.isEmpty)
+    }
+
+    @Test("GPS distance is preferred over the odometer when present")
+    func gpsPreferredOverOdometer() {
+        // The odometer shows whole kilometres and is the thing being calibrated; GPS is continuous
+        // and is what the maths should use.
+        let first = fill(12, odometer: 22100, at: 1)
+        let second = RefuelRecord(
+            id: UUID(), date: Date(timeIntervalSince1970: 5 * 86400),
+            litres: Litres(10), pricePerLitre: 1.5, grade: .e5, filledToBrim: true,
+            odometer: Kilometres(22350), gpsKilometres: Kilometres(247.3),
+            latitude: nil, longitude: nil
+        )
+        let samples = FuelLog(refuels: [first, second]).consumptionSamples
+        #expect(samples.count == 1)
+        #expect(abs(samples[0].kilometres - 247.3) < 0.001)   // not the odometer's 250
     }
 
     @Test("total cost is litres times price")

@@ -45,6 +45,7 @@ public struct AppRouter {
                     AppScopes.tyres.view(of: TyreFeature.self, from: store, world: world)
                     AppScopes.motion.view(of: MotionFeature.self, from: store, world: world)
                     AppScopes.weather.view(of: WeatherFeature.self, from: store, world: world)
+                    AppScopes.trip.view(of: TripFeature.self, from: store, world: world)
                     AppScopes.cardo.view(of: CardoFeature.self, from: store, world: world)
                 }
                 .padding(.leading, 12)
