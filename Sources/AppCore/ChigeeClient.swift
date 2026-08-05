@@ -123,10 +123,18 @@ final class ChigeeCentral: NSObject, CBCentralManagerDelegate, @unchecked Sendab
         // 1. Known from a previous run: arm a pending connect straight away, rather than waiting for
         //    an advertisement that a bonded unit will never send. Rides 2 and 3 waited for one all
         //    the way home and logged nothing at all.
-        if let known = lock.withLock({ knownIdentifier }),
-           let device = central.retrievePeripherals(withIdentifiers: [known]).first {
-            arm(device, on: central)
-            return
+        if let known = lock.withLock({ knownIdentifier }) {
+            if let device = central.retrievePeripherals(withIdentifiers: [known]).first {
+                note("chigee-known", ["id": known.uuidString.prefix(8)])
+                arm(device, on: central)
+                return
+            }
+            // Recorded but iOS does not recognise it — a stale identifier from another phone, or a
+            // replaced unit. Worth logging loudly, since it looks identical to "never seen" in every
+            // other respect.
+            note("chigee-known-unresolved", ["id": known.uuidString.prefix(8)])
+        } else {
+            note("chigee-no-identifier")
         }
 
         // 2. Bonded but not yet remembered — the upgrade path from the advertisement-only build.
@@ -137,7 +145,10 @@ final class ChigeeCentral: NSObject, CBCentralManagerDelegate, @unchecked Sendab
             return
         }
 
-        // 3. First run or a reinstall: scan, purely to learn the identifier once.
+        // 3. Scan, purely to learn the identifier. This only ever succeeds while the unit is
+        //    unbonded — it worked exactly once, on the first ride, and never again after iOS paired
+        //    with it. Left in for a replaced unit or a reset pairing, not relied upon.
+        note("chigee-scanning")
         central.scanForPeripherals(withServices: [Chigee.hid], options: nil)
     }
 
@@ -201,27 +212,21 @@ final class ChigeeCentral: NSObject, CBCentralManagerDelegate, @unchecked Sendab
 /// The head unit's peripheral identifier, kept across launches.
 ///
 /// Without it there is no way to reach a bonded unit at all: it stops advertising once paired, so a
-/// scan will never see it again. The identifier is therefore learned from the one advertisement
-/// burst at first pairing and written down immediately, because there may never be another.
+/// scan will never see it again. The identifier is learned from the advertisement burst at first
+/// pairing and written down immediately, because there may never be another — and on this bike there
+/// was not. Two rides after bonding logged a single `chigee-ble-state` line and nothing else.
 ///
-/// A plain text file rather than `UserDefaults`, to sit alongside the fuel and trip logs where it can
-/// be deleted from the Files app if the unit is ever replaced.
+/// **Seeding it by hand.** A plain text file in Documents, not `UserDefaults`, precisely so it can be
+/// created from the Files app: put the peripheral UUID in `chigee-peripheral.txt` and the next launch
+/// arms a pending connect straight to it. That is the escape hatch for a unit that bonded before the
+/// app ever managed to record it, and it keeps a device-specific identifier out of the source tree
+/// where it does not belong.
+///
+/// Delete the file if the unit is ever replaced; the scan path will learn the new one the first time
+/// it advertises.
 enum ChigeePeripheralStore {
     static let filename = "chigee-peripheral.txt"
 
-    /// The identifier captured in the 2026-08-04 garage session.
-    ///
-    /// Seeded because the store is otherwise unfillable in practice, and two rides proved it. The
-    /// only ways to learn an identifier are an advertisement or `retrieveConnectedPeripherals`; a
-    /// bonded unit never advertises, and the retrieve call is filtered on the HID service, which iOS
-    /// restricts for third-party apps. So the file stayed empty, no pending connect was ever armed,
-    /// and both rides logged a single `chigee-ble-state` line and nothing else — a mechanism built
-    /// correctly and never given the one value it needed.
-    ///
-    /// `CBPeripheral` identifiers are stable per phone, and this was recorded on the same phone, so
-    /// it should still resolve. If the unit is ever replaced, delete `chigee-peripheral.txt` and the
-    /// scan path will learn the new one.
-    static let knownFromGarage = UUID(uuidString: "730B2168-081A-A4FB-76A4-6BF86A73B790")
 
     private static var url: URL {
         FileManager.default
@@ -233,7 +238,6 @@ enum ChigeePeripheralStore {
         (try? String(contentsOf: url, encoding: .utf8))
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .flatMap(UUID.init(uuidString:))
-            ?? knownFromGarage
     }
 
     static func save(_ identifier: UUID) {
