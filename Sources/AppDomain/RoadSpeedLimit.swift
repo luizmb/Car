@@ -41,18 +41,33 @@ public struct RoadInfo: Sendable, Equatable {
     public let ref: String?
     /// OSM `name` tag — road name, e.g. "High Street", "Oxford Road".
     public let name: String?
-    /// True when `limit` was derived by resolving a `maxspeed: national` tag via `highway` / `maxspeed:type`.
-    /// Used to decide whether to show the NSL sign alongside the resolved limit in the UI.
+    /// True when `limit` was derived from the national limit for the road's class rather than read
+    /// from an explicit `maxspeed` tag — either because the tag said `national`, or because there
+    /// was no tag at all. Drives the NSL sign in the UI and "national" in the announcement, so the
+    /// rider knows the figure is inferred rather than signposted.
     public let resolvedFromNational: Bool
 
-    public init(limit: RoadSpeedLimit, ref: String?, name: String?, resolvedFromNational: Bool) {
+    /// The road carries variable limits — a smart motorway with gantry signs.
+    ///
+    /// OSM records *that* the limit varies, never what it currently is: gantry settings are live
+    /// data no static map has. So the number here is the default, and the honest thing is to say
+    /// the limit is variable rather than assert a figure the signs may be contradicting.
+    public let isVariable: Bool
+
+    public init(
+        limit: RoadSpeedLimit, ref: String?, name: String?,
+        resolvedFromNational: Bool, isVariable: Bool = false
+    ) {
         self.limit                = limit
         self.ref                  = ref
         self.name                 = name
         self.resolvedFromNational = resolvedFromNational
+        self.isVariable           = isVariable
     }
 
-    public static let unknown = RoadInfo(limit: .unknown, ref: nil, name: nil, resolvedFromNational: false)
+    public static let unknown = RoadInfo(
+        limit: .unknown, ref: nil, name: nil, resolvedFromNational: false
+    )
 
     /// How the road is referred to out loud — `ref` preferred over `name` because "A40" is shorter to
     /// hear at speed than "Western Avenue". `nil` when OSM gave us neither.
@@ -61,10 +76,14 @@ public struct RoadInfo: Sendable, Equatable {
     /// Everything an announcement would mention. Comparing this — rather than the limit alone — is what
     /// makes turning from a 30 road onto a different 30 road speak, while driving the length of the A40
     /// stays silent across Overpass polls.
-    public var announcement: Announcement { Announcement(limit: limit, label: roadLabel) }
+    public var announcement: Announcement {
+        Announcement(limit: limit, label: roadLabel, national: resolvedFromNational, variable: isVariable)
+    }
 
     public struct Announcement: Sendable, Equatable {
         public let limit: RoadSpeedLimit
         public let label: String?
+        public let national: Bool
+        public let variable: Bool
     }
 }

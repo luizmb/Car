@@ -329,10 +329,24 @@ private func announceRoadInfo(
     _ info: RoadInfo,
     env: SpeedMonitorFeature.Environment
 ) -> Effect<SpeedMonitorFeature.Action> {
-    let limitText: String? = switch info.limit {
-    case .unknown:        nil
-    case .national:       "national"
-    case .value(let mph): (mph |> env.formatSpeedSpeech) + " zone"
+    let limitText: String?
+    if info.isVariable {
+        // The number is only a default; the gantries are the authority and no static map knows
+        // what they currently say. Asserting a figure here would be worse than admitting it varies.
+        limitText = "variable limit"
+    } else {
+        switch info.limit {
+        case .unknown:
+            limitText = nil
+        case .national:
+            // Subject to the national limit but the class is ambiguous, so no figure to give.
+            limitText = "national speed"
+        case .value(let mph):
+            let spoken = mph |> env.formatSpeedSpeech
+            // "national speed, 60" when inferred from the road's class, so the rider knows the
+            // figure came from classification rather than a sign they might have missed.
+            limitText = info.resolvedFromNational ? "national speed, \(spoken)" : "\(spoken) zone"
+        }
     }
     let spoken = [limitText, info.roadLabel].compactMap(id).joined(separator: ", ")
     guard !spoken.isEmpty else { return .empty }
