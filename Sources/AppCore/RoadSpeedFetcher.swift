@@ -124,7 +124,9 @@ private func fetchRoadInfo(
         httpClient(overpassRequest(latitude: location.latitude, longitude: location.longitude))
             .validateStatusCode()
             .decode(using: decoder)
-            .map(parseRoadInfo)
+            // Position and course come from the fix that triggered this lookup — the road you were
+            // on when it was requested, not wherever you have reached by the time it answers.
+            .map { parseRoadInfo($0, at: (location.latitude, location.longitude), course: location.course) }
             .retry(2)
             .catch { _ in Publisher<RoadInfo, Never>.empty() }
     }

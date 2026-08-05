@@ -64,14 +64,20 @@ struct RoadInfoAnnouncementTests {
 @Suite("Overpass parsing")
 struct OverpassParsingTests {
 
-    /// One way with the given tags — built directly rather than through JSON, so the test exercises the
-    /// parser rather than the decoder.
+    private let here = (Latitude(51.75), Longitude(-0.475))
+    /// Travelling east, matching the east–west geometry below, so selection always has a valid
+    /// candidate and these tests stay about *tag* parsing rather than road choice.
+    private let course = Course(90)
+
+    /// One east–west way with the given tags — built directly rather than through JSON, so the test
+    /// exercises the parser rather than the decoder.
     private func response(
         maxspeed: String? = nil,
         name: String? = nil,
         ref: String? = nil,
         highway: String? = nil,
-        maxspeedType: String? = nil
+        maxspeedType: String? = nil,
+        maxspeedVariable: String? = nil
     ) -> OverpassResponse {
         OverpassResponse(elements: [
             OverpassResponse.Element(tags: OverpassResponse.Element.Tags(
@@ -79,14 +85,19 @@ struct OverpassParsingTests {
                 name: name,
                 ref: ref,
                 highway: highway,
-                maxspeedType: maxspeedType
-            ))
+                maxspeedType: maxspeedType,
+                maxspeedVariable: maxspeedVariable
+            ),
+            geometry: [
+                .init(lat: 51.75, lon: -0.480),
+                .init(lat: 51.75, lon: -0.470)
+            ])
         ])
     }
 
     @Test("an explicit mph limit is taken at face value")
     func explicitMph() {
-        let parsed = parseRoadInfo(response(maxspeed: "30 mph", name: "High Street"))
+        let parsed = parseRoadInfo(response(maxspeed: "30 mph", name: "High Street"), at: here, course: course)
         #expect(parsed.limit == .value(MPH(30)))
         #expect(parsed.roadLabel == "High Street")
         #expect(parsed.resolvedFromNational == false)
@@ -94,7 +105,7 @@ struct OverpassParsingTests {
 
     @Test("a km/h limit is converted to mph")
     func kphConverted() {
-        guard case .value(let mph) = parseRoadInfo(response(maxspeed: "80 km/h")).limit else {
+        guard case .value(let mph) = parseRoadInfo(response(maxspeed: "80 km/h"), at: here, course: course).limit else {
             Issue.record("expected a resolved value")
             return
         }
@@ -107,34 +118,60 @@ struct OverpassParsingTests {
             maxspeed: "national",
             highway: "motorway",
             maxspeedType: "gb:nsl_single"
-        ))
+        ), at: here, course: course)
         #expect(parsed.limit == .value(MPH(60)))
         #expect(parsed.resolvedFromNational)
     }
 
     @Test("highway classification resolves national when maxspeed:type is absent")
     func highwayResolvesNational() {
-        let parsed = parseRoadInfo(response(maxspeed: "national", highway: "residential"))
+        let parsed = parseRoadInfo(response(maxspeed: "national", highway: "residential"), at: here, course: course)
         #expect(parsed.limit == .value(MPH(30)))
         #expect(parsed.resolvedFromNational)
     }
 
     @Test("a national limit with nothing to resolve it stays ambiguous")
     func unresolvableNationalStaysNational() {
-        let parsed = parseRoadInfo(response(maxspeed: "national"))
+        let parsed = parseRoadInfo(response(maxspeed: "national"), at: here, course: course)
         #expect(parsed.limit == .national)
         #expect(parsed.resolvedFromNational == false)
     }
 
     @Test("no elements at all means unknown, not a guess")
     func emptyResponseIsUnknown() {
-        #expect(parseRoadInfo(OverpassResponse(elements: [])).limit == .unknown)
+        #expect(parseRoadInfo(OverpassResponse(elements: []), at: here, course: course).limit == .unknown)
     }
 
-    @Test("a way with no maxspeed tag still yields its name")
-    func unknownLimitKeepsRoadLabel() {
-        let parsed = parseRoadInfo(response(name: "Back Lane"))
-        #expect(parsed.limit == .unknown)
+    @Test("an untagged way is subject to the national limit, not unknown")
+    func untaggedIsNationalNotUnknown() {
+        // Deliberate change. An absent `maxspeed` does not mean "no limit" — in the UK the road is
+        // subject to the national limit for its class. With no classification either, the class is
+        // ambiguous, so `.national` is the honest answer: limited, but by an amount we cannot name.
+        // Returning `.unknown` here previously discarded the over/under announcements entirely.
+        let parsed = parseRoadInfo(response(name: "Back Lane"), at: here, course: course)
+        #expect(parsed.limit == .national)
         #expect(parsed.roadLabel == "Back Lane")
+    }
+
+    @Test("an untagged residential road resolves to 30 and is flagged as inferred")
+    func untaggedResidentialResolves() {
+        let parsed = parseRoadInfo(
+            response(name: "Back Lane", highway: "residential"), at: here, course: course
+        )
+        #expect(parsed.limit == .value(MPH(30)))
+        // Flagged so the announcement says "national speed, 30" — the rider knows the figure was
+        // inferred from the road's class rather than read off a sign.
+        #expect(parsed.resolvedFromNational)
+    }
+
+    @Test("a smart motorway is flagged as variable")
+    func variableLimitDetected() {
+        // OSM records *that* the limit varies, never what the gantries currently show. Asserting
+        // the default figure would be worse than saying it varies.
+        let parsed = parseRoadInfo(
+            response(maxspeed: "70 mph", highway: "motorway", maxspeedVariable: "yes"),
+            at: here, course: course
+        )
+        #expect(parsed.isVariable)
     }
 }

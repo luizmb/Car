@@ -17,6 +17,9 @@ public enum RoadLimitDisplay: Sendable, Equatable {
     case known(text: String, value: Double)     // explicit sign — show circular limit sign
     case national(text: String, value: Double)  // resolved national — NSL sign + limit sign
     case nationalOnly                           // unresolvable national — NSL sign only
+    /// Smart motorway. The figure is OSM's default, not what the gantries currently read, so the
+    /// sign is marked rather than presented as fact.
+    case variable(text: String?, value: Double)
 }
 
 // MARK: - Authorization lifecycle
@@ -329,11 +332,30 @@ private func announceRoadInfo(
     _ info: RoadInfo,
     env: SpeedMonitorFeature.Environment
 ) -> Effect<SpeedMonitorFeature.Action> {
-    let limitText: String? = switch info.limit {
-    case .unknown:        nil
-    case .national:       "national"
-    case .value(let mph): (mph |> env.formatSpeedSpeech) + " zone"
+    // A variable limit still gets its number spoken. OSM's figure is the default the gantries
+    // start from, so it is the best guess available — and the over/under announcements need a
+    // figure to work against, where silence would disable them entirely. "Variable" is appended so
+    // the rider knows to believe the signs over us.
+    let limitText: String?
+    switch info.limit {
+    case .unknown:
+        limitText = info.isVariable ? "variable limit" : nil
+
+    case .national:
+        // Subject to national limits but the class is ambiguous, so there is genuinely no number.
+        limitText = info.isVariable ? "national speed, variable" : "national speed"
+
+    case .value(let mph):
+        let spoken = mph |> env.formatSpeedSpeech
+        if info.isVariable {
+            limitText = "\(spoken), variable"
+        } else {
+            // "national speed, 60" when inferred from the road's class, so the rider knows the
+            // figure came from classification rather than a sign they might have missed.
+            limitText = info.resolvedFromNational ? "national speed, \(spoken)" : "\(spoken) zone"
+        }
     }
+
     let spoken = [limitText, info.roadLabel].compactMap(id).joined(separator: ", ")
     guard !spoken.isEmpty else { return .empty }
     return spoken |> (env.announceRoad >>> Effect.fireAndForget)
@@ -426,13 +448,15 @@ private func buildDisplay(
         case .unknown:
             roadLimitDisplay = .unknown
         case .national:
-            roadLimitDisplay = .nationalOnly
+            roadLimitDisplay = info.isVariable ? .variable(text: nil, value: 0) : .nationalOnly
         case .value(let mph):
             let text  = mph |> env.formatSpeedSpeech
             let value = mph.rawValue
-            roadLimitDisplay = info.resolvedFromNational
-                ? .national(text: text, value: value)
-                : .known(text: text, value: value)
+            roadLimitDisplay = info.isVariable
+                ? .variable(text: text, value: value)
+                : info.resolvedFromNational
+                    ? .national(text: text, value: value)
+                    : .known(text: text, value: value)
         }
     } else {
         roadLimitDisplay = .none
