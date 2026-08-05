@@ -71,6 +71,12 @@ private final class SpeechBox: @unchecked Sendable {
         // `stopSpeaking` is asynchronous, and utterances submitted while the synthesiser is still
         // tearing down are silently dropped — a stop issued when nothing was playing could
         // therefore swallow the entire briefing.
+        //
+        // The 150 ms stays a raw `asyncAfter` rather than `Publisher.delay(_:clock:)` on purpose.
+        // It is not domain timing — nothing decides anything on this interval, and no test would
+        // ever want to control it. It is a workaround for `AVSpeechSynthesizer`'s asynchronous
+        // teardown, local to this driver, and dressing it up as an injectable clock would imply a
+        // schedule that does not exist.
         if synth.isSpeaking {
             synth.stopSpeaking(at: .immediate)
             let queued = texts
@@ -222,7 +228,7 @@ extension World {
             chigeeEvents: {
                 makeChigeeStream(
                     central: chigee,
-                    knownIdentifier: ChigeePeripheralStore.load(),
+                    knownIdentifier: ChigeePeripheralStore.load,
                     log: rideLog.append,
                     onLearn: ChigeePeripheralStore.save
                 )
