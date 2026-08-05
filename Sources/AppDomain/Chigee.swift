@@ -1,38 +1,27 @@
 import FP
 import FPMacros
 
-// MARK: - Signals
-
-/// How the head unit's presence was observed. Kept because the two differ in reliability and we do
-/// not yet know which will prove trustworthy in practice — the overlay shows it so a real ride can
-/// answer that without another garage session.
-@Prisms
-public enum ChigeeSignal: Sendable, Equatable {
-    /// A BLE advertisement. Reliable while unbonded (1851 packets in one capture); after bonding it
-    /// collapsed to a short burst at power-on only.
-    case advertisement
-    /// iOS itself holds a connection to the unit's HID service. Costs nothing to poll and does not
-    /// depend on the unit still advertising — the likelier signal now that it is bonded.
-    case systemConnection
-}
-
 // MARK: - Events
 
 /// Whether the bike's ignition is on, inferred from the CarPlay head unit.
 ///
 /// The unit is relayed by the ignition, so its radio dies with the keys. That makes it the one
-/// dependable ignition signal available: it does **not** advertise with the ignition off even with
-/// the phone right beside it (45s of silence observed, against a BLE advertising interval capped at
-/// 10.24s — several missed windows, not a sampling artefact).
+/// dependable ignition signal available. What it cannot tell you is whether the *engine* is running,
+/// only that the keys are on — for a two-minute choked warm-up that distinction does not matter.
 ///
-/// Timing measured across two sessions: **~9–17s** from key-on to first sighting, and a **~10s**
-/// graceful shutdown on key-off (the unit runs a visible countdown, being battery-fed but
-/// ignition-relayed) before its radio goes.
+/// **Presence means our own BLE connection to the unit, and nothing else.** Two other readings were
+/// tried on real rides and both misreported:
 ///
-/// What this cannot tell you is whether the *engine* is running — only that the keys are on. For a
-/// two-minute choked warm-up that distinction does not matter.
+/// - **Advertisements.** Reliable while unbonded — 1851 packets in one garage capture — but a
+///   bonded unit stops advertising, and across three rides exactly one burst was ever seen.
+/// - **The system-level connection.** Reported present for thirteen minutes with the ignition off,
+///   because `retrieveConnectedPeripherals` counts bonded-and-pending rather than live.
+///
+/// The connection, measured against Indimate's power-loss: it dropped **20s and 21s** after the keys
+/// came out — the unit's own ~10s shutdown countdown plus the BLE supervision timeout — and
+/// re-established *before* Indimate on restart. Key-on to first sighting runs **~9–17s**.
 @Prisms
 public enum ChigeeEvent: Sendable, Equatable {
-    case present(via: ChigeeSignal)
+    case present
     case absent
 }

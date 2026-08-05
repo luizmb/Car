@@ -8,6 +8,27 @@ public enum RoadSpeedLimit: Sendable, Equatable {
     case national   // UK national speed limit: 60 mph single carriageway, 70 mph dual/motorway
 }
 
+// MARK: - Where the number came from
+
+/// How a limit was arrived at.
+///
+/// This exists because "inferred" was previously one flag covering two very different inferences,
+/// and the announcement said "national speed" for both. On a residential street that is simply
+/// false: the *national speed limit* is a specific thing meaning 60 or 70, and the sign for it is a
+/// white circle with a black diagonal. A 30 on a residential road is the built-up-area default —
+/// nothing national about it. Riding a housing estate and hearing "national speed, 30" is
+/// contradictory enough to make the rider distrust the announcements that *are* right.
+public enum LimitOrigin: Sendable, Equatable {
+    /// Read from an explicit `maxspeed` tag — someone surveyed an actual sign.
+    case signed
+    /// Inferred from the road's class as the built-up-area default of 30.
+    case builtUpArea
+    /// Inferred as the national speed limit: 60 single carriageway, 70 dual carriageway and motorway.
+    case nationalSpeedLimit
+    /// Nothing to attribute — the limit is `.unknown`, or `.national` with the class unresolvable.
+    case unattributed
+}
+
 // MARK: - Speed zone
 
 /// The rider's zone relative to a known speed limit and its 10% tolerance.
@@ -41,11 +62,9 @@ public struct RoadInfo: Sendable, Equatable {
     public let ref: String?
     /// OSM `name` tag — road name, e.g. "High Street", "Oxford Road".
     public let name: String?
-    /// True when `limit` was derived from the national limit for the road's class rather than read
-    /// from an explicit `maxspeed` tag — either because the tag said `national`, or because there
-    /// was no tag at all. Drives the NSL sign in the UI and "national" in the announcement, so the
-    /// rider knows the figure is inferred rather than signposted.
-    public let resolvedFromNational: Bool
+    /// How `limit` was arrived at. Drives both the wording of the announcement and which sign the UI
+    /// shows, so that an inferred figure is never presented as a signposted one.
+    public let origin: LimitOrigin
 
     /// The road carries variable limits — a smart motorway with gantry signs.
     ///
@@ -56,17 +75,17 @@ public struct RoadInfo: Sendable, Equatable {
 
     public init(
         limit: RoadSpeedLimit, ref: String?, name: String?,
-        resolvedFromNational: Bool, isVariable: Bool = false
+        origin: LimitOrigin, isVariable: Bool = false
     ) {
-        self.limit                = limit
-        self.ref                  = ref
-        self.name                 = name
-        self.resolvedFromNational = resolvedFromNational
-        self.isVariable           = isVariable
+        self.limit = limit
+        self.ref = ref
+        self.name = name
+        self.origin = origin
+        self.isVariable = isVariable
     }
 
     public static let unknown = RoadInfo(
-        limit: .unknown, ref: nil, name: nil, resolvedFromNational: false
+        limit: .unknown, ref: nil, name: nil, origin: .unattributed
     )
 
     /// How the road is referred to out loud — `ref` preferred over `name` because "A40" is shorter to
@@ -77,13 +96,13 @@ public struct RoadInfo: Sendable, Equatable {
     /// makes turning from a 30 road onto a different 30 road speak, while driving the length of the A40
     /// stays silent across Overpass polls.
     public var announcement: Announcement {
-        Announcement(limit: limit, label: roadLabel, national: resolvedFromNational, variable: isVariable)
+        Announcement(limit: limit, label: roadLabel, origin: origin, variable: isVariable)
     }
 
     public struct Announcement: Sendable, Equatable {
         public let limit: RoadSpeedLimit
         public let label: String?
-        public let national: Bool
+        public let origin: LimitOrigin
         public let variable: Bool
     }
 }

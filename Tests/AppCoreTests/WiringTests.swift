@@ -39,9 +39,12 @@ struct WiringTests {
         store.dispatch(.tyres(.reading(reading)), source: .init(file: #file, function: #function, line: #line))
         #expect(store.state.tyres.readings[.front] != nil)
 
-        // CHIGEE ignition.
-        store.dispatch(.chigee(.event(.present(via: .advertisement))), source: .init(file: #file, function: #function, line: #line))
+        // CHIGEE ignition, on and off again — the off edge is the one that failed in the field,
+        // leaving the ignition reading ON for the rest of the day.
+        store.dispatch(.chigee(.event(.present)), source: .init(file: #file, function: #function, line: #line))
         #expect(store.state.chigee.isIgnitionOn == true)
+        store.dispatch(.chigee(.event(.absent)), source: .init(file: #file, function: #function, line: #line))
+        #expect(store.state.chigee.isIgnitionOn == false)
 
         // Cardo, via an audio route carrying a Bluetooth headset.
         let route = AudioRoute(outputs: [

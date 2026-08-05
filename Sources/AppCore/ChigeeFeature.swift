@@ -25,8 +25,6 @@ public enum ChigeeFeature {
     public struct State: Sendable, Equatable {
         /// `nil` until the first observation — genuinely unknown, as distinct from off.
         public var isIgnitionOn: Bool?
-        /// Which signal last reported it, so a real ride can show which of the two is trustworthy.
-        public var signal: ChigeeSignal?
         public init() {}
     }
 
@@ -59,18 +57,12 @@ public enum ChigeeFeature {
         .handle { action, context in
             guard case let .event(event) = action else { return .doNothing }
             switch event {
-            case let .present(via: signal):
+            case .present:
                 guard context.stateBefore?.isIgnitionOn != true else { return .doNothing }
-                return .reduce {
-                    $0.isIgnitionOn = true
-                    $0.signal = signal
-                }
+                return .reduce { $0.isIgnitionOn = true }
             case .absent:
                 guard context.stateBefore?.isIgnitionOn != false else { return .doNothing }
-                return .reduce {
-                    $0.isIgnitionOn = false
-                    $0.signal = nil
-                }
+                return .reduce { $0.isIgnitionOn = false }
             }
         }
     }
@@ -94,23 +86,13 @@ struct ChigeeStatusView: View {
     let viewStore: ViewStore<ChigeeFeature.State, ChigeeFeature.Action>
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 5) {
-                Text("Ignition:")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Text(label)
-                    .font(.caption2.bold())
-                    .foregroundStyle(colour)
-            }
-
-            // Which signal reported it. Present while we still do not know which of the two is
-            // dependable in the field; it can go once a few rides have answered that.
-            if let signal = viewStore.state.signal {
-                Text(signal.label)
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-            }
+        HStack(spacing: 5) {
+            Text("Ignition:")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(label)
+                .font(.caption2.bold())
+                .foregroundStyle(colour)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
@@ -131,15 +113,6 @@ struct ChigeeStatusView: View {
         case .some(true):  .green
         case .some(false): .red
         case nil:          .secondary
-        }
-    }
-}
-
-private extension ChigeeSignal {
-    var label: String {
-        switch self {
-        case .advertisement:   "via advertisement"
-        case .systemConnection: "via system link"
         }
     }
 }
