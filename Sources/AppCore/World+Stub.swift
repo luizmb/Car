@@ -13,6 +13,7 @@ public extension World {
             authorizationUpdates: { .empty() },
             locationUpdates: { .empty() },
             subscribeToRoadSpeed: { .empty() },
+            subscribeToCameras: { .empty() },
             bluetoothAuthorization: { .notDetermined },
             indimateEvents: { .empty() },
             playIndicatorLoop: { _ in .empty() },

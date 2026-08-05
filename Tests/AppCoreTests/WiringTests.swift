@@ -1,6 +1,7 @@
 import AppDomain
 import Foundation
 import Testing
+import SpeedMonitorFeature
 @testable import AppCore
 
 // These exist because a whole class of regression shipped twice without anything noticing.
@@ -45,6 +46,22 @@ struct WiringTests {
         #expect(store.state.chigee.isIgnitionOn == true)
         store.dispatch(.chigee(.event(.absent)), source: .init(file: #file, function: #function, line: #line))
         #expect(store.state.chigee.isIgnitionOn == false)
+
+        // Cameras reach the speed monitor's slice.
+        let camera = SpeedCamera(
+            id: 42, kind: .fixed,
+            latitude: Latitude(51.75), longitude: Longitude(-0.475),
+            limit: MPH(30), direction: nil
+        )
+        store.dispatch(.speedMonitor(.camerasChanged([camera])), source: .init(file: #file, function: #function, line: #line))
+        #expect(store.state.speedMonitor.cameras.map(\.id) == [42])
+
+        // And the spoken-once bookkeeping prunes when a camera leaves the fetched set, otherwise
+        // riding back the other way would stay silent for ever.
+        store.dispatch(.speedMonitor(.camerasAnnounced([42])), source: .init(file: #file, function: #function, line: #line))
+        #expect(store.state.speedMonitor.announcedCameraIDs == [42])
+        store.dispatch(.speedMonitor(.camerasChanged([])), source: .init(file: #file, function: #function, line: #line))
+        #expect(store.state.speedMonitor.announcedCameraIDs.isEmpty)
 
         // Cardo, via an audio route carrying a Bluetooth headset.
         let route = AudioRoute(outputs: [

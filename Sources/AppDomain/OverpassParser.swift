@@ -90,11 +90,27 @@ func parseLimitAndOrigin(
     if raw == "national" {
         return resolveUntagged(highway: highway, maxspeedType: maxspeedType)
     }
-    let parts = raw.components(separatedBy: " ")
-    guard let value = Double(parts[0]) else { return (.unknown, .unattributed) }
-    let isKph = parts.count > 1 && parts[1].hasPrefix("km")
-    let mph = isKph ? Iso<MPH, KPH>.convert.reverseGet(KPH(value)) : MPH(value)
+    guard let mph = parseMaxspeedMPH(raw) else { return (.unknown, .unattributed) }
     return (.value(mph), .signed)
+}
+
+/// An OSM `maxspeed` value as mph — `"30 mph"`, `"30"`, `"80 km/h"`.
+///
+/// Shared with the speed-camera parser, where an enforcement relation carries its own `maxspeed`
+/// that may differ from the road's. `nil` for `national` and anything unparseable, since those need
+/// classification context this function does not have.
+func parseMaxspeedMPH(_ raw: String?) -> MPH? {
+    guard
+        let raw = raw?.lowercased().trimmingCharacters(in: .whitespaces),
+        !raw.isEmpty
+    else { return nil }
+
+    let parts = raw.components(separatedBy: " ")
+    guard let value = Double(parts[0]) else { return nil }
+    // OSM's default unit is km/h; mph is always explicit, which is why the check is for "km" rather
+    // than for "mph".
+    let isKph = parts.count > 1 && parts[1].hasPrefix("km")
+    return isKph ? Iso<MPH, KPH>.convert.reverseGet(KPH(value)) : MPH(value)
 }
 
 /// Resolves the limit for a road with no usable `maxspeed`, and says which default was applied.
