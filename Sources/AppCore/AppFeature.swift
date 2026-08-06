@@ -52,13 +52,22 @@ public enum AppFeature {
         /// GPS distance since the last fill — the figure the fuel maths will use.
         public var trip: TripFeature.State
 
+        /// The refuel history, held at app level rather than only inside the fuel screen.
+        ///
+        /// The screen's copy lives in a path element and exists only while it is open. The briefing
+        /// is spoken when it is *not* — setting off is precisely when the rider is in the dark about
+        /// fuel — so the log has to be somewhere that outlives the screen.
+        public var fuelLog: FuelLog = .empty
+
         /// Whether a journey is under way, by the two-signal rule. Not derived on demand: the rule
         /// is a *transition*, so the previous phase has to be remembered to know an edge happened.
         public var journey: JourneyPhase = .idle
 
-        /// Whether the pre-ride briefing has been spoken this session. It fires once, when the last
-        /// of CHIGEE and Cardo connects — no Cardo means no greeting, but also no ears, so nothing
-        /// is lost.
+        /// Whether the pre-ride briefing has been spoken for the journey now under way.
+        ///
+        /// Reset when the journey ends, so it is once *per ride* rather than once per app session —
+        /// the app is often left running between rides, and a briefing that fires once a launch
+        /// would be silent on the second outing of the day.
         public var flightPlanSpoken: Bool = false
 
         /// The pushed screens, each carrying its own state. One source of truth: there is no parallel
@@ -100,6 +109,8 @@ public enum AppFeature {
         /// A journey began or ended. Carries the phase rather than recomputing it, so the reduction
         /// and the announcement cannot disagree about which edge fired.
         case journeyChanged(JourneyPhase)
+        /// The refuel history, read from disk at launch and after every save.
+        case fuelLogLoaded(FuelLog)
     }
 
     // MARK: - Environment
@@ -147,6 +158,25 @@ public enum AppFeature {
                 guard active, let event = journeyEvent(for: action) else { return debug }
                 return debug <> (ctx.environment.logJourney(event) |> Effect.fireAndForget)
             }
+        }
+
+        // The fuel log, kept at app level: read once at launch and again whenever a fill is saved,
+        // so the briefing has it whether or not the screen has ever been opened.
+        <> Behavior<AppAction, AppState, World>.handle { action, _ in
+            let isLaunch = AppAction.prism.appLaunch.preview(action) != nil
+            let isSaved = AppAction.prism.fuel.preview(action).flatMap(FuelFeature.Action.prism.saved.preview) != nil
+            guard isLaunch || isSaved else { return .doNothing }
+            return .produce { ctx in
+                ctx.environment.loadFuelLog()
+                    .asEffect { (result: Result<FuelLog, FileError>) in
+                        AppAction.fuelLogLoaded((try? result.get()) ?? .empty)
+                    }
+            }
+        }
+
+        <> Behavior<AppAction, AppState, World>.handle { action, _ in
+            guard let log = AppAction.prism.fuelLogLoaded.preview(action) else { return .doNothing }
+            return .reduce { $0.fuelLog = log }
         }
 
         <> navigationBehavior()
@@ -206,7 +236,11 @@ public enum AppFeature {
                 indimate: before.indicator.isConnected,
                 ignition: before.chigee.isIgnitionOn == true
             )
-            return .reduce { $0.journey = next }
+            return .reduce {
+                $0.journey = next
+                // A finished journey re-arms the briefing for the next one.
+                if JourneyPhase.prism.idle.preview(next) != nil { $0.flightPlanSpoken = false }
+            }
                 .produce { ctx in
                     let now = ctx.environment.now()
                     let spoken: String? = switch (before.journey, next) {
@@ -297,13 +331,18 @@ public enum AppFeature {
             }
         }
 
-        // Flight Plan, spoken once when the last of CHIGEE and Cardo arrives — during the
-        // two-minute choked warm-up, when the rider is sitting there anyway.
+        // Flight Plan, spoken once per journey, when the last of the journey and the Cardo arrives —
+        // during the two-minute choked warm-up, when the rider is sitting there anyway.
+        //
+        // Gated on the *journey* rather than on CHIGEE alone. CHIGEE has spent several rides never
+        // connecting at all, and a briefing that waits for it is a briefing that never happens —
+        // taking the fuel line with it, which is the one part the rider cannot get any other way.
+        // Either ignition signal now opens the journey, so either will do here.
         <> Behavior<AppAction, AppState, World>.handle { _, context in
             guard
                 let state = context.stateBefore,
                 !state.flightPlanSpoken,
-                state.chigee.isIgnitionOn == true,
+                JourneyPhase.prism.active.preview(state.journey) != nil,
                 state.cardo.isConnected
             else { return .doNothing }
             return .reduce { $0.flightPlanSpoken = true }
@@ -379,6 +418,20 @@ let flightPlanGap: TimeInterval = 0.45
 public extension AppState {
     /// Gathers everything the briefing can speak about. Kept in one place so the automatic and
     /// on-demand paths cannot drift apart.
+    /// The fuel line for the briefing.
+    ///
+    /// Reads the log the fuel screen persists rather than any live state, because the screen is only
+    /// in the path while it is open — and the briefing is spoken when it is not.
+    private func fuelBriefing(_ world: World) -> String? {
+        guard !fuelLog.refuels.isEmpty else { return nil }
+        return fuelSummary(
+            fuelLog,
+            travelled: trip.kilometresSinceFill,
+            spec: .vt400,
+            formatDistance: { String(format: "%.0f kilometres", $0) }
+        )
+    }
+
     func flightPlanInputs(_ world: World) -> FlightPlanInputs {
         let display = speedMonitor.display
         let gpsAccuracy = speedMonitor.lastLocation?.horizontalAccuracy?.rawValue
@@ -393,7 +446,8 @@ public extension AppState {
             bikeMillivolts: indicator.battery?.hexMillivolts,
             phoneBattery: world.phoneBattery(),
             lowPowerMode: world.isLowPowerMode(),
-            gpsAccuracy: gpsAccuracy
+            gpsAccuracy: gpsAccuracy,
+            fuel: fuelBriefing(world)
         )
     }
 }
