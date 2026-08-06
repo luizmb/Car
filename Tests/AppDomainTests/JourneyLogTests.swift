@@ -30,7 +30,7 @@ struct JourneyLogTests {
             ActivityPayload(activity: "automotive", confidence: 2),
             DevicePayload(device: "ignition", connected: true),
             RefuelPayload(litres: 12.5, price: 1.49, odometer: 26_031, brim: true),
-            ReservePayload(km: 184.2)
+            ReservePayload(km: 184.2, odometer: 26_215)
         ]
     }
 
@@ -90,7 +90,7 @@ struct JourneyLogTests {
 
     @Test("blank lines are ignored")
     func blankLines() throws {
-        let lines = try [line(ReservePayload(km: 1)), "", "   "]
+        let lines = try [line(ReservePayload(km: 1, odometer: nil)), "", "   "]
         #expect(JourneyLog.records(fromLines: lines).count == 1)
     }
 

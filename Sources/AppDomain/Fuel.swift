@@ -73,10 +73,18 @@ public struct RefuelRecord: Sendable, Equatable, Codable, Identifiable {
     public let latitude: Latitude?
     public let longitude: Longitude?
 
+    /// Where it was filled, resolved at the moment of recording.
+    ///
+    /// Optional because Overpass may be slow or unreachable on a forecourt, and a fill with no
+    /// station is worth more than no fill. But it can only be captured *now* — attributing a
+    /// coordinate to a station afterwards means clustering by hand, so a fill saved without it never
+    /// gets one.
+    public let station: FuelStation?
+
     public init(
         id: UUID, date: Date, litres: Litres, pricePerLitre: Double, grade: FuelGrade,
         filledToBrim: Bool, odometer: Kilometres?, gpsKilometres: Kilometres? = nil,
-        latitude: Latitude?, longitude: Longitude?
+        latitude: Latitude?, longitude: Longitude?, station: FuelStation? = nil
     ) {
         self.id = id
         self.date = date
@@ -88,6 +96,7 @@ public struct RefuelRecord: Sendable, Equatable, Codable, Identifiable {
         self.gpsKilometres = gpsKilometres
         self.latitude = latitude
         self.longitude = longitude
+        self.station = station
     }
 
     public var totalCost: Double { litres.rawValue * pricePerLitre }

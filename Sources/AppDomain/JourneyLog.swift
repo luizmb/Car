@@ -219,20 +219,36 @@ public struct RefuelPayload: JourneyPayloadType, Equatable {
     public let price: Double
     public let odometer: Double?
     public let brim: Bool
+    /// The forecourt, where it could be resolved — what price comparison is grouped by.
+    public let station: String?
+    public let stationID: Int?
 
-    public init(litres: Double, price: Double, odometer: Double?, brim: Bool) {
+    public init(
+        litres: Double, price: Double, odometer: Double?, brim: Bool,
+        station: String? = nil, stationID: Int? = nil
+    ) {
         self.litres = litres
         self.price = price
         self.odometer = odometer
         self.brim = brim
+        self.station = station
+        self.stationID = stationID
     }
 }
 
 public struct ReservePayload: JourneyPayloadType, Equatable {
     public static let recordType: RecordType = .reserve
 
-    public let km: Double
-    public init(km: Double) { self.km = km }
+    /// GPS kilometres since the last fill. Optional because a reserve switch can happen before the
+    /// app has ever had a fix, and recording zero would read as "switched to reserve immediately
+    /// after filling" — a claim that would quietly ruin the consumption maths.
+    public let km: Double?
+    public let odometer: Double?
+
+    public init(km: Double?, odometer: Double?) {
+        self.km = km
+        self.odometer = odometer
+    }
 }
 
 // MARK: - Kind lookup

@@ -71,6 +71,16 @@ public struct World: Sendable {
     public let isLowPowerMode: @Sendable () -> Bool
     /// Injected rather than called ambiently — the architecture forbids `Date()`/`UUID()` inside
     /// logic, and a refuel record needs both.
+    /// Reading and writing numbers the way the rider's device does.
+    ///
+    /// `NumberFormatter` is not a primitive and must not leak past this boundary, so the World
+    /// exposes the two operations rather than the object — and as two independent closures rather
+    /// than an `Iso`, because neither direction is total: parsing fails on an empty or malformed
+    /// field, and formatting then parsing does not return the original string.
+    /// The forecourt at a position. Empty rather than failing — a fill with no station beats no fill.
+    public let fetchStation: @Sendable (Latitude, Longitude) -> Publisher<FuelStation?, Never>
+    public let parseNumber: @Sendable (String) -> Result<Double, NumberError>
+    public let formatNumber: @Sendable (Double) -> Result<String, NumberError>
     public let now: @Sendable () -> Date
     public let newID: @Sendable () -> UUID
     /// Appends a line to the ride log. Temporary raw capture until the journey recorder lands.
