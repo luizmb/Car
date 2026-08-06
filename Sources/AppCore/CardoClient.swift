@@ -32,13 +32,18 @@ final class CardoCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelega
     private var central: CBCentralManager?
     private var peripheral: CBPeripheral?
     private var emit: (@Sendable (CardoEvent) -> Void)?
+    private var log: (@Sendable (String) -> Void)?
 
     /// Idempotent, for the same reason `IndimateCentral.start` is: a second subscription would
     /// otherwise leak a scanning manager and orphan the live one.
-    func start(_ emit: @escaping @Sendable (CardoEvent) -> Void) {
+    func start(
+        log: @escaping @Sendable (String) -> Void,
+        _ emit: @escaping @Sendable (CardoEvent) -> Void
+    ) {
         let running = lock.withLock { () -> Bool in
             guard central == nil else { return true }
             self.emit = emit
+            self.log = log
             return false
         }
         guard !running else { return }
@@ -64,6 +69,8 @@ final class CardoCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelega
             central = nil
         }
     }
+
+    private func note(_ line: String) { lock.withLock { log }?(line) }
 
     private func send(_ event: CardoEvent) { lock.withLock { emit }?(event) }
 
@@ -138,10 +145,23 @@ final class CardoCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelega
 
     // MARK: CBPeripheralDelegate
 
+    /// Discovers **everything**, not just the one characteristic we already knew about.
+    ///
+    /// Read-only reconnaissance. The question is whether this unit exposes a *writable* channel
+    /// alongside the notify one — nothing public documents its protocol, and until now the client
+    /// asked for exactly one characteristic by UUID, so a whole control surface could have been
+    /// sitting there unseen. The same allow-list-of-one hid things on Indimate.
+    ///
+    /// Nothing is written. Guessing opcodes at a helmet intercom's control channel is a different
+    /// risk class from guessing at a connection — unknown writes can land on firmware-update or
+    /// factory-reset paths, and this is the device every announcement comes out of.
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: (any Error)?) {
-        (peripheral.services ?? [])
-            .filter { $0.uuid == Cardo.service }
-            .forEach { peripheral.discoverCharacteristics([Cardo.notify], for: $0) }
+        let services = peripheral.services ?? []
+        note("cardo-services count=\(services.count)")
+        for service in services {
+            note("cardo-service uuid=\(service.uuid.uuidString)")
+            peripheral.discoverCharacteristics(nil, for: service)
+        }
     }
 
     func peripheral(
@@ -149,9 +169,14 @@ final class CardoCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelega
         didDiscoverCharacteristicsFor service: CBService,
         error: (any Error)?
     ) {
-        (service.characteristics ?? [])
-            .filter { $0.uuid == Cardo.notify }
-            .forEach { peripheral.setNotifyValue(true, for: $0) }
+        for characteristic in service.characteristics ?? [] {
+            note("cardo-char svc=\(service.uuid.uuidString) uuid=\(characteristic.uuid.uuidString) props=\(propertyNames(characteristic.properties))")
+            // Subscribe only to what pushes. Reading arbitrary characteristics is harmless, but
+            // subscribing to the wrong thing produces a firehose we would then have to filter.
+            if characteristic.uuid == Cardo.notify {
+                peripheral.setNotifyValue(true, for: characteristic)
+            }
+        }
     }
 
     func peripheral(
@@ -163,12 +188,30 @@ final class CardoCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelega
     }
 }
 
+/// The properties a characteristic advertises, spelled out — `write` and `writeWithoutResponse` are
+/// the ones this exercise exists to find.
+private func propertyNames(_ p: CBCharacteristicProperties) -> String {
+    var names: [String] = []
+    if p.contains(.read) { names.append("read") }
+    if p.contains(.write) { names.append("write") }
+    if p.contains(.writeWithoutResponse) { names.append("writeNoResp") }
+    if p.contains(.notify) { names.append("notify") }
+    if p.contains(.indicate) { names.append("indicate") }
+    if p.contains(.broadcast) { names.append("broadcast") }
+    if p.contains(.authenticatedSignedWrites) { names.append("signedWrite") }
+    if p.contains(.extendedProperties) { names.append("extended") }
+    return names.isEmpty ? "none" : names.joined(separator: "|")
+}
+
 // MARK: - Cold publisher
 
-func makeCardoStream(central: CardoCentral) -> Publisher<CardoEvent, Never> {
+func makeCardoStream(
+    central: CardoCentral,
+    log: @escaping @Sendable (String) -> Void
+) -> Publisher<CardoEvent, Never> {
     Publisher { continuation in
         let (stream, streamContinuation) = AsyncStream<CardoEvent>.makeStream()
-        central.start { streamContinuation.yield($0) }
+        central.start(log: log) { streamContinuation.yield($0) }
         await continuation.yieldAll(stream)
         central.stop()
     }

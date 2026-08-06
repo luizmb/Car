@@ -303,7 +303,7 @@ extension World {
                     onLearn: ChigeePeripheralStore.save
                 )
             },
-            cardoEvents: { makeCardoStream(central: cardo) },
+            cardoEvents: { makeCardoStream(central: cardo, log: rideLog.append) },
             audioRouteChanges: { makeAudioRouteStream() },
             barometer: { makeBarometerStream(box: motionBox) },
             motion: { makeMotionStream(box: motionBox) },

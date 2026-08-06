@@ -147,31 +147,31 @@ public struct SpeedJarvisShortcuts: AppShortcutsProvider {
     public static var appShortcuts: [AppShortcut] {
         AppShortcut(
             intent: CurrentSpeedIntent(),
-            phrases: ["What's my speed in \(.applicationName)", "\(.applicationName) speed"],
+            phrases: ["\(.applicationName) speed", "What's my speed in \(.applicationName)"],
             shortTitle: "Speed",
             systemImageName: "speedometer"
         )
         AppShortcut(
             intent: SpeedLimitIntent(),
-            phrases: ["What's the speed limit in \(.applicationName)", "\(.applicationName) limit"],
+            phrases: ["\(.applicationName) speed limit", "\(.applicationName) limit"],
             shortTitle: "Limit",
             systemImageName: "signpost.right"
         )
         AppShortcut(
             intent: TyreCheckIntent(),
-            phrases: ["Check my tyres in \(.applicationName)", "\(.applicationName) tyres"],
+            phrases: ["\(.applicationName) tyres", "Check my tyres in \(.applicationName)"],
             shortTitle: "Tyres",
             systemImageName: "circle.circle"
         )
         AppShortcut(
             intent: FullReportIntent(),
-            phrases: ["Full report in \(.applicationName)", "\(.applicationName) full report"],
+            phrases: ["\(.applicationName) full report", "Full report in \(.applicationName)"],
             shortTitle: "Full report",
             systemImageName: "list.bullet.rectangle.portrait"
         )
         AppShortcut(
             intent: BikeStatusIntent(),
-            phrases: ["Bike status in \(.applicationName)", "\(.applicationName) status"],
+            phrases: ["\(.applicationName) status", "\(.applicationName) report"],
             shortTitle: "Status",
             systemImageName: "checklist"
         )

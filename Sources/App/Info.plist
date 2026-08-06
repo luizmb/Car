@@ -11,6 +11,14 @@
 	     Connect asks the same question on every single TestFlight upload and holds the build until
 	     it is answered by hand. The answer never changes, so it belongs here rather than in a
 	     workflow making an authenticated API call to say "no" again. -->
+	<!-- How Siri should *hear* the app name.
+	     "SpeedJarvis" is one unbroken word: Siri parsed it as "speed" plus noise and routed every
+	     request to HomeKit — the shortcuts registered fine and every phrase answered "none of your
+	     accessories can respond to that". App Shortcut phrases must contain the app name, so the
+	     name has to be sayable, and one short common word beats a compound brand nobody says aloud.
+	     "Bike speed", "bike speed limit", "bike tyres" are all things a rider would say anyway. -->
+	<key>CFBundleSpokenName</key>
+	<string>Bike</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>UIFileSharingEnabled</key>
