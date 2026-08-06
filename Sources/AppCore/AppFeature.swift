@@ -201,13 +201,20 @@ public enum AppFeature {
             )
             return .reduce { $0.journey = next }
                 .produce { ctx in
+                    let now = ctx.environment.now()
                     let spoken: String? = switch (before.journey, next) {
                     case (.idle, .active): journeyStartAnnouncement(signals)
-                    case let (.active(since), .idle):
-                        journeyEndAnnouncement(since: since, now: ctx.environment.now())
+                    case let (.active(since), .idle): journeyEndAnnouncement(since: since, now: now)
                     default: nil
                     }
-                    return spoken.map { $0 |> (ctx.environment.speakQueued >>> Effect.fireAndForget) } ?? .empty
+                    let announce: Effect<AppAction> = spoken
+                        .map { $0 |> (ctx.environment.speakQueued >>> Effect.fireAndForget) } ?? .empty
+                    // A marker of its own, so the boundary is one grep rather than a hunt through
+                    // the action dump.
+                    let mark: Effect<AppAction> = journeyMarker(
+                        from: before.journey, to: next, signals: signals, now: now
+                    ).map { ctx.environment.logAction($0) |> Effect.fireAndForget } ?? .empty
+                    return announce <> mark
                 }
         }
 
@@ -455,7 +462,7 @@ public enum AppScopes: Rig {
 
     public static let chigee = ScopeOf<AppScopes>
         .action(\.chigee).state(\.chigee)
-        .environment(\.chigeeEvents >>> ChigeeFeature.Environment.init)
+        .environment(fanout(keypaths: \.chigeeEvents, \.speakQueued, into: ChigeeFeature.Environment.init))
 
     public static let tyres = ScopeOf<AppScopes>
         .action(\.tyres).state(\.tyres)

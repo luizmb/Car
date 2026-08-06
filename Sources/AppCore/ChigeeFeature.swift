@@ -39,9 +39,16 @@ public enum ChigeeFeature {
 
     public struct Environment: Sendable {
         public let chigeeEvents: @Sendable () -> Publisher<ChigeeEvent, Never>
+        /// Queued rather than interrupting. Losing the ignition is worth knowing about but never
+        /// worth cutting a speed call in half for.
+        public let speakQueued: @Sendable (String) -> Publisher<Void, Never>
 
-        public init(chigeeEvents: @escaping @Sendable () -> Publisher<ChigeeEvent, Never>) {
+        public init(
+            chigeeEvents: @escaping @Sendable () -> Publisher<ChigeeEvent, Never>,
+            speakQueued: @escaping @Sendable (String) -> Publisher<Void, Never>
+        ) {
             self.chigeeEvents = chigeeEvents
+            self.speakQueued = speakQueued
         }
     }
 
@@ -53,16 +60,27 @@ public enum ChigeeFeature {
         commands() <> supervisor()
     }
 
+    /// Spoken as well as shown, to match Indimate — which has always announced itself while this
+    /// stayed silent, exactly backwards for the signal actually under test. Hearing "ignition on"
+    /// is what tells the rider the pending connect worked, without stopping to read a log.
     private static func commands() -> Behavior<Action, State, Environment> {
         .handle { action, context in
             guard case let .event(event) = action else { return .doNothing }
+            let before = context.stateBefore?.isIgnitionOn
             switch event {
             case .present:
-                guard context.stateBefore?.isIgnitionOn != true else { return .doNothing }
+                guard before != true else { return .doNothing }
                 return .reduce { $0.isIgnitionOn = true }
+                    .produce { ctx in ctx.environment.speakQueued("Ignition on") |> Effect.fireAndForget }
             case .absent:
-                guard context.stateBefore?.isIgnitionOn != false else { return .doNothing }
+                guard before != false else { return .doNothing }
                 return .reduce { $0.isIgnitionOn = false }
+                    .produce { ctx in
+                        // `nil -> false` is the app starting up with no ignition, not the keys
+                        // coming out. Announcing that would greet every launch with "ignition off".
+                        guard before != nil else { return .empty }
+                        return ctx.environment.speakQueued("Ignition off") |> Effect.fireAndForget
+                    }
             }
         }
     }

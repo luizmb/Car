@@ -93,3 +93,53 @@ public func journeyEndAnnouncement(since start: Date, now: Date) -> String {
         ? "Journey finished, one minute."
         : "Journey finished, \(minutes) minutes."
 }
+
+// MARK: - Ride-log marker
+
+/// ISO-8601 in UTC, matching the `t` field the ride log stamps on every line.
+///
+/// Explicitly UTC rather than `Calendar.current`: the log is filed by UTC day and read on a Mac in
+/// another time zone, so a local-time string embedded in a UTC line would be a trap.
+func utcTimestamp(_ date: Date) -> String {
+    let formatter = ISO8601DateFormatter()
+    formatter.timeZone = TimeZone(secondsFromGMT: 0)
+    return formatter.string(from: date)
+}
+
+/// A greppable line for the ride log, distinct from the action dump.
+///
+/// Every action is already logged via `String(describing:)`, so the journey transition is *in* there
+/// — buried among tens of thousands of GPS and motion lines, in a shape that changes whenever a type
+/// does. This is the stable, findable form:
+///
+/// ```
+/// journey-start via=ignition
+/// journey-end seconds=1140 started=2026-08-06T20:21:32Z
+/// ```
+///
+/// The start time is carried on the end line on purpose: a journey is two timestamps, and having
+/// both on one line means the record survives even if the beginning of the file is lost or the app
+/// was relaunched mid-ride.
+public func journeyMarker(
+    from previous: JourneyPhase,
+    to next: JourneyPhase,
+    signals: JourneySignals,
+    now: Date
+) -> String? {
+    switch (previous, next) {
+    case (.idle, .active):
+        let via = if signals.indimate && signals.ignition {
+            "both"
+        } else if signals.ignition {
+            "ignition"
+        } else {
+            "indimate"
+        }
+        return "journey-start via=\(via)"
+    case let (.active(since), .idle):
+        let seconds = Int(now.timeIntervalSince(since).rounded())
+        return "journey-end seconds=\(seconds) started=\(utcTimestamp(since))"
+    default:
+        return nil
+    }
+}

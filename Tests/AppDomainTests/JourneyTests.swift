@@ -65,3 +65,35 @@ struct JourneyTests {
         #expect(journeyEndAnnouncement(since: t0, now: t0.addingTimeInterval(1_140)) == "Journey finished, 19 minutes.")
     }
 }
+
+@Suite("Journey ride-log markers")
+struct JourneyMarkerTests {
+
+    private let t0 = Date(timeIntervalSince1970: 1_785_974_492)
+    private func signals(_ i: Bool, _ g: Bool) -> JourneySignals { .init(indimate: i, ignition: g) }
+
+    @Test("the start marker records which signal opened it")
+    func startMarker() {
+        #expect(journeyMarker(from: .idle, to: .active(since: t0), signals: signals(false, true), now: t0)
+                == "journey-start via=ignition")
+        #expect(journeyMarker(from: .idle, to: .active(since: t0), signals: signals(true, false), now: t0)
+                == "journey-start via=indimate")
+        #expect(journeyMarker(from: .idle, to: .active(since: t0), signals: signals(true, true), now: t0)
+                == "journey-start via=both")
+    }
+
+    @Test("the end marker carries both timestamps")
+    func endMarker() {
+        // A journey is two timestamps. Putting the start on the end line means one grep recovers the
+        // whole record, even if the file was rotated or the app relaunched mid-ride.
+        #expect(journeyMarker(
+            from: .active(since: t0), to: .idle, signals: signals(false, false),
+            now: t0.addingTimeInterval(1_140)
+        ) == "journey-end seconds=1140 started=2026-08-06T00:01:32Z")
+    }
+
+    @Test("no marker when nothing crossed a boundary")
+    func noMarker() {
+        #expect(journeyMarker(from: .idle, to: .idle, signals: signals(false, false), now: t0) == nil)
+    }
+}
