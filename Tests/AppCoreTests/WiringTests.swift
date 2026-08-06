@@ -179,6 +179,7 @@ struct RefuelRecordingTests {
             locationUpdates: world.locationUpdates,
             subscribeToRoadSpeed: world.subscribeToRoadSpeed,
             subscribeToCameras: world.subscribeToCameras,
+            reverseGeocode: world.reverseGeocode,
             refreshRoadNow: world.refreshRoadNow,
             bluetoothAuthorization: world.bluetoothAuthorization,
             indimateEvents: world.indimateEvents,

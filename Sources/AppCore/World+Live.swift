@@ -124,7 +124,13 @@ extension World {
         let roadSpeed = RoadSpeedBox(minDistance: Meters(300), minTime: 20)
         // Cameras are fetched over a wide radius and rarely: 1 km of travel or two minutes. The set
         // barely changes over that distance, and the per-fix "is one ahead" test needs no network.
-        let cameraLoc = RoadSpeedBox(minDistance: Meters(1_000), minTime: 120)
+        // Two kilometres travelled, two kilometres of radius — coverage that cannot gap.
+        //
+        // Leaving a 2 km circle takes more than 2 km of travel: a perfectly straight line arrives
+        // exactly at the edge, and city roads bend, so the rider is always inside the set already
+        // fetched. Halving the request rate costs nothing at all, which is a better trade than the
+        // 5 km cadence tried earlier — that one bought fewer requests by leaving miles uncovered.
+        let cameraLoc = RoadSpeedBox(minDistance: Meters(2_000), minTime: 120)
         let speech    = SpeechBox()
         let indimate  = IndimateCentral()
         let cardo     = CardoCentral()
@@ -208,7 +214,9 @@ extension World {
                 makeRoadSpeedStream(
                     box: roadSpeed,
                     httpClient: httpClient,
-                    decoder: decoder
+                    decoder: decoder,
+                    reverseGeocode: GeocoderBox.streetName,
+                    log: rideLog.append
                 )
             },
             subscribeToCameras: {
@@ -216,11 +224,17 @@ extension World {
                     box: cameraLoc,
                     httpClient: httpClient,
                     decoder: cameraDecoder,
-                    radius: Meters(3_000)
+                    radius: Meters(2_000),
+                    log: rideLog.append
                 )
             },
-            refreshRoadNow: {
-                Publisher.future { DispatchQueue.main.async { forceRoadRefresh(box: roadSpeed) } }
+            reverseGeocode: GeocoderBox.streetName,
+            refreshRoadNow: { latitude, longitude in
+                Publisher.future {
+                    DispatchQueue.main.async {
+                        forceRoadRefresh(box: roadSpeed, at: (latitude, longitude))
+                    }
+                }
             },
             bluetoothAuthorization: { CBManager.authorization.domain },
             indimateEvents: {

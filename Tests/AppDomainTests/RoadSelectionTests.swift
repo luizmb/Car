@@ -240,3 +240,31 @@ struct DoorstepTests {
         #expect(info.limit == .value(MPH(30)))   // the built-up default, not the neighbour's 40
     }
 }
+
+@Suite("Overpass requests")
+struct OverpassRequestTests {
+
+    @Test("every request identifies the app")
+    func userAgent() {
+        // Overpass explicitly asks that apps send a User-Agent that identifies them; the default
+        // URLSession agent does not. It is also self-interest — identified traffic is accounted to
+        // this app rather than to everything else sharing a carrier's address.
+        let requests = [
+            overpassRequest(latitude: Latitude(51.75), longitude: Longitude(-0.475)),
+            overpassCameraRequest(latitude: Latitude(51.75), longitude: Longitude(-0.475), radius: Meters(2_000)),
+            overpassStationRequest(latitude: Latitude(51.75), longitude: Longitude(-0.475))
+        ]
+        for request in requests {
+            let agent = request.value(forHTTPHeaderField: "User-Agent")
+            #expect(agent?.contains("SpeedJarvis") == true)
+            #expect(agent?.contains("github.com/luizmb/Car") == true)
+        }
+    }
+
+    @Test("requests fail fast rather than hanging")
+    func timeout() {
+        // Sixty seconds is the default and useless here: a road name that late describes a road the
+        // rider has already left, and the wait blocks the Apple fallback behind it.
+        #expect(overpassRequest(latitude: Latitude(51.75), longitude: Longitude(-0.475)).timeoutInterval == 6)
+    }
+}

@@ -33,9 +33,103 @@ public struct OverpassResponse: Decodable, Sendable {
     public let elements: [Element]
 }
 
+// MARK: - Endpoints
+
+/// Which Overpass server a query goes to.
+///
+/// Overpass rate-limits **per IP across all queries**, so one expensive query can have every other
+/// request from the same phone refused — which is exactly what happened on 2026-08-06. The road
+/// lookup had run happily on cellular for a month; the day the camera query shipped, the road
+/// resolved once at launch and then never again for an hour, and a station lookup on a completely
+/// unrelated code path failed too.
+///
+/// Splitting the hosts is what makes that impossible rather than unlikely: the camera query can trip
+/// a limiter as often as it likes and the road lookup, which everything else depends on, is
+/// unaffected.
+public struct OverpassEndpoint: Sendable, Equatable {
+    /// Full interpreter URLs, tried in order.
+    ///
+    /// URLs rather than hostnames because mirrors do not agree on the path — Mail.ru's sits under
+    /// `/osm/tools/overpass/api/interpreter`, not `/api/interpreter`.
+    ///
+    /// More than one because a single host is a single point of failure, and both of its failure
+    /// modes turned up in one afternoon: `overpass-api.de` first rate-limited us with 429s, then
+    /// stopped accepting connections at all — from an unrelated machine as well as from the phone.
+    ///
+    /// **A mirror must serve the planet.** `overpass.osm.ch` was tried and is the *Swiss* regional
+    /// instance: it answers a UK query with HTTP 200 and zero elements, which reads downstream as
+    /// "no road here" rather than as a failure. A status code is not evidence that a mirror has your
+    /// data, and checking one without the other is how that got shipped.
+    public let urls: [String]
+
+    public init(urls: [String]) { self.urls = urls }
+
+    /// Identifies the app to Overpass, with a way to reach whoever is responsible for it — which is
+    /// the point of the header, not the string itself.
+    static let userAgent = "SpeedJarvis/1.0 (+https://github.com/luizmb/Car) motorcycle-speed-assistant"
+
+    static let canonical = "https://overpass-api.de/api/interpreter"
+    /// Andy Townsend's Britain-and-Ireland instance. **IPv6 only**, which is why it looked dead from
+    /// an IPv4-only machine — the AAAA record resolves fine and the host was never down.
+    static let britain = "https://overpass.atownsend.org.uk/api/interpreter"
+
+    /// Roads and stations.
+    ///
+    /// One URL, not a chain. `overpass.private.coffee` was tried as a second mirror and does not
+    /// refuse: it **hangs for thirty seconds** before timing out, so a failing first attempt meant
+    /// the rider waited over half a minute before anything at all happened. A fallback that slow is
+    /// worse than none, because the useful fallback — asking Apple for the street name — was stuck
+    /// behind it.
+    ///
+    /// `overpass-api.de` is itself DNS round-robin over two servers (`gall` and `lambert`) with
+    /// independent rate limits, and the project asks that they not be addressed individually except
+    /// to work around one being broken. So: use the round-robin name, fail fast, and fall back to a
+    /// different *kind* of answer rather than to another Overpass.
+    /// The canonical endpoint first, Britain second.
+    ///
+    /// Britain was tried first on the theory that a regional instance would be faster. It was not:
+    /// it failed on every attempt, on both Wi-Fi and cellular, because neither routes IPv6. Ordering
+    /// an endpoint first because it *ought* to be better, when the evidence says it never answers,
+    /// costs a DNS lookup and a connection attempt on every single road change — which means waking
+    /// the radio, on an app whose entire battery strategy is about not doing that.
+    ///
+    /// It stays second because it would be the better source the day IPv6 appears, and second costs
+    /// nothing until the first has already failed.
+    public static let primary = OverpassEndpoint(urls: [canonical, britain])
+
+    /// Cameras stay on the canonical endpoint.
+    ///
+    /// Deliberately *not* the Britain instance: it is one person's server with a usage policy I have
+    /// not read, and the camera query is the heavy one — a 3 km radius pulling relation geometry
+    /// every kilometre. Putting our expensive traffic on someone's personal machine while taking the
+    /// cheap query for ourselves would be poor manners.
+    public static let cameras = OverpassEndpoint(urls: [canonical])
+
+    /// Percent-encoded, with a template that cannot fail to parse.
+    public func request(_ query: String, hostIndex: Int = 0) -> URLRequest {
+        let escaped = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
+        let base = urls[min(hostIndex, urls.count - 1)]
+        var request = URLRequest(url: URL(string: "\(base)?data=\(escaped)")!)
+        // Six seconds, not the default sixty. A road name that arrives a minute later is useless —
+        // by then the rider is on a different road — and every second spent waiting is a second the
+        // Apple fallback is not being asked.
+        request.timeoutInterval = 6
+        // Overpass asks that apps identify themselves, and the default `URLSession` agent does not.
+        // Beyond being what they ask for, it is in our interest: identified traffic can be accounted
+        // to *this app* rather than to whatever else shares the phone's address — and on a carrier
+        // that address is shared with thousands of other subscribers.
+        request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
+        return request
+    }
+}
+
 // MARK: - URL builder (pure)
 
-public func overpassRequest(latitude: Latitude, longitude: Longitude) -> URLRequest {
+public func overpassRequest(
+    latitude: Latitude, longitude: Longitude,
+    endpoint: OverpassEndpoint = .primary,
+    hostIndex: Int = 0
+) -> URLRequest {
     // Asks for every `highway` way, not only those tagged `maxspeed`.
     //
     // Filtering on `maxspeed` was actively harmful: ordinary UK roads frequently carry no such tag,
@@ -47,10 +141,7 @@ public func overpassRequest(latitude: Latitude, longitude: Longitude) -> URLRequ
     // travelling along from one passing perpendicularly above it. 40 m rather than 30 because
     // selection is now discriminating: a wider net with real filtering beats a narrow one with none.
     let query = "[out:json][timeout:10];way(around:40,\(latitude.rawValue),\(longitude.rawValue))[\"highway\"];out tags geom;"
-    let escaped = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
-    // URL construction uses a fixed template with numeric rawValues — cannot fail.
-    let url = URL(string: "https://overpass-api.de/api/interpreter?data=\(escaped)")!
-    return URLRequest(url: url)
+    return endpoint.request(query, hostIndex: hostIndex)
 }
 
 // MARK: - Parser (pure)

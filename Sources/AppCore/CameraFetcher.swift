@@ -25,10 +25,11 @@ func makeCameraStream(
     box: RoadSpeedBox,
     httpClient: HTTPClient,
     decoder: DataDecoder<OverpassCameraResponse>,
-    radius: Meters
+    radius: Meters,
+    log: @escaping @Sendable (String) -> Void
 ) -> Publisher<CameraSet, Never> {
     throttledLocations(box: box)
-        .map(fetchCameras(httpClient: httpClient, decoder: decoder, radius: radius))
+        .map(fetchCameras(httpClient: httpClient, decoder: decoder, radius: radius, log: log))
         .switchToLatest()
 }
 
@@ -41,20 +42,30 @@ func makeCameraStream(
 private func fetchCameras(
     httpClient: HTTPClient,
     decoder: DataDecoder<OverpassCameraResponse>,
-    radius: Meters
+    radius: Meters,
+    log: @escaping @Sendable (String) -> Void
 ) -> @Sendable (LocationUpdate) -> Publisher<CameraSet, Never> {
     { location in
-        httpClient(
-            overpassCameraRequest(
-                latitude: location.latitude,
-                longitude: location.longitude,
-                radius: radius
+        @Sendable func attempt(_ hostIndex: Int) -> Publisher<CameraSet, Never> {
+            httpClient(
+                overpassCameraRequest(
+                    latitude: location.latitude,
+                    longitude: location.longitude,
+                    radius: radius,
+                    hostIndex: hostIndex
+                )
             )
-        )
-        .validateStatusCode()
-        .decode(using: decoder)
-        .map(parseCameraSet)
-        .retry(2)
-        .catch { _ in Publisher<CameraSet, Never>.empty() }
+            .validateStatusCode()
+            .decode(using: decoder)
+            .map(parseCameraSet)
+            .catch { error in
+                // No fallback: there is no second source for camera data, and the held set stays
+                // valid until the next scheduled lookup.
+                log("camera-fetch-failed \(String(describing: error).prefix(90))")
+                return Publisher<CameraSet, Never>.empty()
+            }
+        }
+        log("camera-fetch")
+        return attempt(0)
     }
 }
