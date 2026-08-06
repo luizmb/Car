@@ -64,6 +64,10 @@ public struct OverpassEndpoint: Sendable, Equatable {
 
     public init(urls: [String]) { self.urls = urls }
 
+    /// Identifies the app to Overpass, with a way to reach whoever is responsible for it — which is
+    /// the point of the header, not the string itself.
+    static let userAgent = "SpeedJarvis/1.0 (+https://github.com/luizmb/Car) motorcycle-speed-assistant"
+
     static let canonical = "https://overpass-api.de/api/interpreter"
     /// Andy Townsend's Britain-and-Ireland instance. **IPv6 only**, which is why it looked dead from
     /// an IPv4-only machine — the AAAA record resolves fine and the host was never down.
@@ -110,6 +114,11 @@ public struct OverpassEndpoint: Sendable, Equatable {
         // by then the rider is on a different road — and every second spent waiting is a second the
         // Apple fallback is not being asked.
         request.timeoutInterval = 6
+        // Overpass asks that apps identify themselves, and the default `URLSession` agent does not.
+        // Beyond being what they ask for, it is in our interest: identified traffic can be accounted
+        // to *this app* rather than to whatever else shares the phone's address — and on a carrier
+        // that address is shared with thousands of other subscribers.
+        request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
         return request
     }
 }
