@@ -20,12 +20,17 @@ struct FuelView: View {
             .pickerStyle(.segmented)
             .listRowBackground(Color.clear)
 
+            // Each tab carries its own history. Switching to reserve is not a refuel and shares
+            // nothing with one but the log it lands in, so showing both lists under both tabs made
+            // the screen twice as long as either job needed and buried the one you came for.
             switch viewStore.state.tab {
-            case .refuel:  refuelTab
-            case .reserve: reserveTab
+            case .refuel:
+                refuelTab
+                refuelHistory
+            case .reserve:
+                reserveTab
+                reserveHistory
             }
-
-            history
         }
         .navigationTitle("Fuel")
         .navigationBarTitleDisplayMode(.inline)
@@ -130,7 +135,7 @@ struct FuelView: View {
     }
 
     @ViewBuilder
-    private var history: some View {
+    private var refuelHistory: some View {
         let log = viewStore.state.log
         if !log.refuels.isEmpty {
             Section("Previous fills") {
@@ -159,6 +164,11 @@ struct FuelView: View {
             }
         }
 
+    }
+
+    @ViewBuilder
+    private var reserveHistory: some View {
+        let log = viewStore.state.log
         if !log.reserves.isEmpty {
             Section("Reserve switches") {
                 ForEach(log.reserves.sorted { $0.date > $1.date }) { event in

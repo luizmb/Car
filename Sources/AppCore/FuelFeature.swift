@@ -45,19 +45,36 @@ public enum FuelFeature {
         public var reserveOdometer: String = ""
         public var tab: FuelTab = .refuel
 
+        /// The forecourt, resolved once when the position first arrives.
+        ///
+        /// Looked up on arrival rather than on save so the network round trip happens while the
+        /// rider is still typing, and a slow Overpass never delays the button.
+        public var station: FuelStation?
+
         public var log: FuelLog = .empty
         public var saveError: String?
 
         public init() {}
 
+        // The parsed values, kept beside the text they came from.
+        //
+        // Parsing happens once per keystroke in the behaviour, where the World's `parseNumber` is
+        // reachable — not here. `State` is a value and cannot ask anything how a number is written;
+        // `Double(_:)` accepts only a period, which read every field as zero on a comma-decimal
+        // keypad and greyed out Save with nothing on screen to explain it.
+        public var litresValue: Double?
+        public var priceValue: Double?
+        public var odometerValue: Double?
+        public var reserveOdometerValue: Double?
+
         /// Save is blocked until the two fields the maths cannot work without are present.
         public var isValid: Bool {
-            (Double(litres) ?? 0) > 0 && (Double(pricePerLitre) ?? 0) > 0
+            (litresValue ?? 0) > 0 && (priceValue ?? 0) > 0
         }
 
         public var totalCost: Double? {
-            guard let l = Double(litres), let p = Double(pricePerLitre) else { return nil }
-            return l * p
+            guard let litresValue, let priceValue else { return nil }
+            return litresValue * priceValue
         }
     }
 
@@ -76,6 +93,12 @@ public enum FuelFeature {
         case setPosition(Latitude, Longitude)
         case setGPSDistance(Kilometres)
         case loaded(FuelLog)
+        /// A field's text, read as a number by the World. Separate from the setter because parsing
+        /// needs the environment and a reduction cannot reach it.
+        case parsed(NumericField, Double?)
+        /// The forecourt for the captured position. `nil` means Overpass had nothing or could not
+        /// be reached — a fill with no station is worth far more than no fill.
+        case stationResolved(FuelStation?)
         case save
         case saved
         case saveFailed(String)
@@ -98,19 +121,28 @@ public enum FuelFeature {
         /// would land in the gap and be dropped from the one file meant to keep it — and it is the
         /// record every fuel calculation is built on. Switching to reserve is the same shape.
         public let logJourney: @Sendable (any JourneyPayloadType) -> Publisher<Void, Never>
+        /// How this device writes and reads numbers. A `NumberFormatter` is not a primitive and
+        /// stops at the World, so the feature gets the operation rather than the object.
+        public let parseNumber: @Sendable (String) -> Result<Double, NumberError>
+        /// The forecourt at a position, resolved while the rider types.
+        public let fetchStation: @Sendable (Latitude, Longitude) -> Publisher<FuelStation?, Never>
 
         public init(
             loadFuelLog: @escaping @Sendable () -> Publisher<Result<FuelLog, FileError>, Never>,
             saveFuelLog: @escaping @Sendable (FuelLog) -> Publisher<Result<Void, FileError>, Never>,
             now: @escaping @Sendable () -> Date,
             newID: @escaping @Sendable () -> UUID,
-            logJourney: @escaping @Sendable (any JourneyPayloadType) -> Publisher<Void, Never>
+            logJourney: @escaping @Sendable (any JourneyPayloadType) -> Publisher<Void, Never>,
+            parseNumber: @escaping @Sendable (String) -> Result<Double, NumberError>,
+            fetchStation: @escaping @Sendable (Latitude, Longitude) -> Publisher<FuelStation?, Never>
         ) {
             self.loadFuelLog = loadFuelLog
             self.saveFuelLog = saveFuelLog
             self.now = now
             self.newID = newID
             self.logJourney = logJourney
+            self.parseNumber = parseNumber
+            self.fetchStation = fetchStation
         }
     }
 
@@ -135,10 +167,27 @@ public enum FuelFeature {
             case let .loaded(log):
                 return .reduce { $0.log = log }
 
-            case let .setLitres(value):        return .reduce { $0.litres = value }
-            case let .setPrice(value):         return .reduce { $0.pricePerLitre = value }
-            case let .setOdometer(value):      return .reduce { $0.odometer = value }
-            case let .setReserveOdometer(value): return .reduce { $0.reserveOdometer = value }
+            case let .setLitres(value):
+                return .reduce { $0.litres = value }.produce(parsing: value, as: .litres)
+            case let .setPrice(value):
+                return .reduce { $0.pricePerLitre = value }.produce(parsing: value, as: .price)
+            case let .setOdometer(value):
+                return .reduce { $0.odometer = value }.produce(parsing: value, as: .odometer)
+            case let .setReserveOdometer(value):
+                return .reduce { $0.reserveOdometer = value }.produce(parsing: value, as: .reserveOdometer)
+
+            case let .stationResolved(station):
+                return .reduce { $0.station = station }
+
+            case let .parsed(field, value):
+                return .reduce {
+                    switch field {
+                    case .litres: $0.litresValue = value
+                    case .price: $0.priceValue = value
+                    case .odometer: $0.odometerValue = value
+                    case .reserveOdometer: $0.reserveOdometerValue = value
+                    }
+                }
             case let .setTab(tab):             return .reduce { $0.tab = tab }
             case let .setGrade(grade):         return .reduce { $0.grade = grade }
             case let .setFilledToBrim(value):  return .reduce { $0.filledToBrim = value }
@@ -146,12 +195,20 @@ public enum FuelFeature {
                 return .reduce { $0.gpsKilometres = distance }
 
             case let .setPosition(lat, lon):
+                let alreadyPlaced = context.stateBefore?.latitude != nil
                 return .reduce {
                     // Only the first fix — the position wanted is the forecourt, not wherever the
                     // rider happened to drift to while typing.
                     guard $0.latitude == nil else { return }
                     $0.latitude = lat
                     $0.longitude = lon
+                }
+                .produce { ctx in
+                    // Resolved once, on the first fix, for the same reason: the station is where the
+                    // pump is, and a second lookup would only ever be less right.
+                    guard !alreadyPlaced else { return .empty }
+                    return ctx.environment.fetchStation(lat, lon)
+                        .asEffect(Action.stationResolved)
                 }
 
             case .save:
@@ -160,14 +217,20 @@ public enum FuelFeature {
                     let record = RefuelRecord(
                         id: ctx.environment.newID(),
                         date: ctx.environment.now(),
-                        litres: Litres(Double(state.litres) ?? 0),
-                        pricePerLitre: Double(state.pricePerLitre) ?? 0,
+                        litres: Litres(state.litresValue ?? 0),
+                        pricePerLitre: state.priceValue ?? 0,
                         grade: state.grade,
                         filledToBrim: state.filledToBrim,
-                        odometer: Double(state.odometer).map { Kilometres($0) },
-                        gpsKilometres: state.gpsKilometres,
+                        odometer: state.odometerValue.map { Kilometres($0) },
+                        // The first fill ever has no "since the last fill" to measure: the trip
+                        // counter was reset when the app first ran, not at a forecourt, so the
+                        // number is distance since installation and means nothing. Every other
+                        // record's `gpsKilometres` is a real interval, and storing a different
+                        // meaning in the same field on one row is a trap for whatever reads it next.
+                        gpsKilometres: state.log.refuels.isEmpty ? nil : state.gpsKilometres,
                         latitude: state.latitude,
-                        longitude: state.longitude
+                        longitude: state.longitude,
+                        station: state.station
                     )
                     var log = state.log
                     log.refuels.append(record)
@@ -175,7 +238,9 @@ public enum FuelFeature {
                         litres: record.litres.rawValue,
                         price: record.pricePerLitre,
                         odometer: record.odometer?.rawValue,
-                        brim: record.filledToBrim
+                        brim: record.filledToBrim,
+                        station: record.station?.label,
+                        stationID: record.station?.id
                     )) |> Effect<Action>.fireAndForget
                     return keep <> ctx.environment.saveFuelLog(log)
                         .asEffect { (result: Result<Void, FileError>) in
@@ -194,6 +259,10 @@ public enum FuelFeature {
                     $0.pricePerLitre = ""
                     $0.odometer = ""
                     $0.reserveOdometer = ""
+                    $0.litresValue = nil
+                    $0.priceValue = nil
+                    $0.odometerValue = nil
+                    $0.reserveOdometerValue = nil
                     $0.saveError = nil
                 }
                 .produce { ctx in
@@ -212,8 +281,13 @@ public enum FuelFeature {
                     let event = ReserveEvent(
                         id: ctx.environment.newID(),
                         date: ctx.environment.now(),
-                        odometer: Double(state.reserveOdometer).map { Kilometres($0) },
-                        gpsKilometres: state.gpsKilometres,
+                        odometer: state.reserveOdometerValue.map { Kilometres($0) },
+                        // The first fill ever has no "since the last fill" to measure: the trip
+                        // counter was reset when the app first ran, not at a forecourt, so the
+                        // number is distance since installation and means nothing. Every other
+                        // record's `gpsKilometres` is a real interval, and storing a different
+                        // meaning in the same field on one row is a trap for whatever reads it next.
+                        gpsKilometres: state.log.refuels.isEmpty ? nil : state.gpsKilometres,
                         latitude: state.latitude,
                         longitude: state.longitude
                     )
@@ -239,3 +313,31 @@ public enum FuelFeature {
 }
 
 extension FuelFeature: HasBehavior {}
+
+
+// MARK: - Field parsing
+
+/// Which text field a parsed number belongs to.
+public enum NumericField: Sendable, Equatable {
+    case litres
+    case price
+    case odometer
+    case reserveOdometer
+}
+
+private extension Reaction<FuelFeature.Action, FuelFeature.State, FuelFeature.Environment> {
+    /// Reads the text through the World and folds the result back as a `.parsed` action.
+    ///
+    /// A failure becomes `nil` rather than an error on screen: an empty or half-typed field is the
+    /// normal state of a form, not a mistake, and Save being quietly disabled says enough.
+    func produce(parsing text: String, as field: NumericField) -> Self {
+        produce { ctx in
+            let value: Double? = if case let .success(number) = ctx.environment.parseNumber(text) {
+                number
+            } else {
+                nil
+            }
+            return Effect.just(.parsed(field, value))
+        }
+    }
+}

@@ -219,12 +219,20 @@ public struct RefuelPayload: JourneyPayloadType, Equatable {
     public let price: Double
     public let odometer: Double?
     public let brim: Bool
+    /// The forecourt, where it could be resolved — what price comparison is grouped by.
+    public let station: String?
+    public let stationID: Int?
 
-    public init(litres: Double, price: Double, odometer: Double?, brim: Bool) {
+    public init(
+        litres: Double, price: Double, odometer: Double?, brim: Bool,
+        station: String? = nil, stationID: Int? = nil
+    ) {
         self.litres = litres
         self.price = price
         self.odometer = odometer
         self.brim = brim
+        self.station = station
+        self.stationID = stationID
     }
 }
 

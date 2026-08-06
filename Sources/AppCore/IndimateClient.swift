@@ -22,11 +22,21 @@ private enum Indimate {
 
 /// Bridges CoreBluetooth's delegate callbacks into a stream of ``IndimateEvent``.
 ///
-/// **The unit is activity-triggered, not power-triggered.** It is wired so the indicator stalks
-/// are its trigger, so it stays invisible — no advertising at all — until an indicator is used,
-/// even with the engine running. Scanning therefore has to stay armed for the whole journey
-/// rather than giving up after an initial discovery window; there is nothing to find until the
-/// rider flicks a stalk, which may be five minutes in.
+/// **It tracks the ignition, and the reconnect used to be our fault.** The long-held belief that
+/// this unit is activity-triggered — invisible until a stalk is flicked — was wrong, or at least
+/// stale: it predates the rider rewiring its power to the ignition. On the 2026-08-05 ride it
+/// connected **14 seconds before the first indication** and dropped promptly on key-off, ~20s ahead
+/// of CHIGEE every time.
+///
+/// What did look like activity-triggering was this: on disconnect the client called `scan()`, which
+/// threw away the peripheral it already knew and started a fresh scan. Scanning is at the mercy of
+/// the unit's advertising interval — slow when it has been idle, fast once something wakes it — and
+/// of iOS's own scan duty cycling. So after a key cycle it took **84 seconds** to come back, and
+/// indicating appeared to summon it because indicating wakes it into fast advertising.
+///
+/// It now re-arms a pending `connect()` on the known peripheral instead, which iOS services on the
+/// first advertisement packet with no duty-cycle penalty. The identifier is persisted for the same
+/// reason it is for CHIGEE: so a cold start can arm without scanning at all.
 ///
 /// Scanning is filtered to the custom service UUID, which is what makes it legal in the
 /// background — an unfiltered scan is foreground-only.
@@ -35,13 +45,23 @@ final class IndimateCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
     private var central: CBCentralManager?
     private var peripheral: CBPeripheral?
     private var emit: (@Sendable (IndimateEvent) -> Void)?
+    private var knownIdentifier: UUID?
+    private var onLearn: (@Sendable (UUID) -> Void)?
 
     /// Idempotent. A second concurrent subscription would otherwise build a second
     /// `CBCentralManager` and overwrite the first's emit closure — leaking a scanning manager
     /// while orphaning the subscription that is actually being read. Supervision should keep only
     /// one channel per id, but that is the assumption that failed in the road-speed stream, so it
     /// is enforced here rather than relied upon.
-    func start(_ emit: @escaping @Sendable (IndimateEvent) -> Void) {
+    func start(
+        knownIdentifier: UUID?,
+        onLearn: @escaping @Sendable (UUID) -> Void,
+        _ emit: @escaping @Sendable (IndimateEvent) -> Void
+    ) {
+        lock.withLock {
+            self.knownIdentifier = knownIdentifier
+            self.onLearn = onLearn
+        }
         let alreadyRunning = lock.withLock { () -> Bool in
             guard central == nil else { return true }
             self.emit = emit
@@ -79,6 +99,14 @@ final class IndimateCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
     }
 
     private func scan(_ manager: CBCentralManager) {
+        // A peripheral we already know: arm a pending connect straight at it. No scan, no waiting on
+        // its advertising interval, and it survives the unit being powered down and back up.
+        if let known = lock.withLock({ peripheral ?? knownIdentifier.flatMap {
+            manager.retrievePeripherals(withIdentifiers: [$0]).first
+        } }) {
+            attach(known, on: manager)
+            return
+        }
         // Already-connected peripherals never appear in a scan, so ask for them explicitly —
         // this is what recovers the unit after a background relaunch.
         if let existing = manager.retrieveConnectedPeripherals(withServices: [Indimate.service]).first {
@@ -90,6 +118,7 @@ final class IndimateCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
 
     private func attach(_ device: CBPeripheral, on manager: CBCentralManager) {
         lock.withLock { peripheral = device }
+        lock.withLock { onLearn }?(device.identifier)
         device.delegate = self
         // A connect request with no timeout stays pending indefinitely, so the moment the unit
         // powers up on first indicator use, iOS links it — no discovery latency on top of the
@@ -226,11 +255,49 @@ private extension CBManagerState {
 /// this factory is called many times a second; an eager version would spin up a fresh
 /// `CBCentralManager` on that cadence — exactly the failure that silently killed the road-speed
 /// stream before it was made cold.
-func makeIndimateStream(central: IndimateCentral) -> Publisher<IndimateEvent, Never> {
+/// - Parameter knownIdentifier: a closure, evaluated on subscribe rather than on description —
+///   supervision calls this factory after every state change, and an eager read would be a disk hit
+///   several times a second.
+func makeIndimateStream(
+    central: IndimateCentral,
+    knownIdentifier: @escaping @Sendable () -> UUID?,
+    onLearn: @escaping @Sendable (UUID) -> Void
+) -> Publisher<IndimateEvent, Never> {
     Publisher { continuation in
         let (stream, streamContinuation) = AsyncStream<IndimateEvent>.makeStream()
-        central.start { streamContinuation.yield($0) }
+        central.start(knownIdentifier: knownIdentifier(), onLearn: onLearn) {
+            streamContinuation.yield($0)
+        }
         await continuation.yieldAll(stream)   // parks until cancelled
         central.stop()
+    }
+}
+
+
+// MARK: - Remembering the unit
+
+/// The Indimate's peripheral identifier, kept across launches.
+///
+/// Same shape as ``ChigeePeripheralStore``, and for a milder version of the same reason: this unit
+/// does still advertise, so a scan can find it — but only on its own schedule, which after an idle
+/// period is slow enough to have cost 84 seconds on a real key cycle. A remembered identifier lets a
+/// cold start arm a pending connect instead of waiting for one.
+enum IndimatePeripheralStore {
+    static let filename = "indimate-peripheral.txt"
+
+    private static var url: URL {
+        FileManager.default
+            .urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(filename)
+    }
+
+    static func load() -> UUID? {
+        (try? String(contentsOf: url, encoding: .utf8))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .flatMap(UUID.init(uuidString:))
+    }
+
+    static func save(_ identifier: UUID) {
+        try? identifier.uuidString.write(to: url, atomically: true, encoding: .utf8)
     }
 }

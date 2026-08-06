@@ -152,10 +152,21 @@ extension World {
             numberFormatStyle: numFmt1dp
         )
 
+        // Locale-aware number reading and writing. Captured once, like every other formatter here,
+        // so nothing downstream ever touches `Locale.current`.
+        let numberParser: NumberFormatter = {
+            let formatter = NumberFormatter()
+            formatter.locale = locale
+            formatter.numberStyle = .decimal
+            formatter.maximumFractionDigits = 3
+            return formatter
+        }()
+
         // Overpass API client — HTTPClient over URLSession (NetworkTools 0.7)
         let httpClient = HTTPClient.live(session: .shared)
         let decoder       = JSONDecoder().dataDecoder(for: OverpassResponse.self)
         let cameraDecoder = JSONDecoder().dataDecoder(for: OverpassCameraResponse.self)
+        let stationDecoder = JSONDecoder().dataDecoder(for: OverpassStationResponse.self)
         let weatherDecoder = JSONDecoder().dataDecoder(for: OpenMeteoResponse.self)
         let weatherFetch   = makeWeatherFetch(httpClient: httpClient, decoder: weatherDecoder)
 
@@ -212,7 +223,13 @@ extension World {
                 Publisher.future { DispatchQueue.main.async { forceRoadRefresh(box: roadSpeed) } }
             },
             bluetoothAuthorization: { CBManager.authorization.domain },
-            indimateEvents: { makeIndimateStream(central: indimate) },
+            indimateEvents: {
+                makeIndimateStream(
+                    central: indimate,
+                    knownIdentifier: IndimatePeripheralStore.load,
+                    onLearn: IndimatePeripheralStore.save
+                )
+            },
             playIndicatorLoop: { side in
                 Publisher.future { DispatchQueue.main.async { ticks.play(side) } }
             },
@@ -245,6 +262,29 @@ extension World {
             saveFuelLog: { makeFileWriter($0, filename: FuelStore.filename) },
             phoneBattery: { device.batteryLevel },
             isLowPowerMode: { ProcessInfo.processInfo.isLowPowerModeEnabled },
+            fetchStation: { latitude, longitude in
+                httpClient(overpassStationRequest(latitude: latitude, longitude: longitude))
+                    .validateStatusCode()
+                    .decode(using: stationDecoder)
+                    .map { nearestStation($0, to: (latitude, longitude)) }
+                    .catch { _ in Publisher<FuelStation?, Never>.just(nil) }
+            },
+            parseNumber: { text in
+                // The device's own formatter first, so a comma-decimal keypad is read the way the
+                // rider expects. `parseDecimal` is the fallback rather than the primary because it
+                // guesses at the separator, which the locale actually knows — but it accepts a
+                // period typed on a comma locale (and vice versa), which the formatter refuses, and
+                // being forgiving matters more here than being pedantic.
+                let trimmed = text.trimmingCharacters(in: .whitespaces)
+                guard !trimmed.isEmpty else { return .failure(.empty) }
+                if let number = numberParser.number(from: trimmed) { return .success(number.doubleValue) }
+                guard let loose = parseDecimal(trimmed) else { return .failure(.unparseable(text)) }
+                return .success(loose)
+            },
+            formatNumber: { value in
+                numberParser.string(from: NSNumber(value: value))
+                    .map(Result.success) ?? .failure(.unformattable(value))
+            },
             now: { Date() },
             newID: { UUID() },
             logAction: { line in

@@ -512,6 +512,6 @@ public enum AppScopes: Rig {
         .action(\.fuel)
         .state(preview: topmost(StackEntry.prism.fuel), set: replacing(StackEntry.prism.fuel))
         .environment(fanout(
-            \.loadFuelLog, \.saveFuelLog, \.now, \.newID, \.logJourney
+            \.loadFuelLog, \.saveFuelLog, \.now, \.newID, \.logJourney, \.parseNumber, \.fetchStation
         ) >>> FuelFeature.Environment.init)
 }

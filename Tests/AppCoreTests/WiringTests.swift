@@ -200,6 +200,9 @@ struct RefuelRecordingTests {
             saveFuelLog: world.saveFuelLog,
             phoneBattery: world.phoneBattery,
             isLowPowerMode: world.isLowPowerMode,
+            fetchStation: world.fetchStation,
+            parseNumber: world.parseNumber,
+            formatNumber: world.formatNumber,
             now: world.now,
             newID: world.newID,
             logAction: world.logAction,
@@ -235,6 +238,9 @@ struct RefuelRecordingTests {
         store.dispatch(.navigation(.push(.fuel)), source: .init(file: #file, function: #function, line: #line))
         store.dispatch(.fuel(.setLitres("12.5")), source: .init(file: #file, function: #function, line: #line))
         store.dispatch(.fuel(.setPrice("1.49")), source: .init(file: #file, function: #function, line: #line))
+        // Parsing goes through the World, so it lands a turn later — the same hop the real form has
+        // between a keystroke and Save becoming enabled.
+        await settle()
         store.dispatch(.fuel(.save), source: .init(file: #file, function: #function, line: #line))
         await settle()
 
