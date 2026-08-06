@@ -115,6 +115,7 @@ class RelationScan(osmium.SimpleHandler):
     def __init__(self):
         super().__init__()
         self.zones = {}
+        self.devices = {}
         self.nodes = set()
         self.ways = set()
 
@@ -138,6 +139,15 @@ class RelationScan(osmium.SimpleHandler):
             if role in ("from", "to") and role not in roles:
                 roles[role] = (member.type, member.ref)
                 (self.nodes if member.type == "n" else self.ways).add(member.ref)
+            elif role == "device" and member.type == "n":
+                # The gantries themselves. Stored because 31 of England's 67 zones carry no
+                # `from`/`to` at all, and for those the devices are the only thing that says where
+                # the zone is. Nothing reads this column yet — `averageZoneEntered` currently falls
+                # back to nearby cameras tagged `enforcement=average_speed`, of which the whole
+                # country has thirty, so those zones can never be entered. Extracting it now costs
+                # nothing and means the fix does not need another full rebuild.
+                self.devices.setdefault(r.id, []).append(member.ref)
+                self.nodes.add(member.ref)
         self.zones[r.id] = (parse_mph(tags.get("maxspeed")), roles)
 
 
@@ -294,6 +304,7 @@ def main(pbf, out):
                              lat REAL, lon REAL);
         CREATE TABLE zone (id INTEGER PRIMARY KEY, mph INTEGER,
                            start_lat REAL, start_lon REAL, end_lat REAL, end_lon REAL);
+        CREATE TABLE zone_device (zone_id INTEGER, lat REAL, lon REAL);
         CREATE TABLE station (id INTEGER PRIMARY KEY, name TEXT, brand TEXT, lat REAL, lon REAL);
         CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
     """)
@@ -314,6 +325,15 @@ def main(pbf, out):
     db.executemany(
         "INSERT OR IGNORE INTO zone (id, mph, start_lat, start_lon, end_lat, end_lon)"
         " VALUES (?,?,?,?,?,?)", zone_rows(scan.zones, handler.located))
+    db.commit()
+
+    db.executemany(
+        "INSERT INTO zone_device (zone_id, lat, lon) VALUES (?,?,?)",
+        [(zone_id, position[0], position[1])
+         for zone_id, refs in scan.devices.items()
+         for position in [handler.located.get(("n", ref)) for ref in refs]
+         if position is not None])
+    db.execute("CREATE INDEX zone_device_zone ON zone_device(zone_id)")
     db.commit()
 
     print("building spatial index …", flush=True)
@@ -337,6 +357,8 @@ def main(pbf, out):
 
     for table in ("road", "camera", "zone", "station"):
         print(f"  {table}: {db.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]:,}", flush=True)
+    devices = db.execute("SELECT COUNT(DISTINCT zone_id) FROM zone_device").fetchone()[0]
+    print(f"  zones with located devices: {devices:,}", flush=True)
     located = db.execute("SELECT COUNT(*) FROM zone WHERE start_lat IS NOT NULL").fetchone()[0]
     ended = db.execute("SELECT COUNT(*) FROM zone WHERE end_lat IS NOT NULL").fetchone()[0]
     total = db.execute("SELECT COUNT(*) FROM zone").fetchone()[0]
