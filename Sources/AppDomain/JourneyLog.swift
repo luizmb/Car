@@ -21,19 +21,42 @@ public enum RecordType: String, Codable, Sendable, CaseIterable {
     case reserve
 }
 
+// MARK: - Payload protocol
+
+/// A record shape that knows its own discriminator and codes itself.
+///
+/// The point of this protocol is that ``JourneyRecord`` never learns how any payload is encoded. It
+/// reads the `type`, looks up which shape that names, and delegates — so adding a record kind means
+/// adding a type and one line to the lookup, not editing an encoder and a decoder in parallel.
+///
+/// `isEqual(to:)` exists because an existential cannot be `Equatable`; the default implementation
+/// casts, so conforming types get it for free by being `Equatable`.
+public protocol JourneyPayloadType: Codable, Sendable {
+    static var recordType: RecordType { get }
+    func isEqual(to other: any JourneyPayloadType) -> Bool
+}
+
+public extension JourneyPayloadType where Self: Equatable {
+    func isEqual(to other: any JourneyPayloadType) -> Bool { (other as? Self) == self }
+}
+
 // MARK: - Payloads
 
 // One type per record shape. Each pins its `CodingKeys`, so renaming a Swift property cannot
 // silently rewrite a year of records — which was the only real argument for hand-writing the JSON,
 // and it costs one enum to keep.
 
-public struct JourneyStartPayload: Codable, Sendable, Equatable {
+public struct JourneyStartPayload: JourneyPayloadType, Equatable {
+    public static let recordType: RecordType = .journeyStart
+
     /// `ignition`, `indimate`, or `both` — which signal opened the journey.
     public let via: String
     public init(via: String) { self.via = via }
 }
 
-public struct JourneyEndPayload: Codable, Sendable, Equatable {
+public struct JourneyEndPayload: JourneyPayloadType, Equatable {
+    public static let recordType: RecordType = .journeyEnd
+
     public let seconds: Int
     /// Repeated here so one line is the whole journey, even if the file rotated at UTC midnight or
     /// the app was relaunched mid-ride.
@@ -44,7 +67,9 @@ public struct JourneyEndPayload: Codable, Sendable, Equatable {
     }
 }
 
-public struct FixPayload: Codable, Sendable, Equatable {
+public struct FixPayload: JourneyPayloadType, Equatable {
+    public static let recordType: RecordType = .fix
+
     public let lat: Double
     public let lon: Double
     public let mph: Double?
@@ -62,7 +87,9 @@ public struct FixPayload: Codable, Sendable, Equatable {
     }
 }
 
-public struct RoadPayload: Codable, Sendable, Equatable {
+public struct RoadPayload: JourneyPayloadType, Equatable {
+    public static let recordType: RecordType = .road
+
     public let mph: Double?
     /// `signed`, `built-up`, `national`, `unattributed`.
     public let origin: String
@@ -77,7 +104,9 @@ public struct RoadPayload: Codable, Sendable, Equatable {
     }
 }
 
-public struct CameraPayload: Codable, Sendable, Equatable {
+public struct CameraPayload: JourneyPayloadType, Equatable {
+    public static let recordType: RecordType = .camera
+
     /// `fixed`, `average`, `red-light`, `mobile`, `unknown`.
     public let type: String
     public let mph: Double?
@@ -96,7 +125,9 @@ public struct CameraPayload: Codable, Sendable, Equatable {
     }
 }
 
-public struct AverageZonePayload: Codable, Sendable, Equatable {
+public struct AverageZonePayload: JourneyPayloadType, Equatable {
+    public static let recordType: RecordType = .averageZone
+
     public let entered: Bool
     public let mph: Double?
     public init(entered: Bool, mph: Double?) {
@@ -105,13 +136,17 @@ public struct AverageZonePayload: Codable, Sendable, Equatable {
     }
 }
 
-public struct IndicatorPayload: Codable, Sendable, Equatable {
+public struct IndicatorPayload: JourneyPayloadType, Equatable {
+    public static let recordType: RecordType = .indicator
+
     /// `left`, `right`, or absent for cancelled.
     public let side: String?
     public init(side: String?) { self.side = side }
 }
 
-public struct TyrePayload: Codable, Sendable, Equatable {
+public struct TyrePayload: JourneyPayloadType, Equatable {
+    public static let recordType: RecordType = .tyre
+
     public let position: String
     public let psi: Double
     public let celsius: Double
@@ -125,7 +160,9 @@ public struct TyrePayload: Codable, Sendable, Equatable {
     }
 }
 
-public struct WeatherPayload: Codable, Sendable, Equatable {
+public struct WeatherPayload: JourneyPayloadType, Equatable {
+    public static let recordType: RecordType = .weather
+
     public let celsius: Double
     public let humidity: Double
     public let kpa: Double
@@ -141,7 +178,9 @@ public struct WeatherPayload: Codable, Sendable, Equatable {
     }
 }
 
-public struct BarometerPayload: Codable, Sendable, Equatable {
+public struct BarometerPayload: JourneyPayloadType, Equatable {
+    public static let recordType: RecordType = .barometer
+
     public let kpa: Double
     public let relativeAltitude: Double
     public init(kpa: Double, relativeAltitude: Double) {
@@ -150,7 +189,9 @@ public struct BarometerPayload: Codable, Sendable, Equatable {
     }
 }
 
-public struct ActivityPayload: Codable, Sendable, Equatable {
+public struct ActivityPayload: JourneyPayloadType, Equatable {
+    public static let recordType: RecordType = .activity
+
     public let activity: String
     public let confidence: Int
     public init(activity: String, confidence: Int) {
@@ -159,7 +200,9 @@ public struct ActivityPayload: Codable, Sendable, Equatable {
     }
 }
 
-public struct DevicePayload: Codable, Sendable, Equatable {
+public struct DevicePayload: JourneyPayloadType, Equatable {
+    public static let recordType: RecordType = .device
+
     /// `indimate`, `ignition`, `cardo`.
     public let device: String
     public let connected: Bool
@@ -169,7 +212,9 @@ public struct DevicePayload: Codable, Sendable, Equatable {
     }
 }
 
-public struct RefuelPayload: Codable, Sendable, Equatable {
+public struct RefuelPayload: JourneyPayloadType, Equatable {
+    public static let recordType: RecordType = .refuel
+
     public let litres: Double
     public let price: Double
     public let odometer: Double?
@@ -183,50 +228,34 @@ public struct RefuelPayload: Codable, Sendable, Equatable {
     }
 }
 
-public struct ReservePayload: Codable, Sendable, Equatable {
+public struct ReservePayload: JourneyPayloadType, Equatable {
+    public static let recordType: RecordType = .reserve
+
     public let km: Double
     public init(km: Double) { self.km = km }
 }
 
-// MARK: - The polymorphic payload
+// MARK: - Kind lookup
 
-/// Every shape a record can take.
-///
-/// A closed set rather than an erased `any Codable`: the point is not to hide the type but to
-/// enumerate the possibilities, so a consumer can switch exhaustively and the compiler will complain
-/// when a new kind is added.
-public enum JourneyPayload: Sendable, Equatable {
-    case journeyStart(JourneyStartPayload)
-    case journeyEnd(JourneyEndPayload)
-    case fix(FixPayload)
-    case road(RoadPayload)
-    case camera(CameraPayload)
-    case averageZone(AverageZonePayload)
-    case indicator(IndicatorPayload)
-    case tyre(TyrePayload)
-    case weather(WeatherPayload)
-    case barometer(BarometerPayload)
-    case activity(ActivityPayload)
-    case device(DevicePayload)
-    case refuel(RefuelPayload)
-    case reserve(ReservePayload)
-
-    public var type: RecordType {
+public extension RecordType {
+    /// Which shape this kind names. The one switch in the whole format, and the only thing that has
+    /// to change when a record kind is added.
+    var payloadType: any JourneyPayloadType.Type {
         switch self {
-        case .journeyStart: .journeyStart
-        case .journeyEnd: .journeyEnd
-        case .fix: .fix
-        case .road: .road
-        case .camera: .camera
-        case .averageZone: .averageZone
-        case .indicator: .indicator
-        case .tyre: .tyre
-        case .weather: .weather
-        case .barometer: .barometer
-        case .activity: .activity
-        case .device: .device
-        case .refuel: .refuel
-        case .reserve: .reserve
+        case .journeyStart: JourneyStartPayload.self
+        case .journeyEnd: JourneyEndPayload.self
+        case .fix: FixPayload.self
+        case .road: RoadPayload.self
+        case .camera: CameraPayload.self
+        case .averageZone: AverageZonePayload.self
+        case .indicator: IndicatorPayload.self
+        case .tyre: TyrePayload.self
+        case .weather: WeatherPayload.self
+        case .barometer: BarometerPayload.self
+        case .activity: ActivityPayload.self
+        case .device: DevicePayload.self
+        case .refuel: RefuelPayload.self
+        case .reserve: ReservePayload.self
         }
     }
 }
@@ -235,26 +264,29 @@ public enum JourneyPayload: Sendable, Equatable {
 
 /// One line of the journey log: a timestamp, a discriminator, and the payload — **flat**.
 ///
-/// Flat rather than nested under a `payload` key. The payload is decoded from the *same* decoder as
-/// the envelope, which is what lets `{"t":…,"type":"fix","lat":…}` round-trip while still being one
-/// `Codable` type. Nesting would cost every consumer an extra hop for the life of the format and buy
-/// nothing.
+/// The container codes three things and delegates the rest: it writes `t` and `type`, then asks the
+/// payload to encode itself into the *same* encoder, which is what keeps the line flat rather than
+/// nesting under a `payload` key. Decoding is the mirror — read `type`, look up the shape, hand the
+/// decoder over.
 ///
-/// This is what makes the JSONL readable back: the file is a sequence of these, so
+/// So there is no growing switch here. `RecordType.payloadType` is the only place that enumerates
+/// the shapes, and every payload owns its own coding.
+///
+/// Reading a whole file back:
 ///
 /// ```swift
 /// let json = "[" + lines.joined(separator: ",") + "]"
-/// let records = try decoder.decode([JourneyRecord].self, from: Data(json.utf8))
+/// let records = try JourneyLog.decoder.decode([JourneyRecord].self, from: Data(json.utf8))
 /// ```
-///
-/// works, and gives a heterogeneous array without any type erasure — `JourneyPayload` enumerates
-/// the possibilities rather than hiding them.
-public struct JourneyRecord: Codable, Sendable, Equatable {
+public struct JourneyRecord: Codable, Sendable {
     public let time: Date
-    public let payload: JourneyPayload
+    public let type: RecordType
+    public let payload: any JourneyPayloadType
 
-    public init(time: Date, payload: JourneyPayload) {
+    /// The discriminator comes from the payload's own type, so the two cannot disagree.
+    public init<Payload: JourneyPayloadType>(time: Date, payload: Payload) {
         self.time = time
+        type = Payload.recordType
         self.payload = payload
     }
 
@@ -266,46 +298,22 @@ public struct JourneyRecord: Codable, Sendable, Equatable {
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         time = try container.decode(Date.self, forKey: .time)
-        let type = try container.decode(RecordType.self, forKey: .type)
-        // Decoding the payload from the same decoder is what keeps the line flat.
-        payload = switch type {
-        case .journeyStart: .journeyStart(try JourneyStartPayload(from: decoder))
-        case .journeyEnd: .journeyEnd(try JourneyEndPayload(from: decoder))
-        case .fix: .fix(try FixPayload(from: decoder))
-        case .road: .road(try RoadPayload(from: decoder))
-        case .camera: .camera(try CameraPayload(from: decoder))
-        case .averageZone: .averageZone(try AverageZonePayload(from: decoder))
-        case .indicator: .indicator(try IndicatorPayload(from: decoder))
-        case .tyre: .tyre(try TyrePayload(from: decoder))
-        case .weather: .weather(try WeatherPayload(from: decoder))
-        case .barometer: .barometer(try BarometerPayload(from: decoder))
-        case .activity: .activity(try ActivityPayload(from: decoder))
-        case .device: .device(try DevicePayload(from: decoder))
-        case .refuel: .refuel(try RefuelPayload(from: decoder))
-        case .reserve: .reserve(try ReservePayload(from: decoder))
-        }
+        let kind = try container.decode(RecordType.self, forKey: .type)
+        type = kind
+        payload = try kind.payloadType.init(from: decoder)
     }
 
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(time, forKey: .time)
-        try container.encode(payload.type, forKey: .type)
-        switch payload {
-        case let .journeyStart(value): try value.encode(to: encoder)
-        case let .journeyEnd(value): try value.encode(to: encoder)
-        case let .fix(value): try value.encode(to: encoder)
-        case let .road(value): try value.encode(to: encoder)
-        case let .camera(value): try value.encode(to: encoder)
-        case let .averageZone(value): try value.encode(to: encoder)
-        case let .indicator(value): try value.encode(to: encoder)
-        case let .tyre(value): try value.encode(to: encoder)
-        case let .weather(value): try value.encode(to: encoder)
-        case let .barometer(value): try value.encode(to: encoder)
-        case let .activity(value): try value.encode(to: encoder)
-        case let .device(value): try value.encode(to: encoder)
-        case let .refuel(value): try value.encode(to: encoder)
-        case let .reserve(value): try value.encode(to: encoder)
-        }
+        try container.encode(type, forKey: .type)
+        try payload.encode(to: encoder)
+    }
+}
+
+extension JourneyRecord: Equatable {
+    public static func == (lhs: JourneyRecord, rhs: JourneyRecord) -> Bool {
+        lhs.time == rhs.time && lhs.type == rhs.type && lhs.payload.isEqual(to: rhs.payload)
     }
 }
 

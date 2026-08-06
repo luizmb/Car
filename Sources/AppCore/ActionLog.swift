@@ -92,7 +92,7 @@ final class ActionLogBox: @unchecked Sendable {
     /// Encoded through `JourneyRecord`, which is the same type the file is *read* back with — so the
     /// writer and the reader cannot drift apart, and a shape that fails to decode fails here rather
     /// than in a year's time.
-    func append(_ payload: JourneyPayload) {
+    func append(_ payload: any JourneyPayloadType) {
         let date = now()
         guard
             let data = try? JourneyLog.encoder.encode(JourneyRecord(time: date, payload: payload)),
