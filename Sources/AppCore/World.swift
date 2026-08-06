@@ -77,7 +77,7 @@ public struct World: Sendable {
     /// The firehose: every action, on or off journey. Useful for a week, not for a year.
     public let logAction: @Sendable (String) -> Publisher<Void, Never>
     /// The record worth keeping: typed events, only while a journey is active.
-    public let logJourney: @Sendable (JourneyEvent) -> Publisher<Void, Never>
+    public let logJourney: @Sendable (JourneyPayload) -> Publisher<Void, Never>
     // Audio
     public let speak: @Sendable (String) -> Publisher<Void, Never>
     /// Queues behind whatever is playing rather than interrupting it. Everything informational

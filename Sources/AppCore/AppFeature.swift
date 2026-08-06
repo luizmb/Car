@@ -223,12 +223,14 @@ public enum AppFeature {
                         from: before.journey, to: next, signals: signals, now: now
                     ).map { ctx.environment.logAction($0) |> Effect.fireAndForget } ?? .empty
 
-                    let record: JourneyEvent? = switch (before.journey, next) {
+                    let record: JourneyPayload? = switch (before.journey, next) {
                     case (.idle, .active):
-                        .journeyStart(via: signals.ignition && signals.indimate ? "both"
-                                        : signals.ignition ? "ignition" : "indimate")
+                        .journeyStart(.init(via: signals.ignition && signals.indimate ? "both"
+                                            : signals.ignition ? "ignition" : "indimate"))
                     case let (.active(since), .idle):
-                        .journeyEnd(seconds: Int(now.timeIntervalSince(since).rounded()), started: since)
+                        .journeyEnd(.init(
+                            seconds: Int(now.timeIntervalSince(since).rounded()), started: since
+                        ))
                     default: nil
                     }
                     let kept: Effect<AppAction> = record

@@ -87,15 +87,18 @@ final class ActionLogBox: @unchecked Sendable {
         write(text, at: date)
     }
 
-    /// A typed record, with the timestamp merged into the object rather than wrapping it.
+    /// A typed record.
     ///
-    /// Flat on purpose: `{"t":…,"kind":"fix","lat":…}` is one step to read and one step to load into
-    /// anything. Nesting the record under an `"e"` key would buy nothing and cost every consumer an
-    /// extra hop for the rest of the file's life.
-    func append(_ event: JourneyEvent) {
+    /// Encoded through `JourneyRecord`, which is the same type the file is *read* back with — so the
+    /// writer and the reader cannot drift apart, and a shape that fails to decode fails here rather
+    /// than in a year's time.
+    func append(_ payload: JourneyPayload) {
         let date = now()
-        let stamped = "{\"t\":\"\(timestampFormatter.string(from: date))\","
-        write(stamped + event.json.dropFirst(), at: date)
+        guard
+            let data = try? JourneyLog.encoder.encode(JourneyRecord(time: date, payload: payload)),
+            let text = String(data: data, encoding: .utf8)
+        else { return }
+        write(text, at: date)
     }
 
     private func write(_ text: String, at date: Date) {

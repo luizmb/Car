@@ -1,177 +1,347 @@
 import Foundation
 
-/// A record worth keeping.
-///
-/// The ride log has so far been `String(describing:)` of every dispatched action — brilliant for a
-/// first ride, useless as a record. It changes shape whenever a Swift type does, it needs a bespoke
-/// parser, and 42% of it is raw motion samples nobody will ever read.
-///
-/// This is the other half of the split: a typed, stable record of the things that will still matter
-/// in a year, written **only while a journey is active**. The firehose continues into its own debug
-/// file, where it costs nothing but disk.
-///
-/// One object per line rather than a JSON array, deliberately. The app is killed mid-ride routinely
-/// — by iOS, or by the rider at the end — and an array would leave an unclosed bracket and a file
-/// that no parser will touch. Every line here stands alone, so a truncated file loses the last line
-/// and nothing else.
-public enum JourneyEvent: Sendable, Equatable {
-    case journeyStart(via: String)
-    case journeyEnd(seconds: Int, started: Date)
-    case fix(latitude: Double, longitude: Double, speedMPH: Double?, courseDegrees: Double?,
-             altitudeMetres: Double?, accuracyMetres: Double?)
-    case road(limitMPH: Double?, origin: String, label: String?, variable: Bool)
-    case camera(kind: String, limitMPH: Double?, speedMPH: Double)
-    case averageZone(entered: Bool, limitMPH: Double?)
-    case indicator(side: String?)
-    case tyre(position: String, psi: Double, celsius: Double, moving: Bool)
-    case weather(celsius: Double, humidity: Double, pressureKPa: Double,
-                 windMPS: Double, windDegrees: Double)
-    case barometer(pressureKPa: Double, relativeAltitude: Double)
-    case activity(String, confidence: Int)
-    case device(String, connected: Bool)
-    case refuel(litres: Double, price: Double, odometer: Double?, brim: Bool)
-    case reserve(kilometresFromGPS: Double)
+// MARK: - Record type
+
+/// The discriminator. Its raw values *are* the file format, so they are written out explicitly and
+/// must never be changed to follow a Swift rename.
+public enum RecordType: String, Codable, Sendable, CaseIterable {
+    case journeyStart = "journey-start"
+    case journeyEnd = "journey-end"
+    case fix
+    case road
+    case camera
+    case averageZone = "average-zone"
+    case indicator
+    case tyre
+    case weather
+    case barometer
+    case activity
+    case device
+    case refuel
+    case reserve
 }
 
-// MARK: - Encoding
+// MARK: - Payloads
 
-public extension JourneyEvent {
-    /// The record as JSON, ready to be written as one line.
+// One type per record shape. Each pins its `CodingKeys`, so renaming a Swift property cannot
+// silently rewrite a year of records — which was the only real argument for hand-writing the JSON,
+// and it costs one enum to keep.
+
+public struct JourneyStartPayload: Codable, Sendable, Equatable {
+    /// `ignition`, `indimate`, or `both` — which signal opened the journey.
+    public let via: String
+    public init(via: String) { self.via = via }
+}
+
+public struct JourneyEndPayload: Codable, Sendable, Equatable {
+    public let seconds: Int
+    /// Repeated here so one line is the whole journey, even if the file rotated at UTC midnight or
+    /// the app was relaunched mid-ride.
+    public let started: Date
+    public init(seconds: Int, started: Date) {
+        self.seconds = seconds
+        self.started = started
+    }
+}
+
+public struct FixPayload: Codable, Sendable, Equatable {
+    public let lat: Double
+    public let lon: Double
+    public let mph: Double?
+    public let course: Double?
+    public let alt: Double?
+    public let acc: Double?
+
+    public init(lat: Double, lon: Double, mph: Double?, course: Double?, alt: Double?, acc: Double?) {
+        self.lat = lat
+        self.lon = lon
+        self.mph = mph
+        self.course = course
+        self.alt = alt
+        self.acc = acc
+    }
+}
+
+public struct RoadPayload: Codable, Sendable, Equatable {
+    public let mph: Double?
+    /// `signed`, `built-up`, `national`, `unattributed`.
+    public let origin: String
+    public let label: String?
+    public let variable: Bool
+
+    public init(mph: Double?, origin: String, label: String?, variable: Bool) {
+        self.mph = mph
+        self.origin = origin
+        self.label = label
+        self.variable = variable
+    }
+}
+
+public struct CameraPayload: Codable, Sendable, Equatable {
+    /// `fixed`, `average`, `red-light`, `mobile`, `unknown`.
+    public let type: String
+    public let mph: Double?
+    /// The speed you were doing when it was announced — the reason the record is worth keeping at all.
+    public let atMPH: Double
+
+    public init(type: String, mph: Double?, atMPH: Double) {
+        self.type = type
+        self.mph = mph
+        self.atMPH = atMPH
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case type = "cameraType"   // `type` is taken by the discriminator on the same flat object
+        case mph, atMPH
+    }
+}
+
+public struct AverageZonePayload: Codable, Sendable, Equatable {
+    public let entered: Bool
+    public let mph: Double?
+    public init(entered: Bool, mph: Double?) {
+        self.entered = entered
+        self.mph = mph
+    }
+}
+
+public struct IndicatorPayload: Codable, Sendable, Equatable {
+    /// `left`, `right`, or absent for cancelled.
+    public let side: String?
+    public init(side: String?) { self.side = side }
+}
+
+public struct TyrePayload: Codable, Sendable, Equatable {
+    public let position: String
+    public let psi: Double
+    public let celsius: Double
+    public let moving: Bool
+
+    public init(position: String, psi: Double, celsius: Double, moving: Bool) {
+        self.position = position
+        self.psi = psi
+        self.celsius = celsius
+        self.moving = moving
+    }
+}
+
+public struct WeatherPayload: Codable, Sendable, Equatable {
+    public let celsius: Double
+    public let humidity: Double
+    public let kpa: Double
+    public let windMPS: Double
+    public let windDegrees: Double
+
+    public init(celsius: Double, humidity: Double, kpa: Double, windMPS: Double, windDegrees: Double) {
+        self.celsius = celsius
+        self.humidity = humidity
+        self.kpa = kpa
+        self.windMPS = windMPS
+        self.windDegrees = windDegrees
+    }
+}
+
+public struct BarometerPayload: Codable, Sendable, Equatable {
+    public let kpa: Double
+    public let relativeAltitude: Double
+    public init(kpa: Double, relativeAltitude: Double) {
+        self.kpa = kpa
+        self.relativeAltitude = relativeAltitude
+    }
+}
+
+public struct ActivityPayload: Codable, Sendable, Equatable {
+    public let activity: String
+    public let confidence: Int
+    public init(activity: String, confidence: Int) {
+        self.activity = activity
+        self.confidence = confidence
+    }
+}
+
+public struct DevicePayload: Codable, Sendable, Equatable {
+    /// `indimate`, `ignition`, `cardo`.
+    public let device: String
+    public let connected: Bool
+    public init(device: String, connected: Bool) {
+        self.device = device
+        self.connected = connected
+    }
+}
+
+public struct RefuelPayload: Codable, Sendable, Equatable {
+    public let litres: Double
+    public let price: Double
+    public let odometer: Double?
+    public let brim: Bool
+
+    public init(litres: Double, price: Double, odometer: Double?, brim: Bool) {
+        self.litres = litres
+        self.price = price
+        self.odometer = odometer
+        self.brim = brim
+    }
+}
+
+public struct ReservePayload: Codable, Sendable, Equatable {
+    public let km: Double
+    public init(km: Double) { self.km = km }
+}
+
+// MARK: - The polymorphic payload
+
+/// Every shape a record can take.
+///
+/// A closed set rather than an erased `any Codable`: the point is not to hide the type but to
+/// enumerate the possibilities, so a consumer can switch exhaustively and the compiler will complain
+/// when a new kind is added.
+public enum JourneyPayload: Sendable, Equatable {
+    case journeyStart(JourneyStartPayload)
+    case journeyEnd(JourneyEndPayload)
+    case fix(FixPayload)
+    case road(RoadPayload)
+    case camera(CameraPayload)
+    case averageZone(AverageZonePayload)
+    case indicator(IndicatorPayload)
+    case tyre(TyrePayload)
+    case weather(WeatherPayload)
+    case barometer(BarometerPayload)
+    case activity(ActivityPayload)
+    case device(DevicePayload)
+    case refuel(RefuelPayload)
+    case reserve(ReservePayload)
+
+    public var type: RecordType {
+        switch self {
+        case .journeyStart: .journeyStart
+        case .journeyEnd: .journeyEnd
+        case .fix: .fix
+        case .road: .road
+        case .camera: .camera
+        case .averageZone: .averageZone
+        case .indicator: .indicator
+        case .tyre: .tyre
+        case .weather: .weather
+        case .barometer: .barometer
+        case .activity: .activity
+        case .device: .device
+        case .refuel: .refuel
+        case .reserve: .reserve
+        }
+    }
+}
+
+// MARK: - The container
+
+/// One line of the journey log: a timestamp, a discriminator, and the payload — **flat**.
+///
+/// Flat rather than nested under a `payload` key. The payload is decoded from the *same* decoder as
+/// the envelope, which is what lets `{"t":…,"type":"fix","lat":…}` round-trip while still being one
+/// `Codable` type. Nesting would cost every consumer an extra hop for the life of the format and buy
+/// nothing.
+///
+/// This is what makes the JSONL readable back: the file is a sequence of these, so
+///
+/// ```swift
+/// let json = "[" + lines.joined(separator: ",") + "]"
+/// let records = try decoder.decode([JourneyRecord].self, from: Data(json.utf8))
+/// ```
+///
+/// works, and gives a heterogeneous array without any type erasure — `JourneyPayload` enumerates
+/// the possibilities rather than hiding them.
+public struct JourneyRecord: Codable, Sendable, Equatable {
+    public let time: Date
+    public let payload: JourneyPayload
+
+    public init(time: Date, payload: JourneyPayload) {
+        self.time = time
+        self.payload = payload
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case time = "t"
+        case type
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        time = try container.decode(Date.self, forKey: .time)
+        let type = try container.decode(RecordType.self, forKey: .type)
+        // Decoding the payload from the same decoder is what keeps the line flat.
+        payload = switch type {
+        case .journeyStart: .journeyStart(try JourneyStartPayload(from: decoder))
+        case .journeyEnd: .journeyEnd(try JourneyEndPayload(from: decoder))
+        case .fix: .fix(try FixPayload(from: decoder))
+        case .road: .road(try RoadPayload(from: decoder))
+        case .camera: .camera(try CameraPayload(from: decoder))
+        case .averageZone: .averageZone(try AverageZonePayload(from: decoder))
+        case .indicator: .indicator(try IndicatorPayload(from: decoder))
+        case .tyre: .tyre(try TyrePayload(from: decoder))
+        case .weather: .weather(try WeatherPayload(from: decoder))
+        case .barometer: .barometer(try BarometerPayload(from: decoder))
+        case .activity: .activity(try ActivityPayload(from: decoder))
+        case .device: .device(try DevicePayload(from: decoder))
+        case .refuel: .refuel(try RefuelPayload(from: decoder))
+        case .reserve: .reserve(try ReservePayload(from: decoder))
+        }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(time, forKey: .time)
+        try container.encode(payload.type, forKey: .type)
+        switch payload {
+        case let .journeyStart(value): try value.encode(to: encoder)
+        case let .journeyEnd(value): try value.encode(to: encoder)
+        case let .fix(value): try value.encode(to: encoder)
+        case let .road(value): try value.encode(to: encoder)
+        case let .camera(value): try value.encode(to: encoder)
+        case let .averageZone(value): try value.encode(to: encoder)
+        case let .indicator(value): try value.encode(to: encoder)
+        case let .tyre(value): try value.encode(to: encoder)
+        case let .weather(value): try value.encode(to: encoder)
+        case let .barometer(value): try value.encode(to: encoder)
+        case let .activity(value): try value.encode(to: encoder)
+        case let .device(value): try value.encode(to: encoder)
+        case let .refuel(value): try value.encode(to: encoder)
+        case let .reserve(value): try value.encode(to: encoder)
+        }
+    }
+}
+
+// MARK: - Coders
+
+/// ISO-8601 dates, matching the `t` field every line already carried, and stable across locales.
+public enum JourneyLog {
+    public static var encoder: JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys]
+        return encoder
+    }
+
+    public static var decoder: JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }
+
+    /// The whole file, from its lines.
     ///
-    /// Hand-rolled rather than `Codable`: the output is a *file format* that outlives the types
-    /// producing it, so the field names should be chosen and visible here, not derived from whatever
-    /// a property happens to be called this month. Renaming a Swift property must not silently
-    /// rewrite a year of records.
-    var json: String {
-        switch self {
-        case let .journeyStart(via):
-            object(["kind": .string("journey-start"), "via": .string(via)])
-        case let .journeyEnd(seconds, started):
-            object([
-                "kind": .string("journey-end"),
-                "seconds": .int(seconds),
-                "started": .string(utcTimestamp(started))
-            ])
-        case let .fix(lat, lon, speed, course, altitude, accuracy):
-            object([
-                "kind": .string("fix"),
-                "lat": .double(lat, places: 6),
-                "lon": .double(lon, places: 6),
-                "mph": speed.map { .double($0, places: 1) } ?? .null,
-                "course": course.map { .double($0, places: 1) } ?? .null,
-                "alt": altitude.map { .double($0, places: 1) } ?? .null,
-                "acc": accuracy.map { .double($0, places: 1) } ?? .null
-            ])
-        case let .road(limit, origin, label, variable):
-            object([
-                "kind": .string("road"),
-                "mph": limit.map { .double($0, places: 0) } ?? .null,
-                "origin": .string(origin),
-                "label": label.map(JSONValue.string) ?? .null,
-                "variable": .bool(variable)
-            ])
-        case let .camera(kind, limit, speed):
-            object([
-                "kind": .string("camera"),
-                "type": .string(kind),
-                "mph": limit.map { .double($0, places: 0) } ?? .null,
-                "atMPH": .double(speed, places: 1)
-            ])
-        case let .averageZone(entered, limit):
-            object([
-                "kind": .string("average-zone"),
-                "entered": .bool(entered),
-                "mph": limit.map { .double($0, places: 0) } ?? .null
-            ])
-        case let .indicator(side):
-            object(["kind": .string("indicator"), "side": side.map(JSONValue.string) ?? .null])
-        case let .tyre(position, psi, celsius, moving):
-            object([
-                "kind": .string("tyre"),
-                "position": .string(position),
-                "psi": .double(psi, places: 1),
-                "c": .double(celsius, places: 0),
-                "moving": .bool(moving)
-            ])
-        case let .weather(celsius, humidity, pressure, wind, windDegrees):
-            object([
-                "kind": .string("weather"),
-                "c": .double(celsius, places: 1),
-                "humidity": .double(humidity, places: 0),
-                "kpa": .double(pressure, places: 2),
-                "windMPS": .double(wind, places: 1),
-                "windDeg": .double(windDegrees, places: 0)
-            ])
-        case let .barometer(pressure, relative):
-            object([
-                "kind": .string("barometer"),
-                "kpa": .double(pressure, places: 3),
-                "relAlt": .double(relative, places: 2)
-            ])
-        case let .activity(name, confidence):
-            object([
-                "kind": .string("activity"),
-                "activity": .string(name),
-                "confidence": .int(confidence)
-            ])
-        case let .device(name, connected):
-            object([
-                "kind": .string("device"),
-                "device": .string(name),
-                "connected": .bool(connected)
-            ])
-        case let .refuel(litres, price, odometer, brim):
-            object([
-                "kind": .string("refuel"),
-                "litres": .double(litres, places: 2),
-                "price": .double(price, places: 2),
-                "odometer": odometer.map { .double($0, places: 0) } ?? .null,
-                "brim": .bool(brim)
-            ])
-        case let .reserve(kilometres):
-            object(["kind": .string("reserve"), "km": .double(kilometres, places: 2)])
-        }
+    /// Joining and wrapping is exactly as intended — and it is safe precisely *because* each line is
+    /// a complete object, so a file truncated by the app being killed loses only its last line. That
+    /// last line is dropped here rather than failing the whole parse, which matters because the app
+    /// being killed mid-write is the normal ending, not an exception.
+    public static func records(fromLines lines: [String]) -> [JourneyRecord] {
+        let usable = lines.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        guard !usable.isEmpty else { return [] }
+
+        if let all = try? decoder.decode(
+            [JourneyRecord].self,
+            from: Data(("[" + usable.joined(separator: ",") + "]").utf8)
+        ) { return all }
+
+        // One bad line — almost always a half-written last one — should not cost the ride.
+        return usable.compactMap { try? decoder.decode(JourneyRecord.self, from: Data($0.utf8)) }
     }
-}
-
-// MARK: - A very small JSON writer
-
-/// Enough JSON to write one flat object, and no more.
-///
-/// `JSONSerialization` would do this, but it returns `Data?` and sorts nothing predictably, and
-/// `JSONEncoder` would tie the file format to the property names. Rounding at the point of writing
-/// also keeps the file readable: six decimal places of latitude is ~10 cm, and seventeen is noise.
-enum JSONValue {
-    case string(String)
-    case double(Double, places: Int)
-    case int(Int)
-    case bool(Bool)
-    case null
-
-    var literal: String {
-        switch self {
-        case let .string(text): "\"\(escape(text))\""
-        case let .double(value, places): String(format: "%.\(places)f", value)
-        case let .int(value): String(value)
-        case let .bool(value): value ? "true" : "false"
-        case .null: "null"
-        }
-    }
-
-    private func escape(_ text: String) -> String {
-        text.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "\n", with: "\\n")
-            .replacingOccurrences(of: "\t", with: "\\t")
-    }
-}
-
-/// Keys are emitted in a fixed order — `kind` first — so the file diffs and reads sensibly rather
-/// than depending on dictionary iteration order.
-func object(_ fields: [String: JSONValue]) -> String {
-    let ordered = ["kind"] + fields.keys.filter { $0 != "kind" }.sorted()
-    let body = ordered.compactMap { key in
-        fields[key].map { "\"\(key)\":\($0.literal)" }
-    }
-    return "{" + body.joined(separator: ",") + "}"
 }

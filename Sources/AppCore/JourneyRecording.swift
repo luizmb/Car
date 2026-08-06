@@ -16,67 +16,67 @@ import SpeedMonitorFeature
 ///   the accelerometer firehose does not.
 ///
 /// Returning `nil` means "debug only", which is the default for anything not listed.
-func journeyEvent(for action: AppAction) -> JourneyEvent? {
+func journeyEvent(for action: AppAction) -> JourneyPayload? {
     if case let .speedMonitor(speed) = action { return speedMonitorEvent(speed) }
     return switch action {
     case let .indicator(.event(.indicator(side))):
-        .indicator(side: side.map { $0 == .left ? "left" : "right" })
+        .indicator(.init(side: side.map { $0 == .left ? "left" : "right" }))
     case .indicator(.event(.connected)):
-        .device("indimate", connected: true)
+        .device(.init(device: "indimate", connected: true))
     case .indicator(.event(.disconnected)):
-        .device("indimate", connected: false)
+        .device(.init(device: "indimate", connected: false))
     case .chigee(.event(.present)):
-        .device("ignition", connected: true)
+        .device(.init(device: "ignition", connected: true))
     case .chigee(.event(.absent)):
-        .device("ignition", connected: false)
+        .device(.init(device: "ignition", connected: false))
     case .cardo(.event(.connected)):
-        .device("cardo", connected: true)
+        .device(.init(device: "cardo", connected: true))
     case .cardo(.event(.disconnected)):
-        .device("cardo", connected: false)
+        .device(.init(device: "cardo", connected: false))
     case let .tyres(.reading(reading)):
-        .tyre(
+        .tyre(.init(
             position: reading.position == .front ? "front" : "rear",
             psi: Iso<KPa, PSI>.convert.get(reading.telemetry.pressure).rawValue,
             celsius: reading.telemetry.temperature.rawValue,
             moving: reading.telemetry.isMoving
-        )
+        ))
     case let .weather(.observed(observation, _, _, _)):
-        .weather(
+        .weather(.init(
             celsius: observation.temperature.rawValue,
             humidity: observation.humidity,
-            pressureKPa: observation.pressure.rawValue,
+            kpa: observation.pressure.rawValue,
             windMPS: observation.windSpeed.rawValue,
             windDegrees: observation.windDirection.rawValue
-        )
+        ))
     case let .motion(.barometer(sample)):
-        .barometer(pressureKPa: sample.pressure.rawValue, relativeAltitude: sample.relativeAltitude.rawValue)
+        .barometer(.init(kpa: sample.pressure.rawValue, relativeAltitude: sample.relativeAltitude.rawValue))
     case let .motion(.activity(sample)):
-        .activity(sample.activity.logName, confidence: sample.confidence)
+        .activity(.init(activity: sample.activity.logName, confidence: sample.confidence))
     default:
         nil
     }
 }
 
-private func speedMonitorEvent(_ action: SpeedMonitorFeature.Action) -> JourneyEvent? {
+private func speedMonitorEvent(_ action: SpeedMonitorFeature.Action) -> JourneyPayload? {
     switch action {
     case let .locationUpdate(location):
-        .fix(
-            latitude: location.latitude.rawValue,
-            longitude: location.longitude.rawValue,
-            speedMPH: location.speed.map { Iso<MPS, MPH>.convert.get($0).rawValue },
-            courseDegrees: location.course?.rawValue,
-            altitudeMetres: location.altitude.rawValue,
-            accuracyMetres: location.horizontalAccuracy?.rawValue
-        )
+        .fix(.init(
+            lat: location.latitude.rawValue,
+            lon: location.longitude.rawValue,
+            mph: location.speed.map { Iso<MPS, MPH>.convert.get($0).rawValue },
+            course: location.course?.rawValue,
+            alt: location.altitude.rawValue,
+            acc: location.horizontalAccuracy?.rawValue
+        ))
     case let .roadSpeedChanged(info):
-        .road(
-            limitMPH: info.limit.spokenValue,
+        .road(.init(
+            mph: info.limit.spokenValue,
             origin: info.origin.logName,
             label: info.roadLabel,
             variable: info.isVariable
-        )
+        ))
     case let .averageZoneChanged(zone):
-        .averageZone(entered: zone != nil, limitMPH: zone?.limit?.rawValue)
+        .averageZone(.init(entered: zone != nil, mph: zone?.limit?.rawValue))
     default:
         nil
     }
