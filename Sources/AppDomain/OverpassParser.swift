@@ -81,10 +81,17 @@ public struct OverpassEndpoint: Sendable, Equatable {
     /// independent rate limits, and the project asks that they not be addressed individually except
     /// to work around one being broken. So: use the round-robin name, fail fast, and fall back to a
     /// different *kind* of answer rather than to another Overpass.
-    /// Britain first: the rider is in the UK, the query is small and frequent, and a smaller
-    /// instance serving one region should answer it faster than the planet-wide one. Falls back to
-    /// the canonical endpoint, then — in the fetcher — to Apple for the street name alone.
-    public static let primary = OverpassEndpoint(urls: [britain, canonical])
+    /// The canonical endpoint first, Britain second.
+    ///
+    /// Britain was tried first on the theory that a regional instance would be faster. It was not:
+    /// it failed on every attempt, on both Wi-Fi and cellular, because neither routes IPv6. Ordering
+    /// an endpoint first because it *ought* to be better, when the evidence says it never answers,
+    /// costs a DNS lookup and a connection attempt on every single road change — which means waking
+    /// the radio, on an app whose entire battery strategy is about not doing that.
+    ///
+    /// It stays second because it would be the better source the day IPv6 appears, and second costs
+    /// nothing until the first has already failed.
+    public static let primary = OverpassEndpoint(urls: [canonical, britain])
 
     /// Cameras stay on the canonical endpoint.
     ///
