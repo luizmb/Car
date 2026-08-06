@@ -136,9 +136,16 @@ public enum AppFeature {
         // Every observation reaches the store as an action, so one handler captures GPS, road info,
         // Indimate, Cardo, CHIGEE, tyres and motion in true interleaved order — the whole raw
         // timeline, with no per-source wiring. Temporary, until the real recorder exists.
-        Behavior<AppAction, AppState, World>.handle { action, _ in
-            .produce { ctx in
-                ctx.environment.logAction(String(describing: action)) |> Effect.fireAndForget
+        Behavior<AppAction, AppState, World>.handle { action, context in
+            let active = JourneyPhase.prism.active.preview(context.stateBefore?.journey ?? .idle) != nil
+            return .produce { ctx in
+                let debug = ctx.environment.logAction(String(describing: action))
+                    |> Effect<AppAction>.fireAndForget
+                // The journey log is gated on a journey being under way, which is the whole point of
+                // the split: a file that only ever contains riding, and never the hours the app sat
+                // open on a kitchen table.
+                guard active, let event = journeyEvent(for: action) else { return debug }
+                return debug <> (ctx.environment.logJourney(event) |> Effect.fireAndForget)
             }
         }
 
@@ -209,12 +216,25 @@ public enum AppFeature {
                     }
                     let announce: Effect<AppAction> = spoken
                         .map { $0 |> (ctx.environment.speakQueued >>> Effect.fireAndForget) } ?? .empty
-                    // A marker of its own, so the boundary is one grep rather than a hunt through
-                    // the action dump.
+                    // The boundary goes to both files: a greppable marker in the dump, and a typed
+                    // record in the journey log — which is the only writer allowed to bypass the
+                    // "journey must be active" gate, since it is the thing that opens and closes it.
                     let mark: Effect<AppAction> = journeyMarker(
                         from: before.journey, to: next, signals: signals, now: now
                     ).map { ctx.environment.logAction($0) |> Effect.fireAndForget } ?? .empty
-                    return announce <> mark
+
+                    let record: JourneyEvent? = switch (before.journey, next) {
+                    case (.idle, .active):
+                        .journeyStart(via: signals.ignition && signals.indimate ? "both"
+                                        : signals.ignition ? "ignition" : "indimate")
+                    case let (.active(since), .idle):
+                        .journeyEnd(seconds: Int(now.timeIntervalSince(since).rounded()), started: since)
+                    default: nil
+                    }
+                    let kept: Effect<AppAction> = record
+                        .map { ctx.environment.logJourney($0) |> Effect.fireAndForget } ?? .empty
+
+                    return announce <> mark <> kept
                 }
         }
 

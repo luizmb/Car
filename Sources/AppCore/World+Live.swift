@@ -130,10 +130,10 @@ extension World {
         let cardo     = CardoCentral()
         let chigee    = ChigeeCentral()
         let tyres     = TyreCentral()
-        let rideLog   = ActionLogBox(
-            directory: FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0],
-            now: { Date() }
-        )
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        // Two files, deliberately. `journey-*` is the record; `debug-*` is the dump.
+        let rideLog    = ActionLogBox(directory: documents, prefix: "debug", now: { Date() })
+        let journeyLog = ActionLogBox(directory: documents, prefix: "journey", now: { Date() })
         let motionBox = MotionBox()
         let device    = DeviceBox()
         let ticks     = IndicatorAudioBox()
@@ -249,6 +249,9 @@ extension World {
             newID: { UUID() },
             logAction: { line in
                 Publisher.future { rideLog.append(line) }
+            },
+            logJourney: { event in
+                Publisher.future { journeyLog.append(event) }
             },
             speak: { text in
                 Publisher.future { DispatchQueue.main.async { speech.speak(text) } }

@@ -80,7 +80,7 @@ struct ActionLogFilingTests {
     func appendsAccumulate() throws {
         let directory = scratch()
         let clock = TestClock(date("2026-08-05T10:00:00Z"))
-        let log = ActionLogBox(directory: directory, now: { clock.now })
+        let log = ActionLogBox(directory: directory, prefix: "debug", now: { clock.now })
         log.append("first")
         clock.now = date("2026-08-05T10:00:01Z")
         log.append("second")
@@ -99,7 +99,7 @@ struct ActionLogFilingTests {
         // edge one, so the roll cannot happen only at launch.
         let directory = scratch()
         let clock = TestClock(date("2026-08-05T23:59:59Z"))
-        let log = ActionLogBox(directory: directory, now: { clock.now })
+        let log = ActionLogBox(directory: directory, prefix: "debug", now: { clock.now })
         log.append("before")
         let first = try #require(log.url)
 
@@ -108,8 +108,8 @@ struct ActionLogFilingTests {
         let second = try #require(log.url)
 
         #expect(first != second)
-        #expect(first.lastPathComponent == "ride-2026-08-05.jsonl")
-        #expect(second.lastPathComponent == "ride-2026-08-06.jsonl")
+        #expect(first.lastPathComponent == "debug-2026-08-05.jsonl")
+        #expect(second.lastPathComponent == "debug-2026-08-06.jsonl")
         try? FileManager.default.removeItem(at: directory)
     }
 }
