@@ -26,7 +26,19 @@ RIDEABLE = {
     "unclassified", "residential", "living_street", "service", "track", "road",
 }
 # Stored as a small int rather than a string, repeated a million times.
+#
+# Computed over the whole of RIDEABLE even though not all of it is kept, so the numbers stay put:
+# `classNames` in LocalRoadStore.swift is a positional array, and dropping a class from this set
+# would renumber everything after it and silently turn every trunk road into a track.
 CLASS_ID = {name: i for i, name in enumerate(sorted(RIDEABLE))}
+
+# Kept out of the file, not out of the classification.
+#
+# Tracks are unsurfaced farm and forest ways. Nobody is riding a VT400 down one, and 360,000 of them
+# with full geometry cost about 40 MB — while sitting close enough to real roads to compete for the
+# match. `isRideable` still knows the class and `classPenalty` still penalises it, so an extract that
+# does include them keeps working.
+SKIP = {"track"}
 
 COMPASS = {
     "n": 0, "nne": 22.5, "ne": 45, "ene": 67.5,
@@ -160,9 +172,16 @@ class Extractor(osmium.SimpleHandler):
 
     def flush(self):
         if self.roads:
+            # The bounding box goes to the R-tree and *only* there. Storing it on the row as well
+            # duplicated four REALs across 4.3 million rows for no reader — the candidate query
+            # joins through the index and never selects them — which is about 140 MB.
             self.db.executemany(
-                "INSERT OR IGNORE INTO road (id, name, ref, class, mph, minlat, maxlat, minlon, maxlon, geom)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?)", self.roads)
+                "INSERT OR IGNORE INTO road (id, name, ref, class, mph, geom) VALUES (?,?,?,?,?,?)",
+                [(r[0], r[1], r[2], r[3], r[4], r[9]) for r in self.roads])
+            self.db.executemany(
+                "INSERT OR IGNORE INTO road_bbox (id, minlat, maxlat, minlon, maxlon)"
+                " VALUES (?,?,?,?,?)",
+                [(r[0], r[5], r[6], r[7], r[8]) for r in self.roads])
             self.roads.clear()
         if self.cameras:
             self.db.executemany(
@@ -223,7 +242,7 @@ class Extractor(osmium.SimpleHandler):
                                      first.lat, first.lon))
 
         highway = tags.get("highway")
-        if highway not in RIDEABLE:
+        if highway not in RIDEABLE or highway in SKIP:
             return
         try:
             coords = [(n.lat, n.lon) for n in w.nodes if n.location.valid()]
@@ -269,7 +288,8 @@ def main(pbf, out):
     db.executescript("""
         PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
         CREATE TABLE road (id INTEGER PRIMARY KEY, name TEXT, ref TEXT, class INTEGER, mph INTEGER,
-                           minlat REAL, maxlat REAL, minlon REAL, maxlon REAL, geom BLOB);
+                           geom BLOB);
+        CREATE VIRTUAL TABLE road_bbox USING rtree(id, minlat, maxlat, minlon, maxlon);
         CREATE TABLE camera (id INTEGER PRIMARY KEY, kind TEXT, mph INTEGER, direction REAL,
                              lat REAL, lon REAL);
         CREATE TABLE zone (id INTEGER PRIMARY KEY, mph INTEGER,
@@ -298,8 +318,6 @@ def main(pbf, out):
 
     print("building spatial index …", flush=True)
     db.executescript("""
-        CREATE VIRTUAL TABLE road_bbox USING rtree(id, minlat, maxlat, minlon, maxlon);
-        INSERT INTO road_bbox SELECT id, minlat, maxlat, minlon, maxlon FROM road;
         CREATE VIRTUAL TABLE camera_bbox USING rtree(id, minlat, maxlat, minlon, maxlon);
         INSERT INTO camera_bbox SELECT id, lat, lat, lon, lon FROM camera;
         CREATE VIRTUAL TABLE station_bbox USING rtree(id, minlat, maxlat, minlon, maxlon);
