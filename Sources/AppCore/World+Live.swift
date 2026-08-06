@@ -264,6 +264,9 @@ extension World {
                     httpClient: httpClient,
                     decoder: cameraDecoder,
                     radius: Meters(50_000),
+                    localCameras: { latitude, longitude, radius in
+                        localRoads?.cameraSet(near: latitude, longitude: longitude, radius: radius)
+                    },
                     log: rideLog.append
                 )
             },
@@ -316,7 +319,18 @@ extension World {
             phoneBattery: { device.batteryLevel },
             isLowPowerMode: { ProcessInfo.processInfo.isLowPowerModeEnabled },
             fetchStation: { latitude, longitude in
-                httpClient(overpassStationRequest(latitude: latitude, longitude: longitude))
+                // The same 150 m the Overpass query uses. Tight on purpose: this runs while the
+                // rider is standing *at* the pump, so anything a street away is a different station
+                // and a wrong attribution is worse than none.
+                if let local = localRoads?.station(
+                    near: latitude, longitude: longitude, radius: Meters(150)
+                ) {
+                    rideLog.append("station-local id=\(local.id)")
+                    return .just(local)
+                }
+                // A miss falls through rather than being trusted — abroad, or a forecourt that
+                // opened after the extract was built, and this request is made once while stopped.
+                return httpClient(overpassStationRequest(latitude: latitude, longitude: longitude))
                     .validateStatusCode()
                     .decode(using: stationDecoder)
                     .map { nearestStation($0, to: (latitude, longitude)) }

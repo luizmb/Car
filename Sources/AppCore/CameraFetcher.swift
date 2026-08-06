@@ -26,10 +26,14 @@ func makeCameraStream(
     httpClient: HTTPClient,
     decoder: DataDecoder<OverpassCameraResponse>,
     radius: Meters,
+    localCameras: @escaping @Sendable (Latitude, Longitude, Meters) -> CameraSet?,
     log: @escaping @Sendable (String) -> Void
 ) -> Publisher<CameraSet, Never> {
     throttledLocations(box: box)
-        .map(fetchCameras(httpClient: httpClient, decoder: decoder, radius: radius, log: log))
+        .map(fetchCameras(
+            httpClient: httpClient, decoder: decoder, radius: radius,
+            localCameras: localCameras, log: log
+        ))
         .switchToLatest()
 }
 
@@ -43,9 +47,23 @@ private func fetchCameras(
     httpClient: HTTPClient,
     decoder: DataDecoder<OverpassCameraResponse>,
     radius: Meters,
+    localCameras: @escaping @Sendable (Latitude, Longitude, Meters) -> CameraSet?,
     log: @escaping @Sendable (String) -> Void
 ) -> @Sendable (LocationUpdate) -> Publisher<CameraSet, Never> {
     { location in
+        // The extract first, and for cameras this matters more than it does for roads. There is no
+        // second source for camera data, so a refused request used to mean riding the whole journey
+        // with the warnings silently disarmed — the single point of failure the road lookup has
+        // already escaped.
+        //
+        // `nil` means the position is outside the extract, **not** that there is nothing here. An
+        // empty set from inside the bounds is a real answer and is used as one; ride to France and
+        // every lookup falls through to Overpass, which is exactly right.
+        if let local = localCameras(location.latitude, location.longitude, radius) {
+            log("camera-local n=\(local.cameras.count) zones=\(local.zones.count)")
+            return .just(local)
+        }
+
         @Sendable func attempt(_ hostIndex: Int) -> Publisher<CameraSet, Never> {
             httpClient(
                 overpassCameraRequest(
