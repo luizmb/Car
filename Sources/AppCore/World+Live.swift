@@ -25,6 +25,11 @@ private final class LocationBox: @unchecked Sendable {
 
 private final class SpeechBox: @unchecked Sendable {
     nonisolated(unsafe) let synth = AVSpeechSynthesizer()
+    // Releasing the session between journeys is a real saving — an active `.playback` session with
+    // `.duckOthers` dips every other app's audio for as long as we hold it. It is deliberately *not*
+    // done yet: GPS, motion and the road lookup all still run continuously, so gating audio alone
+    // would be one piece of the battery plan out of order, adding a failure mode before the
+    // observation week that is meant to inform the whole thing. See the battery strategy notes.
 
     init() {
         // `.duckOthers` (not `.mixWithOthers`) is what lets Music and Apple Maps keep playing
@@ -33,6 +38,26 @@ private final class SpeechBox: @unchecked Sendable {
         // indicator loop as well as speech, and the app spends whole journeys backgrounded.
         try? AVAudioSession.sharedInstance().setCategory(.playback, options: [.duckOthers])
         try? AVAudioSession.sharedInstance().setActive(true)
+
+        // **Recover from route changes.**
+        //
+        // `AVSpeechSynthesizer` is one long-lived object, and it wedges if the route disappears
+        // while it is speaking: every later utterance queues behind the stuck one and is never
+        // heard. On 2026-08-06 the Cardo dropped at 19:19:27, one second before "journey finished"
+        // was spoken, and the entire return leg was silent — while the indicator *sound* kept
+        // working, because that builds a fresh `AVAudioPlayer` each time and recovers by accident.
+        //
+        // Clearing the synthesiser and reactivating the session on every route change gives speech
+        // the same accidental recovery, deliberately.
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.synth.stopSpeaking(at: .immediate)
+                try? AVAudioSession.sharedInstance().setActive(true)
+            }
+        }
     }
 
     /// Interrupts whatever is playing. For time-critical announcements only — a speed threshold
