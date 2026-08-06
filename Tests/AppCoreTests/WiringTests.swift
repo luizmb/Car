@@ -184,6 +184,51 @@ struct WiringTests {
         #expect(store.state.speedMonitor.routeShape == shape)
     }
 
+    /// A destination chosen before the first fix cannot be routed — the screen says "waiting for a
+    /// GPS fix", and without a retry it says it for ever, because nothing else would ask again.
+    /// Equally, this action arrives once a second all journey: routing on each one would be a
+    /// request per second and would swap the route under a rider already following it.
+    @Test("a destination chosen before the first fix routes once the fix arrives, and only once")
+    func routesOnFirstFixOnly() async {
+        let store = MainStore.app(world: .stub)
+        store.dispatch(.navigation(.push(.navigate)), source: .init(file: #file, function: #function, line: #line))
+
+        let destination = AddressSuggestion(
+            title: "Ampthill Road", subtitle: "Bedford",
+            latitude: Latitude(52.12), longitude: Longitude(-0.46)
+        )
+        store.dispatch(.navigate(.choose(destination)), source: .init(file: #file, function: #function, line: #line))
+        for _ in 0..<10 { await Task.yield() }
+
+        // No fix yet, so nothing could be asked.
+        guard case let .navigate(before)? = store.state.path.first else {
+            Issue.record("route planner entry missing"); return
+        }
+        #expect(before.outcome == nil)
+        #expect(!before.isRouting)
+
+        func fix(_ latitude: Double) -> AppFeature.Action {
+            .navigate(.setPosition(Latitude(latitude), Longitude(-0.46)))
+        }
+        store.dispatch(fix(52.13), source: .init(file: #file, function: #function, line: #line))
+        for _ in 0..<10 { await Task.yield() }
+
+        // The stub returns an empty publisher, so routing never resolves — `isRouting` staying true
+        // is exactly the evidence that the request was made.
+        guard case let .navigate(after)? = store.state.path.first else {
+            Issue.record("route planner entry missing"); return
+        }
+        #expect(after.isRouting)
+
+        // A second fix must not ask again: the guard is on the *first* one.
+        store.dispatch(fix(52.14), source: .init(file: #file, function: #function, line: #line))
+        for _ in 0..<10 { await Task.yield() }
+        guard case let .navigate(later)? = store.state.path.first else {
+            Issue.record("route planner entry missing"); return
+        }
+        #expect(later.latitude == Latitude(52.14))
+    }
+
     /// Otherwise the planner forgets where you were going while the map carries on drawing the route
     /// there, and the only way to be rid of it is to navigate somewhere else.
     @Test("clearing the destination rubs the route off the map")

@@ -247,10 +247,22 @@ public enum NavigationFeature {
                 }
 
             case let .setPosition(latitude, longitude):
+                // Routing needs an origin, so a destination chosen before the first fix cannot be
+                // acted on — the screen says "waiting for a GPS fix" and, without this, says it for
+                // ever, because nothing else would ever ask again.
+                //
+                // Only on the **first** fix, and only with a question outstanding. This action
+                // arrives once a second for the whole journey; re-routing on each one would be a
+                // request per second, and would replace the route under a rider already following
+                // it.
+                let waiting = context.stateBefore.map {
+                    $0.latitude == nil && $0.destination != nil && $0.outcome == nil && !$0.isRouting
+                } ?? false
                 return .reduce {
                     $0.latitude = latitude
                     $0.longitude = longitude
                 }
+                .produce { _ in waiting ? Effect.just(.route) : .empty }
             }
         }
     }
