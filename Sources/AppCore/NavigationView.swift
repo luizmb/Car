@@ -38,7 +38,11 @@ struct RoutePlannerView: View {
                     "Address or postcode",
                     text: viewStore.binding(.state(\.query), dispatch: .action(\.setQuery))
                 )
-                .textInputAutocapitalization(.characters)
+                // `.words`, not `.characters`. One field takes both a postcode and a street, and
+                // forcing capitals suits only the postcode — "AMPTHILL ROAD" is awkward to type and
+                // read, while "mk42 9az" matches perfectly well, since the search is case
+                // insensitive either way.
+                .textInputAutocapitalization(.words)
                 .autocorrectionDisabled()
                 .submitLabel(.search)
                 .onSubmit { viewStore.dispatch(.search) }
