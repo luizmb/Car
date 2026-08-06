@@ -16,6 +16,11 @@ import SpeedMonitorFeature
 ///   the accelerometer firehose does not.
 ///
 /// Returning `nil` means "debug only", which is the default for anything not listed.
+
+///
+/// Refuels and reserve switches are absent here on purpose: they are logged by `FuelFeature` itself,
+/// where the record actually exists, and therefore bypass the journey gate entirely — which is
+/// correct, since they happen *between* journeys by definition.
 func journeyEvent(for action: AppAction) -> (any JourneyPayloadType)? {
     if case let .speedMonitor(speed) = action { return speedMonitorEvent(speed) }
     return switch action {
@@ -118,3 +123,4 @@ private extension RoadSpeedLimit {
         if case let .value(mph) = self { mph.rawValue } else { nil }
     }
 }
+

@@ -91,17 +91,26 @@ public enum FuelFeature {
         public let saveFuelLog: @Sendable (FuelLog) -> Publisher<Result<Void, FileError>, Never>
         public let now: @Sendable () -> Date
         public let newID: @Sendable () -> UUID
+        /// Written straight to the journey log, bypassing the "a journey must be running" gate.
+        ///
+        /// A refuel happens *between* journeys by definition: you pull in, the keys come out and
+        /// journey A ends, you fill up, the keys go back in and journey B starts. Gated on riding it
+        /// would land in the gap and be dropped from the one file meant to keep it — and it is the
+        /// record every fuel calculation is built on. Switching to reserve is the same shape.
+        public let logJourney: @Sendable (any JourneyPayloadType) -> Publisher<Void, Never>
 
         public init(
             loadFuelLog: @escaping @Sendable () -> Publisher<Result<FuelLog, FileError>, Never>,
             saveFuelLog: @escaping @Sendable (FuelLog) -> Publisher<Result<Void, FileError>, Never>,
             now: @escaping @Sendable () -> Date,
-            newID: @escaping @Sendable () -> UUID
+            newID: @escaping @Sendable () -> UUID,
+            logJourney: @escaping @Sendable (any JourneyPayloadType) -> Publisher<Void, Never>
         ) {
             self.loadFuelLog = loadFuelLog
             self.saveFuelLog = saveFuelLog
             self.now = now
             self.newID = newID
+            self.logJourney = logJourney
         }
     }
 
@@ -162,7 +171,13 @@ public enum FuelFeature {
                     )
                     var log = state.log
                     log.refuels.append(record)
-                    return ctx.environment.saveFuelLog(log)
+                    let keep = ctx.environment.logJourney(RefuelPayload(
+                        litres: record.litres.rawValue,
+                        price: record.pricePerLitre,
+                        odometer: record.odometer?.rawValue,
+                        brim: record.filledToBrim
+                    )) |> Effect<Action>.fireAndForget
+                    return keep <> ctx.environment.saveFuelLog(log)
                         .asEffect { (result: Result<Void, FileError>) in
                             switch result {
                             case .success:            Action.saved
@@ -204,7 +219,13 @@ public enum FuelFeature {
                     )
                     var log = state.log
                     log.reserves.append(event)
-                    return ctx.environment.saveFuelLog(log)
+                    let keep = ctx.environment.logJourney(
+                        ReservePayload(
+                            km: event.gpsKilometres?.rawValue,
+                            odometer: event.odometer?.rawValue
+                        )
+                    ) |> Effect<Action>.fireAndForget
+                    return keep <> ctx.environment.saveFuelLog(log)
                         .asEffect { (result: Result<Void, FileError>) in
                             switch result {
                             case .success:            Action.saved

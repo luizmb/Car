@@ -231,8 +231,16 @@ public struct RefuelPayload: JourneyPayloadType, Equatable {
 public struct ReservePayload: JourneyPayloadType, Equatable {
     public static let recordType: RecordType = .reserve
 
-    public let km: Double
-    public init(km: Double) { self.km = km }
+    /// GPS kilometres since the last fill. Optional because a reserve switch can happen before the
+    /// app has ever had a fix, and recording zero would read as "switched to reserve immediately
+    /// after filling" — a claim that would quietly ruin the consumption maths.
+    public let km: Double?
+    public let odometer: Double?
+
+    public init(km: Double?, odometer: Double?) {
+        self.km = km
+        self.odometer = odometer
+    }
 }
 
 // MARK: - Kind lookup

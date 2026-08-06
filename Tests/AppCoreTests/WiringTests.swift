@@ -1,6 +1,7 @@
 import AppDomain
 import Foundation
 import Testing
+import ReactiveConcurrency
 import SpeedMonitorFeature
 @testable import AppCore
 
@@ -155,5 +156,99 @@ struct JourneyWiringTests {
         store.dispatch(.indicator(.event(.disconnected)), source: .init(file: #file, function: #function, line: #line))
         await settle()
         #expect(store.state.journey == .idle)
+    }
+}
+
+@Suite("Refuel recording")
+@MainActor
+struct RefuelRecordingTests {
+
+    /// Captures what reaches the journey log.
+    private final class Spy: @unchecked Sendable {
+        private let lock = NSLock()
+        private var recorded: [any JourneyPayloadType] = []
+        func record(_ payload: any JourneyPayloadType) { lock.withLock { recorded.append(payload) } }
+        var types: [RecordType] { lock.withLock { recorded.map { Swift.type(of: $0).recordType } } }
+    }
+
+    private func world(_ spy: Spy) -> World {
+        var world = World.stub
+        world = World(
+            requestAuthorization: world.requestAuthorization,
+            authorizationUpdates: world.authorizationUpdates,
+            locationUpdates: world.locationUpdates,
+            subscribeToRoadSpeed: world.subscribeToRoadSpeed,
+            subscribeToCameras: world.subscribeToCameras,
+            refreshRoadNow: world.refreshRoadNow,
+            bluetoothAuthorization: world.bluetoothAuthorization,
+            indimateEvents: world.indimateEvents,
+            playIndicatorLoop: world.playIndicatorLoop,
+            stopIndicatorLoop: world.stopIndicatorLoop,
+            tyreReadings: world.tyreReadings,
+            formatPressure: world.formatPressure,
+            formatTemperature: world.formatTemperature,
+            chigeeEvents: world.chigeeEvents,
+            cardoEvents: world.cardoEvents,
+            audioRouteChanges: world.audioRouteChanges,
+            barometer: world.barometer,
+            motion: world.motion,
+            motionActivity: world.motionActivity,
+            fetchWeather: world.fetchWeather,
+            loadTripDistance: world.loadTripDistance,
+            saveTripDistance: world.saveTripDistance,
+            loadFuelLog: world.loadFuelLog,
+            saveFuelLog: world.saveFuelLog,
+            phoneBattery: world.phoneBattery,
+            isLowPowerMode: world.isLowPowerMode,
+            now: world.now,
+            newID: world.newID,
+            logAction: world.logAction,
+            logJourney: { payload in
+                Publisher.future { spy.record(payload) }
+            },
+            speak: world.speak,
+            speakQueued: world.speakQueued,
+            speakSequence: world.speakSequence,
+            announceOverLimit: world.announceOverLimit,
+            announceUnderLimit: world.announceUnderLimit,
+            thresholds: world.thresholds,
+            formatSpeed: world.formatSpeed,
+            formatSpeedSpeech: world.formatSpeedSpeech,
+            formatAltitude: world.formatAltitude,
+            formatBearing: world.formatBearing,
+            formatCoordinate: world.formatCoordinate
+        )
+        return world
+    }
+
+    private func settle() async { for _ in 0..<10 { await Task.yield() } }
+
+    @Test("a refuel is recorded even with no journey running")
+    func refuelIsKeptOffJourney() async {
+        // The case this exists for: you pull in, the keys come out and journey A ends, you fill up,
+        // the keys go back in and journey B starts. The refuel lands in the gap — and it is the one
+        // record every fuel calculation is built on.
+        let spy = Spy()
+        let store = MainStore.app(world: world(spy))
+        #expect(store.state.journey == .idle)
+
+        store.dispatch(.navigation(.push(.fuel)), source: .init(file: #file, function: #function, line: #line))
+        store.dispatch(.fuel(.setLitres("12.5")), source: .init(file: #file, function: #function, line: #line))
+        store.dispatch(.fuel(.setPrice("1.49")), source: .init(file: #file, function: #function, line: #line))
+        store.dispatch(.fuel(.save), source: .init(file: #file, function: #function, line: #line))
+        await settle()
+
+        #expect(spy.types.contains(.refuel))
+    }
+
+    @Test("switching to reserve is recorded even with no journey running")
+    func reserveIsKeptOffJourney() async {
+        let spy = Spy()
+        let store = MainStore.app(world: world(spy))
+        store.dispatch(.navigation(.push(.fuel)), source: .init(file: #file, function: #function, line: #line))
+        store.dispatch(.fuel(.engageReserve), source: .init(file: #file, function: #function, line: #line))
+        await settle()
+
+        #expect(spy.types.contains(.reserve))
     }
 }
