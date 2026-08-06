@@ -22,12 +22,21 @@ public struct FlightPlanInputs: Sendable, Equatable {
     /// Horizontal accuracy in metres. The speedometer is the app's whole purpose; a bad fix means
     /// it will not work.
     public var gpsAccuracy: Double?
+    /// Distance since the last fill and what is left before reserve, already worded.
+    ///
+    /// **Always spoken, even under `.exceptions`.** Every other line here is reported only when it
+    /// is wrong, because a healthy tyre needs no mention. Fuel is the opposite: this bike has no
+    /// gauge, no low-fuel light and a reserve that means stripping the carburettor, so the rider
+    /// sets off in the dark about it *every single time*. Being told is the normal case, not the
+    /// exception — it is the reason the fuel feature exists at all.
+    public var fuel: String?
 
     public init(
         ignitionOn: Bool? = nil, indimateConnected: Bool = false, cardoConnected: Bool = false,
         tyres: [TyrePosition: TyreReading] = [:], weather: WeatherObservation? = nil,
         road: String? = nil, speedLimit: String? = nil, bikeMillivolts: Int? = nil,
-        phoneBattery: Double? = nil, lowPowerMode: Bool = false, gpsAccuracy: Double? = nil
+        phoneBattery: Double? = nil, lowPowerMode: Bool = false, gpsAccuracy: Double? = nil,
+        fuel: String? = nil
     ) {
         self.ignitionOn = ignitionOn
         self.indimateConnected = indimateConnected
@@ -39,6 +48,7 @@ public struct FlightPlanInputs: Sendable, Equatable {
         self.bikeMillivolts = bikeMillivolts
         self.phoneBattery = phoneBattery
         self.lowPowerMode = lowPowerMode
+        self.fuel = fuel
         self.gpsAccuracy = gpsAccuracy
     }
 }
@@ -137,11 +147,16 @@ private func exceptionReport(_ inputs: FlightPlanInputs) -> [String] {
     inputs.speedLimit.map { facts.append($0) }
     inputs.road.map { facts.append("on \($0)") }
 
+    // Fuel is a segment of its own rather than another fact, so it gets a beat to itself instead of
+    // being buried mid-list — and it survives both paths, which no other fact does.
+    let fuel = inputs.fuel.map { [$0] } ?? []
+
     if problems.isEmpty {
-        return [(["All nominal"] + facts).joined(separator: ", ") + "."]
+        return [(["All nominal"] + facts).joined(separator: ", ") + "."] + fuel
     }
     return problems.map { $0 + "." }
         + (facts.isEmpty ? [] : ["Otherwise " + facts.joined(separator: ", ") + "."])
+        + fuel
 }
 
 /// One segment per provider, each stating a value **or** explicitly stating it has none.
@@ -213,6 +228,7 @@ private func fullReport(_ inputs: FlightPlanInputs) -> [String] {
     }
     if inputs.lowPowerMode { segments.append("Low power mode is on.") }
 
+    segments.append(inputs.fuel ?? "Fuel: nothing recorded yet.")
     return segments
 }
 

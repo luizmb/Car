@@ -45,6 +45,7 @@ public struct AppRootView: View, Routable {
                 .overlay(alignment: .topLeading) {
                     VStack(alignment: .leading, spacing: 6) {
                         roadBubble
+                        fuelBubble
                         router.statusBubbles()
                     }
                     .padding(.leading, 12)
@@ -88,6 +89,46 @@ public struct AppRootView: View, Routable {
                     .padding(.trailing, 16)
                     .padding(.bottom, 190)
                 }
+        }
+    }
+
+    /// Distance since the last fill, and what is left before reserve.
+    ///
+    /// Shown always, not only when low. Every other bubble reports a device that can be assumed fine
+    /// when silent; this one reports a quantity the bike has no instrument for at all — no gauge, no
+    /// low-fuel light — so silence would mean the rider is guessing, which is the state the fuel
+    /// feature exists to end.
+    @ViewBuilder
+    private var fuelBubble: some View {
+        let state = viewStore.state
+        if !state.fuelLog.refuels.isEmpty {
+            let travelled = state.trip.kilometresSinceFill
+            let range = state.fuelLog.range(travelled: travelled, spec: .vt400)
+            HStack(spacing: 5) {
+                Image(systemName: "fuelpump.fill")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                Text("\(Int(travelled.rawValue)) km")
+                    .font(.caption2.bold())
+                if let range {
+                    Text("·")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text(range.kilometresToReserve > 0
+                         ? "\(Int(range.kilometresToReserve)) to reserve"
+                         : "fill up")
+                        .font(.caption2.bold())
+                        // Amber rather than red below 30 km: it is a plan-your-next-stop figure, not
+                        // an emergency, and colouring it red every ride would teach the rider to
+                        // ignore it.
+                        .foregroundStyle(range.kilometresToReserve <= 0 ? .red
+                                         : range.kilometresToReserve < 30 ? .orange : .primary)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .glassEffect(.regular, in: .capsule)
+            .fixedSize()
         }
     }
 

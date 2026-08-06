@@ -66,12 +66,11 @@ public extension FuelLog {
         )
     }
 
-    /// Usable tank capacity, inferred from the largest brim fill ever recorded.
+    /// The largest brim fill ever recorded.
     ///
-    /// A lower bound, not the manufacturer's figure: it is how much went in after the tank was run
-    /// down the furthest so far, so it can only grow as the bike is run lower. That is the right
-    /// direction to be wrong in — it under-promises range rather than stranding the rider.
-    var observedTankCapacity: Litres? {
+    /// Evidence about the main tank only, and only from intervals where reserve was untouched —
+    /// which is why ``usableBeforeReserve(spec:)`` is the figure to use rather than this one.
+    var largestBrimFill: Litres? {
         brimToBrimFills.map(\.litres.rawValue).max().map { Litres($0) }
     }
 }
@@ -79,17 +78,20 @@ public extension FuelLog {
 // MARK: - Range
 
 /// What is left, on the evidence available.
+///
+/// Two figures, and only the first is a target. Reaching reserve on this bike means running the
+/// carburettor on the dirt at the bottom of the tank, so `kilometresToReserve` is the number the
+/// rider plans around and `kilometresToDry` is the emergency margin once that has already gone
+/// wrong — never something to aim at.
 public struct RangeEstimate: Sendable, Equatable {
-    public let litresRemaining: Double
-    public let kilometresRemaining: Double
-    /// Distance to the point the rider has historically switched to reserve — the figure that
-    /// actually matters on this bike, since using reserve damages the carburettor.
-    public let kilometresToReserve: Double?
+    public let litresBeforeReserve: Double
+    public let kilometresToReserve: Double
+    public let kilometresToDry: Double
 
-    public init(litresRemaining: Double, kilometresRemaining: Double, kilometresToReserve: Double?) {
-        self.litresRemaining = litresRemaining
-        self.kilometresRemaining = kilometresRemaining
+    public init(litresBeforeReserve: Double, kilometresToReserve: Double, kilometresToDry: Double) {
+        self.litresBeforeReserve = litresBeforeReserve
         self.kilometresToReserve = kilometresToReserve
+        self.kilometresToDry = kilometresToDry
     }
 }
 
@@ -119,21 +121,25 @@ public extension FuelLog {
 
     /// What is left after `travelled` kilometres on the current tank.
     ///
-    /// Needs a consumption figure and a capacity, so it returns `nil` until two brim fills exist.
-    /// Returning nothing is the honest answer there — a guess about remaining fuel on a bike with a
-    /// carburettor-damaging reserve is worse than silence.
-    func range(travelled: Kilometres) -> RangeEstimate? {
-        guard
-            let consumption = consumption,
-            let capacity = observedTankCapacity
-        else { return nil }
+    /// Capacity comes from the spec rather than from measurement, because brim-to-brim cannot
+    /// discover where the reserve tap sits — reserve is a *level*, not a rate, and the only way to
+    /// measure it is to reach it, which is the thing being avoided. Consumption is measured; the
+    /// tank is specified. See ``BikeSpec``.
+    ///
+    /// Still `nil` until consumption exists: a range figure needs both, and inventing one on a bike
+    /// with no fuel gauge is worse than saying nothing.
+    func range(travelled: Kilometres, spec: BikeSpec) -> RangeEstimate? {
+        guard let consumption else { return nil }
 
+        let usable = usableBeforeReserve(spec: spec).rawValue
         let used = travelled.rawValue / consumption.kilometresPerLitre
-        let remaining = max(0, capacity.rawValue - used)
+        let beforeReserve = max(0, usable - used)
+        let onReserve = spec.reserveLitres.rawValue
+
         return RangeEstimate(
-            litresRemaining: remaining,
-            kilometresRemaining: remaining * consumption.kilometresPerLitre,
-            kilometresToReserve: typicalKilometresToReserve.map { max(0, $0 - travelled.rawValue) }
+            litresBeforeReserve: beforeReserve,
+            kilometresToReserve: beforeReserve * consumption.kilometresPerLitre,
+            kilometresToDry: (beforeReserve + onReserve) * consumption.kilometresPerLitre
         )
     }
 }
@@ -147,19 +153,25 @@ public extension FuelLog {
 public func fuelSummary(
     _ log: FuelLog,
     travelled: Kilometres,
+    spec: BikeSpec,
     formatDistance: (Double) -> String
 ) -> String? {
-    guard let range = log.range(travelled: travelled) else {
+    // The distance and the odometer it started from lead, because they are facts rather than
+    // estimates — and on a bike with no working trip meter, "how far since I filled up" is itself
+    // information the rider cannot otherwise get.
+    let since = log.refuelsNewestFirst.first.flatMap(\.odometer).map {
+        "\(formatDistance(travelled.rawValue)) since your last fill at \(Int($0.rawValue))."
+    } ?? "\(formatDistance(travelled.rawValue)) since your last fill."
+
+    guard let range = log.range(travelled: travelled, spec: spec) else {
         // One fill measures nothing, and saying so is more useful than a fabricated figure.
-        return log.brimToBrimFills.count == 1
-            ? "Fuel: one fill recorded, so no consumption figure yet."
-            : nil
+        return log.refuels.isEmpty ? nil : since + " No consumption figure yet."
     }
 
-    if let toReserve = range.kilometresToReserve, toReserve < 30 {
-        return toReserve <= 0
-            ? "Fuel: past your usual reserve point — expect reserve any time."
-            : "Fuel: about \(formatDistance(toReserve)) before your usual reserve point."
+    if range.kilometresToReserve <= 0 {
+        // Past the estimate entirely. Reserve is a repair on this bike, so this is stated as a
+        // instruction rather than an observation.
+        return since + " You are past the estimate — fill up before you reach reserve."
     }
-    return "Fuel: about \(formatDistance(range.kilometresRemaining)) left in the tank."
+    return since + " About \(formatDistance(range.kilometresToReserve)) before reserve."
 }
