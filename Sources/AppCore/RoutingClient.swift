@@ -74,6 +74,14 @@ enum RoutingClient {
     static let routes: @Sendable (Coordinate, Coordinate, RoutePreferences)
         -> Publisher<Result<[RouteOption], RouteError>, Never> = { from, to, preferences in
         Publisher { continuation in
+            // With nothing excluded the two requests are the same request, and issuing it twice
+            // would double the pressure on a service that answers `loadingThrottled` for exactly
+            // that — to union a set with itself.
+            guard preferences != .none else {
+                continuation.yield(await fetch(from: from, to: to, preferences: .none))
+                return
+            }
+
             async let constrained = fetch(from: from, to: to, preferences: preferences)
             async let unconstrained = fetch(from: from, to: to, preferences: .none)
             let (a, b) = await (constrained, unconstrained)
