@@ -124,6 +124,9 @@ extension World {
         let roadSpeed = RoadSpeedBox(minDistance: Meters(300), minTime: 20)
         // Cameras are fetched over a wide radius and rarely: 1 km of travel or two minutes. The set
         // barely changes over that distance, and the per-fix "is one ahead" test needs no network.
+        // Every kilometre or two minutes. Five kilometres was tried as a precaution against an
+        // Overpass problem that was never actually diagnosed, and it would mean riding for miles with
+        // no camera cover — a real cost against a speculative benefit.
         let cameraLoc = RoadSpeedBox(minDistance: Meters(1_000), minTime: 120)
         let speech    = SpeechBox()
         let indimate  = IndimateCentral()
@@ -208,7 +211,9 @@ extension World {
                 makeRoadSpeedStream(
                     box: roadSpeed,
                     httpClient: httpClient,
-                    decoder: decoder
+                    decoder: decoder,
+                    reverseGeocode: GeocoderBox.streetName,
+                    log: rideLog.append
                 )
             },
             subscribeToCameras: {
@@ -216,11 +221,17 @@ extension World {
                     box: cameraLoc,
                     httpClient: httpClient,
                     decoder: cameraDecoder,
-                    radius: Meters(3_000)
+                    radius: Meters(3_000),
+                    log: rideLog.append
                 )
             },
-            refreshRoadNow: {
-                Publisher.future { DispatchQueue.main.async { forceRoadRefresh(box: roadSpeed) } }
+            reverseGeocode: GeocoderBox.streetName,
+            refreshRoadNow: { latitude, longitude in
+                Publisher.future {
+                    DispatchQueue.main.async {
+                        forceRoadRefresh(box: roadSpeed, at: (latitude, longitude))
+                    }
+                }
             },
             bluetoothAuthorization: { CBManager.authorization.domain },
             indimateEvents: {

@@ -37,7 +37,9 @@ public struct FuelStation: Sendable, Equatable, Codable {
 /// `out center tags` because forecourts are mapped as both nodes and areas, and the centre of the
 /// area is close enough when you are already inside it.
 public func overpassStationRequest(
-    latitude: Latitude, longitude: Longitude, radius: Meters = Meters(150)
+    latitude: Latitude, longitude: Longitude, radius: Meters = Meters(150),
+    endpoint: OverpassEndpoint = .primary,
+    hostIndex: Int = 0
 ) -> URLRequest {
     let around = "around:\(Int(radius.rawValue)),\(latitude.rawValue),\(longitude.rawValue)"
     let query = """
@@ -46,9 +48,7 @@ public func overpassStationRequest(
     way(\(around))["amenity"="fuel"];\
     );out center tags;
     """
-    let escaped = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
-    let url = URL(string: "https://overpass-api.de/api/interpreter?data=\(escaped)")!
-    return URLRequest(url: url)
+    return endpoint.request(query, hostIndex: hostIndex)
 }
 
 public struct OverpassStationResponse: Decodable, Sendable {

@@ -19,7 +19,13 @@ public struct World: Sendable {
     public let subscribeToCameras: @Sendable () -> Publisher<CameraSet, Never>
     /// Brings the next road lookup forward to the next GPS fix. Completing a turn is a road change
     /// the 300 m / 20 s throttle cannot see.
-    public let refreshRoadNow: @Sendable () -> Publisher<Void, Never>
+    /// The street name at a position, from Apple's own geocoder.
+    ///
+    /// The fallback for when Overpass is unreachable — which on 2026-08-06 meant losing the road
+    /// name *and* the limit together, because both came from the same request. Apple has no speed
+    /// limits, but it has the name, and knowing the road you are on is most of the value.
+    public let reverseGeocode: @Sendable (Latitude, Longitude) -> Publisher<String?, Never>
+    public let refreshRoadNow: @Sendable (Latitude, Longitude) -> Publisher<Void, Never>
     // Indimate (BLE indicator unit on the bike)
     /// Reads `CBManager.authorization`. A pure snapshot — unlike constructing a central, reading
     /// this never puts a permission dialog on screen.

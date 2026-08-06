@@ -69,7 +69,9 @@ public struct SpeedCamera: Sendable, Equatable, Identifiable {
 /// point: the `from` and `to` roles are what say where a zone begins and ends, and a bare centre
 /// cannot tell you that you have left one.
 public func overpassCameraRequest(
-    latitude: Latitude, longitude: Longitude, radius: Meters
+    latitude: Latitude, longitude: Longitude, radius: Meters,
+    endpoint: OverpassEndpoint = .cameras,
+    hostIndex: Int = 0
 ) -> URLRequest {
     let r = Int(radius.rawValue)
     let around = "around:\(r),\(latitude.rawValue),\(longitude.rawValue)"
@@ -81,10 +83,7 @@ public func overpassCameraRequest(
     relation(\(around))["type"="enforcement"];\
     );out geom;
     """
-    let escaped = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
-    // Fixed template over numeric rawValues — cannot fail.
-    let url = URL(string: "https://overpass-api.de/api/interpreter?data=\(escaped)")!
-    return URLRequest(url: url)
+    return endpoint.request(query, hostIndex: hostIndex)
 }
 
 public struct OverpassCameraResponse: Decodable, Sendable {
@@ -285,7 +284,10 @@ func bearing(from origin: (Latitude, Longitude), to target: (Latitude, Longitude
     return degrees
 }
 
-func distanceMetres(from origin: (Latitude, Longitude), to target: (Latitude, Longitude)) -> Double {
+/// Public because the road fetcher needs it too, to tell one junction from the same junction.
+public func distanceMetres(
+    from origin: (Latitude, Longitude), to target: (Latitude, Longitude)
+) -> Double {
     let point = project(target.0, target.1, origin: origin)
     return (point.x * point.x + point.y * point.y).squareRoot()
 }

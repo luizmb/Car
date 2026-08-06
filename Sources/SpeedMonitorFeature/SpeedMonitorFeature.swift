@@ -122,7 +122,7 @@ public enum SpeedMonitorFeature {
         public let locationUpdates: @Sendable () -> Publisher<LocationUpdate, Never>
         public let subscribeToRoadSpeed: @Sendable () -> Publisher<RoadInfo, Never>
         public let subscribeToCameras: @Sendable () -> Publisher<CameraSet, Never>
-        public let refreshRoadNow: @Sendable () -> Publisher<Void, Never>
+        public let refreshRoadNow: @Sendable (Latitude, Longitude) -> Publisher<Void, Never>
         public let speak: @Sendable (String) -> Publisher<Void, Never>
         /// Queues rather than interrupts. Road announcements are informational and must not cut a
         /// threshold crossing in half — nor be cut by one.
@@ -145,7 +145,7 @@ public enum SpeedMonitorFeature {
             locationUpdates:      @escaping @Sendable () -> Publisher<LocationUpdate, Never>,
             subscribeToRoadSpeed: @escaping @Sendable () -> Publisher<RoadInfo, Never>,
             subscribeToCameras:   @escaping @Sendable () -> Publisher<CameraSet, Never>,
-            refreshRoadNow:       @escaping @Sendable () -> Publisher<Void, Never>,
+            refreshRoadNow:       @escaping @Sendable (Latitude, Longitude) -> Publisher<Void, Never>,
             speak:                @escaping @Sendable (String) -> Publisher<Void, Never>,
             announceRoad:         @escaping @Sendable (String) -> Publisher<Void, Never>,
             announceCamera:       @escaping @Sendable (String) -> Publisher<Void, Never>,
@@ -378,7 +378,11 @@ public enum SpeedMonitorFeature {
                 // change because it compares announcements, not identity. A roundabout cancelling
                 // the indicator repeatedly costs a few extra fixes, not a fetch storm — the 20 s
                 // gate is restored the moment the forced fix lands.
-                return .produce { ctx in ctx.environment.refreshRoadNow() |> Effect.fireAndForget }
+                guard let here = context.stateBefore?.lastLocation else { return .doNothing }
+                return .produce { ctx in
+                    ctx.environment.refreshRoadNow(here.latitude, here.longitude)
+                        |> Effect.fireAndForget
+                }
             }
         }
     }

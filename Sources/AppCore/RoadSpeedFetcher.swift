@@ -31,8 +31,10 @@ final class RoadSpeedBox: @unchecked Sendable {
 final class RoadSpeedLocationDelegate: NSObject, CLLocationManagerDelegate, @unchecked Sendable {
     nonisolated(unsafe) var continuation: AsyncStream<LocationUpdate>.Continuation?
     nonisolated(unsafe) var lastUpdateTime: Date = .distantPast
-    /// Set by ``forceRefresh(box:)``. The next fix restores the distance filter it lifted.
+    /// Set by ``forceRoadRefresh(box:)``. The next fix restores the distance filter it lifted.
     nonisolated(unsafe) var restoreDistanceAfterNextFix: Double?
+    /// Where a forced refresh was last honoured, so a roundabout cannot fire five from one spot.
+    nonisolated(unsafe) var lastForcedPosition: (Latitude, Longitude)?
     private let minTime: TimeInterval
 
     init(minTime: TimeInterval) { self.minTime = minTime }
@@ -76,7 +78,19 @@ final class RoadSpeedLocationDelegate: NSObject, CLLocationManagerDelegate, @unc
 ///
 /// `requestLocation()` is deliberately not used — it is documented as incompatible with an active
 /// `startUpdatingLocation`, which this manager relies on.
-func forceRoadRefresh(box: RoadSpeedBox) {
+func forceRoadRefresh(box: RoadSpeedBox, at position: (Latitude, Longitude)) {
+    // Deduped by **place, not by clock**. A one-a-minute limit was tried and is far too blunt: in
+    // town the rider changes road every few seconds, and knowing the name and limit of the road just
+    // entered is the whole point of acting on the indicator at all.
+    //
+    // What actually needs suppressing is narrower — a roundabout cancels the indicator several times
+    // within seconds *from the same spot*, and those are all the same question. Fifty metres apart is
+    // a different junction; fifty metres is not.
+    if let last = box.delegate.lastForcedPosition,
+       distanceMetres(from: last, to: position) < 50 {
+        return
+    }
+    box.delegate.lastForcedPosition = position
     box.delegate.lastUpdateTime = .distantPast
     if box.delegate.restoreDistanceAfterNextFix == nil {
         box.delegate.restoreDistanceAfterNextFix = box.manager.distanceFilter
@@ -100,10 +114,20 @@ func forceRoadRefresh(box: RoadSpeedBox) {
 func makeRoadSpeedStream(
     box: RoadSpeedBox,
     httpClient: HTTPClient,
-    decoder: DataDecoder<OverpassResponse>
+    decoder: DataDecoder<OverpassResponse>,
+    reverseGeocode: @escaping @Sendable (Latitude, Longitude) -> Publisher<String?, Never>,
+    log: @escaping @Sendable (String) -> Void
 ) -> Publisher<RoadInfo, Never> {
     throttledLocations(box: box)
-        .map(fetchRoadInfo(httpClient: httpClient, decoder: decoder))
+        .map { location -> Publisher<LocationUpdate, Never> in
+            log("road-fetch lat=\(String(format: "%.5f", location.latitude.rawValue))")
+            return .just(location)
+        }
+        .switchToLatest()
+        .map(fetchRoadInfo(
+            httpClient: httpClient, decoder: decoder,
+            reverseGeocode: reverseGeocode, log: log
+        ))
         .switchToLatest()
 }
 
@@ -151,16 +175,55 @@ func throttledLocations(box: RoadSpeedBox) -> Publisher<LocationUpdate, Never> {
 /// leaves the last known road standing, which is both quieter and more accurate.
 private func fetchRoadInfo(
     httpClient: HTTPClient,
-    decoder: DataDecoder<OverpassResponse>
+    decoder: DataDecoder<OverpassResponse>,
+    reverseGeocode: @escaping @Sendable (Latitude, Longitude) -> Publisher<String?, Never>,
+    log: @escaping @Sendable (String) -> Void
 ) -> @Sendable (LocationUpdate) -> Publisher<RoadInfo, Never> {
     { location in
-        httpClient(overpassRequest(latitude: location.latitude, longitude: location.longitude))
+        @Sendable func attempt(_ hostIndex: Int) -> Publisher<RoadInfo, Never> {
+            httpClient(overpassRequest(
+                latitude: location.latitude, longitude: location.longitude, hostIndex: hostIndex
+            ))
             .validateStatusCode()
             .decode(using: decoder)
             // Position and course come from the fix that triggered this lookup — the road you were
             // on when it was requested, not wherever you have reached by the time it answers.
-            .map { parseRoadInfo($0, at: (location.latitude, location.longitude), course: location.course) }
-            .retry(2)
-            .catch { _ in Publisher<RoadInfo, Never>.empty() }
+            .map { response -> RoadInfo in
+                // Which mirror answered, not only which failed. Without it there is no way to tell a
+                // working fallback from a primary that never needed one.
+                log("road-fetch-ok host\(hostIndex)")
+                return parseRoadInfo(
+                    response, at: (location.latitude, location.longitude), course: location.course
+                )
+            }
+            // A *different* host on failure, not the same one again. Retrying a server that
+            // answered 429 earns another 429; retrying one that refused the connection achieves
+            // nothing. The other mirror is very often fine — this afternoon one was down while the
+            // other answered in a second.
+            //
+            // Failures are dropped rather than blanking a good limit, but they are no longer
+            // silent: swallowing them identically made "one success then an hour of nothing"
+            // indistinguishable between a dead location stream and every request being refused.
+            .catch { error in
+                // Straight to Apple. Chaining a second Overpass mirror first sounded prudent and
+                // cost thirty seconds of silence, because the mirror hung rather than refusing.
+                // Apple answers in about a second and knows the street, and a road with no limit is
+                // far better than nothing — losing Overpass used to lose both, since both came from
+                // the same request.
+                log("road-fetch-failed host\(hostIndex) \(String(describing: error).prefix(80))")
+                // The next mirror if there is one, then Apple for the name alone.
+                guard hostIndex >= OverpassEndpoint.primary.urls.count - 1 else {
+                    return attempt(hostIndex + 1)
+                }
+                log("road-fallback-geocoder")
+                return reverseGeocode(location.latitude, location.longitude)
+                    .compactMap { name -> RoadInfo? in
+                        name.map {
+                            RoadInfo(limit: .unknown, ref: nil, name: $0, origin: .unattributed)
+                        }
+                    }
+            }
+        }
+        return attempt(0)
     }
 }
