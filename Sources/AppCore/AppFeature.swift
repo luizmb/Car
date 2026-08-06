@@ -52,6 +52,10 @@ public enum AppFeature {
         /// GPS distance since the last fill — the figure the fuel maths will use.
         public var trip: TripFeature.State
 
+        /// Whether a journey is under way, by the two-signal rule. Not derived on demand: the rule
+        /// is a *transition*, so the previous phase has to be remembered to know an edge happened.
+        public var journey: JourneyPhase = .idle
+
         /// Whether the pre-ride briefing has been spoken this session. It fires once, when the last
         /// of CHIGEE and Cardo connects — no Cardo means no greeting, but also no ears, so nothing
         /// is lost.
@@ -93,6 +97,9 @@ public enum AppFeature {
         case fuel(FuelFeature.Action)
         /// Speak the briefing on demand, at either verbosity.
         case speakFlightPlan(FlightPlanVerbosity)
+        /// A journey began or ended. Carries the phase rather than recomputing it, so the reduction
+        /// and the announcement cannot disagree about which edge fired.
+        case journeyChanged(JourneyPhase)
     }
 
     // MARK: - Environment
@@ -146,6 +153,63 @@ public enum AppFeature {
 
         <> AppScopes.indicator.behavior(of: IndicatorFeature.self)
             .on(.action(\.appLaunch), dispatch: .action(\.indicator.launch))
+
+        // The journey boundary rule, spoken aloud.
+        //
+        // Either signal connecting starts a journey; *both* must be gone to end one. The asymmetry
+        // is the point — see `journeyTransition`. Evaluated after every action rather than only on
+        // Indimate/CHIGEE events, because it is a function of state, and a signal can change for
+        // reasons other than its own feature's action (a stub world, a restored session).
+        //
+        // Announced so the decision is audible at the moment it is taken. Everything downstream —
+        // what gets logged, when the expensive sensors run — hangs off this one bit, and a rule
+        // that fires at the wrong moment is invisible until the data is wrong hours later.
+        <> Behavior<AppAction, AppState, World>.handle { action, context in
+            // Not our own action, or the rule would chase its own tail.
+            guard AppAction.prism.journeyChanged.preview(action) == nil else { return .doNothing }
+
+            return .produce { ctx in
+                // `readLiveState()` rather than `stateBefore`: the rule is a function of the state
+                // *after* this dispatch cycle, and the connection that just happened is not visible
+                // before it. It hops to the main actor and emits once.
+                ctx.readLiveState()
+                    .compactMap { state -> AppAction? in
+                        let signals = JourneySignals(
+                            indimate: state.indicator.isConnected,
+                            ignition: state.chigee.isIgnitionOn == true
+                        )
+                        guard let next = journeyTransition(
+                            from: state.journey, signals: signals, now: ctx.environment.now()
+                        ) else { return nil }
+                        return .journeyChanged(next)
+                    }
+                    .asEffect()
+            }
+        }
+
+        // Speaking the decision is separate from taking it, so the announcement cannot alter the
+        // rule and the rule cannot be silently skipped when speech fails.
+        <> Behavior<AppAction, AppState, World>.handle { action, context in
+            guard
+                let next = AppAction.prism.journeyChanged.preview(action),
+                let before = context.stateBefore
+            else { return .doNothing }
+
+            let signals = JourneySignals(
+                indimate: before.indicator.isConnected,
+                ignition: before.chigee.isIgnitionOn == true
+            )
+            return .reduce { $0.journey = next }
+                .produce { ctx in
+                    let spoken: String? = switch (before.journey, next) {
+                    case (.idle, .active): journeyStartAnnouncement(signals)
+                    case let (.active(since), .idle):
+                        journeyEndAnnouncement(since: since, now: ctx.environment.now())
+                    default: nil
+                    }
+                    return spoken.map { $0 |> (ctx.environment.speakQueued >>> Effect.fireAndForget) } ?? .empty
+                }
+        }
 
         // An indicator cancelling means a turn was completed, which is a *semantic* signal that
         // the road has changed — where the distance/time throttle is only a proxy. Positive-only:

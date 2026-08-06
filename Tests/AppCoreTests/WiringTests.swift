@@ -119,3 +119,41 @@ struct WiringTests {
         #expect(state.litres == "12.5")
     }
 }
+
+@Suite("Journey rule")
+@MainActor
+struct JourneyWiringTests {
+
+    /// The journey decision reads post-reduction state, which means a main-actor hop — so it lands
+    /// on the next turn of the loop rather than inside `dispatch`. Yielding is what makes that
+    /// deterministic instead of a race the test wins by luck.
+    private func settle() async {
+        for _ in 0..<10 { await Task.yield() }
+    }
+
+    @Test("a journey starts when either signal appears and ends when both are gone")
+    func journeyLifecycle() async {
+        let store = MainStore.app(world: .stub)
+        #expect(store.state.journey == .idle)
+
+        // Indimate alone is enough to start.
+        store.dispatch(.indicator(.event(.connected)), source: .init(file: #file, function: #function, line: #line))
+        await settle()
+        #expect(JourneyPhase.prism.active.preview(store.state.journey) != nil)
+
+        // CHIGEE arriving changes nothing — already under way.
+        store.dispatch(.chigee(.event(.present)), source: .init(file: #file, function: #function, line: #line))
+        await settle()
+        #expect(JourneyPhase.prism.active.preview(store.state.journey) != nil)
+
+        // One dropping is a red flag, not an ending. This is the CHIGEE-reboot case.
+        store.dispatch(.chigee(.event(.absent)), source: .init(file: #file, function: #function, line: #line))
+        await settle()
+        #expect(JourneyPhase.prism.active.preview(store.state.journey) != nil)
+
+        // Both gone ends it.
+        store.dispatch(.indicator(.event(.disconnected)), source: .init(file: #file, function: #function, line: #line))
+        await settle()
+        #expect(store.state.journey == .idle)
+    }
+}
