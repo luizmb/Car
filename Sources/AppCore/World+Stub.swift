@@ -38,6 +38,7 @@ public extension World {
             now: { Date(timeIntervalSince1970: 0) },
             newID: { UUID(uuidString: "00000000-0000-0000-0000-000000000000")! },
             logAction: { _ in .empty() },
+            logJourney: { _ in .empty() },
             speak: { _ in .empty() },
             speakQueued: { _ in .empty() },
             speakSequence: { _, _ in .empty() },

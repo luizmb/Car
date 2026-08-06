@@ -96,6 +96,40 @@ func headingDelta(_ a: Double, _ b: Double) -> Double {
     return delta
 }
 
+// MARK: - Rideability
+
+/// Ways a motorcycle cannot be travelling along.
+///
+/// The query asks for every `highway`, which is deliberate — filtering on `maxspeed` once made a
+/// motorway on a bridge the *only* candidate. But "every highway" includes footpaths, steps and
+/// cycleways, and being three metres from a footpath says nothing about which road you are on.
+func isRideable(_ highway: String?) -> Bool {
+    switch highway?.lowercased() {
+    case "footway", "path", "cycleway", "steps", "pedestrian", "bridleway",
+         "corridor", "platform", "elevator", "construction", "proposed":
+        false
+    default:
+        true
+    }
+}
+
+/// Metres of penalty for classes you are often *near* but rarely riding along.
+///
+/// A driveway or car-park aisle is a legitimate `highway=service`, and occasionally you really are on
+/// one — so it is penalised rather than excluded. Forty metres is enough that the road wins whenever
+/// both are plausible, and not so much that a service road you are genuinely on cannot be chosen.
+///
+/// This is what made the app announce "built-up area, 30" with no road name while parked: stationary,
+/// there is no course, selection falls back to distance alone, and an unnamed driveway three metres
+/// closer than the road beat it.
+func classPenalty(_ highway: String?) -> Double {
+    switch highway?.lowercased() {
+    case "service": 40
+    case "track": 30
+    default: 0
+    }
+}
+
 // MARK: - Selection
 
 /// Chooses the road you are actually on.
@@ -125,24 +159,37 @@ public func selectRoad(
     let degreeCost: Double = 1.0
 
     let scored = candidates.compactMap { candidate -> (RoadCandidate, Double)? in
+        guard isRideable(candidate.tags.highway) else { return nil }
         guard let segment = nearestSegment(to: position, on: candidate.points) else {
             return nil
         }
+        let penalty = classPenalty(candidate.tags.highway)
         guard let course, !segment.bearing.isNaN else {
-            // No heading available: nearest wins.
-            return (candidate, segment.distance)
+            // No heading available: nearest wins, class penalty included. This is the stationary
+            // case — every app launch begins here.
+            return (candidate, segment.distance + penalty)
         }
         let delta = headingDelta(segment.bearing, course.rawValue)
         guard delta <= headingLimit else { return nil }
-        return (candidate, segment.distance + delta * degreeCost)
+        return (candidate, segment.distance + delta * degreeCost + penalty)
     }
 
     return scored.min { $0.1 < $1.1 }?.0
 }
 
-/// Builds `RoadInfo` from the chosen candidate.
-public func roadInfo(from candidate: RoadCandidate?) -> RoadInfo {
-    guard let tags = candidate?.tags else { return .unknown }
+/// Builds `RoadInfo` from the chosen candidate, borrowing tags from the rest of the same road.
+///
+/// OSM splits a road into as many ways as it has junctions, and tags them unevenly. Ormsby Close is
+/// three ways, of which exactly one carries `maxspeed=20 mph` — so landing on either of the other two
+/// produced "built-up area, 30" for a road that is signed 20, with no way to tell from the result
+/// that anything had been missed.
+///
+/// Siblings are matched on name and ref, which is what "the same road" means to a rider. Only the
+/// limit is borrowed: a neighbouring segment is authoritative about the road's speed, not about its
+/// geometry or which one you are on.
+public func roadInfo(from candidate: RoadCandidate?, among candidates: [RoadCandidate] = []) -> RoadInfo {
+    guard let candidate else { return .unknown }
+    let tags = bestTags(for: candidate, among: candidates)
     let (limit, origin) = parseLimitAndOrigin(
         maxspeed: tags.maxspeed, highway: tags.highway, maxspeedType: tags.maxspeedType
     )
@@ -150,5 +197,36 @@ public func roadInfo(from candidate: RoadCandidate?) -> RoadInfo {
         limit: limit, ref: tags.ref, name: tags.name,
         origin: origin,
         isVariable: (tags.maxspeedVariable?.lowercased()).map { $0 != "no" } ?? false
+    )
+}
+
+/// The chosen way's tags, with an explicit `maxspeed` borrowed from a same-named sibling if it has
+/// none of its own.
+func bestTags(
+    for candidate: RoadCandidate,
+    among candidates: [RoadCandidate]
+) -> OverpassResponse.Element.Tags {
+    let own = candidate.tags
+    let hasOwnLimit = !(own.maxspeed?.trimmingCharacters(in: .whitespaces).isEmpty ?? true)
+    guard !hasOwnLimit else { return own }
+
+    // An unnamed way has no siblings to speak of — matching two unnamed ways as "the same road"
+    // would be guesswork, and borrowing a limit from the wrong road is worse than defaulting.
+    guard own.name != nil || own.ref != nil else { return own }
+
+    let sibling = candidates.first { other in
+        other.tags.name == own.name
+            && other.tags.ref == own.ref
+            && !(other.tags.maxspeed?.trimmingCharacters(in: .whitespaces).isEmpty ?? true)
+    }
+    guard let sibling else { return own }
+
+    return OverpassResponse.Element.Tags(
+        maxspeed: sibling.tags.maxspeed,
+        name: own.name,
+        ref: own.ref,
+        highway: own.highway,
+        maxspeedType: sibling.tags.maxspeedType ?? own.maxspeedType,
+        maxspeedVariable: sibling.tags.maxspeedVariable ?? own.maxspeedVariable
     )
 }

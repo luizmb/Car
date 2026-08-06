@@ -1,3 +1,4 @@
+import AppDomain
 import Foundation
 
 /// The UTC day a timestamp falls in, as a count of days since the epoch.
@@ -17,7 +18,12 @@ func utcDayStamp(_ dayIndex: Int) -> String {
     return formatter.string(from: Date(timeIntervalSince1970: Double(dayIndex) * 86_400))
 }
 
-/// Appends every dispatched action to a JSONL file, one file per UTC day.
+/// Appends lines to a JSONL file, one file per UTC day.
+///
+/// Two of these exist. The **journey** log takes typed `JourneyEvent` records and only while a
+/// journey is active — that is the file worth keeping. The **debug** log takes
+/// `String(describing:)` of every action, on or off journey, and is the firehose: brilliant for a
+/// first ride, useless as a record, and 42% raw motion samples.
 ///
 /// Crude on purpose. In a Redux app every observation already passes through the store as an action,
 /// so dumping actions captures GPS, road info, Indimate, Cardo, CHIGEE and tyre readings in one
@@ -56,14 +62,18 @@ final class ActionLogBox: @unchecked Sendable {
 
     /// The directory is injected rather than looked up, for the same reason the clock is: two
     /// instances pointed at the shared Documents folder fight over the same day's file.
-    init(directory: URL, now: @escaping @Sendable () -> Date) {
+    private let prefix: String
+
+    init(directory: URL, prefix: String, now: @escaping @Sendable () -> Date) {
         self.directory = directory
+        self.prefix = prefix
         self.now = now
         let formatter = ISO8601DateFormatter()
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         self.timestampFormatter = formatter
     }
 
+    /// A free-text line, wrapped as `{"t":…,"a":…}`. The debug log's shape.
     func append(_ action: String) {
         let date = now()
         let line: [String: Any] = [
@@ -74,7 +84,24 @@ final class ActionLogBox: @unchecked Sendable {
             let data = try? JSONSerialization.data(withJSONObject: line, options: [.sortedKeys]),
             let text = String(data: data, encoding: .utf8)
         else { return }
+        write(text, at: date)
+    }
 
+    /// A typed record.
+    ///
+    /// Encoded through `JourneyRecord`, which is the same type the file is *read* back with — so the
+    /// writer and the reader cannot drift apart, and a shape that fails to decode fails here rather
+    /// than in a year's time.
+    func append(_ payload: any JourneyPayloadType) {
+        let date = now()
+        guard
+            let data = try? JourneyLog.encoder.encode(JourneyRecord(time: date, payload: payload)),
+            let text = String(data: data, encoding: .utf8)
+        else { return }
+        write(text, at: date)
+    }
+
+    private func write(_ text: String, at date: Date) {
         lock.withLock {
             rollIfNeeded(to: utcDayIndex(date))
             handle?.write(Data((text + "\n").utf8))
@@ -88,7 +115,7 @@ final class ActionLogBox: @unchecked Sendable {
 
         try? handle?.close()
 
-        let file = directory.appendingPathComponent("ride-\(utcDayStamp(today)).jsonl")
+        let file = directory.appendingPathComponent("\(prefix)-\(utcDayStamp(today)).jsonl")
 
         if !FileManager.default.fileExists(atPath: file.path) {
             FileManager.default.createFile(atPath: file.path, contents: nil)

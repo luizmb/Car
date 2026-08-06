@@ -37,10 +37,13 @@ public struct SpeedMonitorContent: View {
                 footerPanel
             }
         }
-        // Full bleed. The road name used to sit in a strip up here and collided with the status
-        // overlays; it now lives in the overlay stack with everything else, which leaves the map
-        // free to run edge to edge.
-        .ignoresSafeArea()
+        // **No `ignoresSafeArea` here.** The map has its own, which is what lets it run edge to edge;
+        // putting one on the stack pushed everything else out with it — the limit sign behind the
+        // Dynamic Island, the footer under the home indicator, and the road-name bubble (attached as
+        // an overlay on this view from `AppRootView`) off the top of the screen entirely.
+        //
+        // Only the map should bleed. Everything readable stays inside the safe area, which is the
+        // whole point of the safe area on a phone clamped to handlebars.
     }
 
     // MARK: - Map
