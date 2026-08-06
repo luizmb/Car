@@ -13,6 +13,7 @@ public extension World {
             authorizationUpdates: { .empty() },
             locationUpdates: { .empty() },
             subscribeToRoadSpeed: { .empty() },
+            localRoad: { _, _, _ in nil },
             subscribeToCameras: { .empty() },
             reverseGeocode: { _, _ in .just(nil) },
             refreshRoadNow: { _, _ in .empty() },

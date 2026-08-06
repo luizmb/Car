@@ -14,6 +14,9 @@ public struct World: Sendable {
     public let locationUpdates: @Sendable () -> Publisher<LocationUpdate, Never>
     // Road speed
     public let subscribeToRoadSpeed: @Sendable () -> Publisher<RoadInfo, Never>
+    /// Roads from the on-device extract, tried before Overpass. `nil` means the file is absent or
+    /// has nothing here, and the network answers instead.
+    public let localRoad: @Sendable (Latitude, Longitude, Course?) -> RoadInfo?
     /// Enforcement cameras over a wide radius, refreshed rarely. Held in state and filtered per fix —
     /// see `makeCameraStream` for why the cadence is the opposite of the road lookup's.
     public let subscribeToCameras: @Sendable () -> Publisher<CameraSet, Never>

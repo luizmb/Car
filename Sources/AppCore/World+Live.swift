@@ -124,13 +124,18 @@ extension World {
         let roadSpeed = RoadSpeedBox(minDistance: Meters(300), minTime: 20)
         // Cameras are fetched over a wide radius and rarely: 1 km of travel or two minutes. The set
         // barely changes over that distance, and the per-fix "is one ahead" test needs no network.
-        // Two kilometres travelled, two kilometres of radius — coverage that cannot gap.
+        // **Once per journey, near enough.** 40 km travelled, 50 km of radius.
         //
-        // Leaving a 2 km circle takes more than 2 km of travel: a perfectly straight line arrives
-        // exactly at the edge, and city roads bend, so the rider is always inside the set already
-        // fetched. Halving the request rate costs nothing at all, which is a better trade than the
-        // 5 km cadence tried earlier — that one bought fewer requests by leaving miles uncovered.
-        let cameraLoc = RoadSpeedBox(minDistance: Meters(2_000), minTime: 120)
+        // The same geometry as before at a different scale — leaving a 50 km circle takes more than
+        // 40 km of travel — but the reason for the scale is rate limiting, and it is measured rather
+        // than assumed. Ten consecutive road queries to `overpass-api.de` on 2026-08-06 returned
+        // five 429s; the successes took 1–2 s and the refusals took 7–12 s. Overpass limits per IP
+        // *across all queries*, so a camera fetch every 2 km was competing directly with the road
+        // lookup — and the day cameras shipped was the day road limits stopped arriving.
+        //
+        // At this cadence a typical ride makes one camera request instead of fifteen, and 50 km is
+        // further than this rider goes before stopping, which starts a fresh journey anyway.
+        let cameraLoc = RoadSpeedBox(minDistance: Meters(40_000), minTime: 120)
         let speech    = SpeechBox()
         let indimate  = IndimateCentral()
         let cardo     = CardoCentral()
@@ -143,6 +148,9 @@ extension World {
         let motionBox = MotionBox()
         let device    = DeviceBox()
         let ticks     = IndicatorAudioBox()
+        // Absent is normal: without the extract the app behaves exactly as it did before, which is
+        // the point of it being a cache rather than a replacement.
+        let localRoads = LocalRoadStore()
 
         // Locale captured once — all formatters below are pure closures over this snapshot
         let locale     = Locale.current
@@ -215,16 +223,22 @@ extension World {
                     box: roadSpeed,
                     httpClient: httpClient,
                     decoder: decoder,
+                    localRoad: { latitude, longitude, course in
+                        localRoads?.road(at: latitude, longitude: longitude, course: course)
+                    },
                     reverseGeocode: GeocoderBox.streetName,
                     log: rideLog.append
                 )
+            },
+            localRoad: { latitude, longitude, course in
+                localRoads?.road(at: latitude, longitude: longitude, course: course)
             },
             subscribeToCameras: {
                 makeCameraStream(
                     box: cameraLoc,
                     httpClient: httpClient,
                     decoder: cameraDecoder,
-                    radius: Meters(2_000),
+                    radius: Meters(50_000),
                     log: rideLog.append
                 )
             },

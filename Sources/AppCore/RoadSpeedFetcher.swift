@@ -115,6 +115,7 @@ func makeRoadSpeedStream(
     box: RoadSpeedBox,
     httpClient: HTTPClient,
     decoder: DataDecoder<OverpassResponse>,
+    localRoad: @escaping @Sendable (Latitude, Longitude, Course?) -> RoadInfo?,
     reverseGeocode: @escaping @Sendable (Latitude, Longitude) -> Publisher<String?, Never>,
     log: @escaping @Sendable (String) -> Void
 ) -> Publisher<RoadInfo, Never> {
@@ -126,7 +127,7 @@ func makeRoadSpeedStream(
         .switchToLatest()
         .map(fetchRoadInfo(
             httpClient: httpClient, decoder: decoder,
-            reverseGeocode: reverseGeocode, log: log
+            localRoad: localRoad, reverseGeocode: reverseGeocode, log: log
         ))
         .switchToLatest()
 }
@@ -176,10 +177,19 @@ func throttledLocations(box: RoadSpeedBox) -> Publisher<LocationUpdate, Never> {
 private func fetchRoadInfo(
     httpClient: HTTPClient,
     decoder: DataDecoder<OverpassResponse>,
+    localRoad: @escaping @Sendable (Latitude, Longitude, Course?) -> RoadInfo?,
     reverseGeocode: @escaping @Sendable (Latitude, Longitude) -> Publisher<String?, Never>,
     log: @escaping @Sendable (String) -> Void
 ) -> @Sendable (LocationUpdate) -> Publisher<RoadInfo, Never> {
     { location in
+        // The extract first. It answers in microseconds, needs no radio, and cannot be rate-limited
+        // — which two rides' worth of 429s made the deciding argument. The network is still here for
+        // whatever the file lacks, and for keeping it current.
+        if let local = localRoad(location.latitude, location.longitude, location.course) {
+            log("road-local")
+            return .just(local)
+        }
+
         @Sendable func attempt(_ hostIndex: Int) -> Publisher<RoadInfo, Never> {
             httpClient(overpassRequest(
                 latitude: location.latitude, longitude: location.longitude, hostIndex: hostIndex
