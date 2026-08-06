@@ -192,6 +192,29 @@ public func acceptableRoutes(
     return .routes(Array(unique.prefix(limit)))
 }
 
+// MARK: - Drawing it
+
+/// The route thinned to something a map can draw once a second.
+///
+/// A route across England is tens of thousands of points, and the map camera sits 500 m above the
+/// rider — so all but a few hundred metres of it is off screen, and the full polyline is detail
+/// nobody can see being redrawn on every GPS fix.
+///
+/// Strided rather than Douglas–Peucker: the expensive algorithm earns its keep when the shape must
+/// survive being zoomed into, and this one is only ever seen at one zoom level with the far end of
+/// it beyond the horizon. At the default cap a 50 km route keeps a point every 25 m, which is finer
+/// than the map draws at that height.
+///
+/// The **first and last points are always kept**, so the line still starts under the rider and ends
+/// at the destination rather than near them.
+public func simplified(_ shape: [Coordinate], maxPoints: Int = 2_000) -> [Coordinate] {
+    guard maxPoints >= 2, shape.count > maxPoints else { return shape }
+    let stride = Int((Double(shape.count) / Double(maxPoints - 1)).rounded(.up))
+    var kept = shape.enumerated().compactMap { $0.offset.isMultiple(of: stride) ? $0.element : nil }
+    if let last = shape.last, kept.last != last { kept.append(last) }
+    return kept
+}
+
 // MARK: - Saying it
 
 /// "42 minutes, 18 miles, via A421."

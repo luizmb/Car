@@ -62,6 +62,13 @@ public enum SpeedMonitorFeature {
         /// crossing rather than on every fix while you sit above it.
         public var wasOverAverageLimit: Bool
         public var display: Display
+        /// The chosen route's shape, drawn under the rider.
+        ///
+        /// Held outside `Display` deliberately. `Display` is rebuilt from scratch on every fix, and
+        /// a route is thousands of points even after thinning — copying and `Equatable`-comparing
+        /// that once a second would become the most expensive thing the app does, to redraw a line
+        /// that has not changed.
+        public var routeShape: [Coordinate]
 
         public struct Display: Sendable, Equatable {
             public var mapLatitude: Double
@@ -98,6 +105,8 @@ public enum SpeedMonitorFeature {
         case readyToMonitor                              // dispatched when granted; parts respond
         // GPS data
         case locationUpdate(LocationUpdate)
+        /// The route to draw, already thinned. Empty clears it.
+        case setRoute([Coordinate])
         case locationReady(LocationUpdate, State.Display)
         // Road speed
         case roadSpeedChanged(RoadInfo)
@@ -200,8 +209,12 @@ public enum SpeedMonitorFeature {
         public var roadLimitDisplay: RoadLimitDisplay
         public var roadRef: String?
         public var roadName: String?
+        /// Carried alongside `Display` rather than inside it, because it changes once per journey
+        /// while `Display` is rebuilt on every fix.
+        public var routeShape: [Coordinate]
 
-        init(display: State.Display) {
+        init(display: State.Display, routeShape: [Coordinate]) {
+            self.routeShape     = routeShape
             mapLatitude         = display.mapLatitude
             mapLongitude        = display.mapLongitude
             mapDistance         = display.mapDistance
@@ -226,7 +239,7 @@ public enum SpeedMonitorFeature {
     // MARK: - Mappings (env-aware Readers)
 
     public static let mapState = Reader<Environment, @MainActor @Sendable (State) -> ViewState> { _ in
-        { ViewState(display: $0.display) }
+        { ViewState(display: $0.display, routeShape: $0.routeShape) }
     }
 
     public static let mapAction = Reader<Environment, @Sendable (ViewAction) -> Action> { _ in
@@ -245,7 +258,8 @@ public enum SpeedMonitorFeature {
             averageZones: [],
             activeAverageZone: nil,
             wasOverAverageLimit: false,
-            display: .empty
+            display: .empty,
+            routeShape: []
         )
     }
 
@@ -289,6 +303,9 @@ public enum SpeedMonitorFeature {
             //       road-speed *subscriptions* start automatically in `supervisor` (phase == .granted).
             case .readyToMonitor:
                 return .reduce { $0.currentRoadInfo = .unknown }
+
+            case let .setRoute(shape):
+                return .reduce { $0.routeShape = shape }
 
             case let .locationUpdate(newLocation):
                 let prevLocation = context.stateBefore?.lastLocation

@@ -21,6 +21,8 @@ public struct SpeedMonitorContent: View {
     public let roadLimitDisplay: RoadLimitDisplay
     public let roadRef: String?
     public let roadName: String?
+    /// The chosen route, already thinned. Empty when nothing is being navigated to.
+    public let routeShape: [CLLocationCoordinate2D]
 
     public var body: some View {
         ZStack(alignment: .top) {
@@ -58,6 +60,14 @@ public struct SpeedMonitorContent: View {
             ))),
             interactionModes: []
         ) {
+            // Under the rider marker, so the arrow is never hidden by the line it is following.
+            if routeShape.count > 1 {
+                MapPolyline(coordinates: routeShape)
+                    .stroke(.blue.opacity(0.7), style: StrokeStyle(
+                        lineWidth: 7, lineCap: .round, lineJoin: .round
+                    ))
+            }
+
             UserAnnotation {
                 Image(systemName: "location.north.circle.fill")
                     .font(.title2)

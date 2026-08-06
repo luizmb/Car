@@ -318,6 +318,14 @@ public enum AppFeature {
         <> AppScopes.fuel.behavior(of: FuelFeature.self)
 
         <> AppScopes.navigate.behavior(of: NavigationFeature.self)
+            // Draw the chosen route on the root map. The planner is a pushed screen and the map is
+            // the root, so neither can see the other — this is the only place that can join them.
+            // Thinned here rather than in the view: a route is tens of thousands of points and the
+            // camera sits 500 m up, so the detail is invisible and would be re-diffed every fix.
+            .on(
+                .action(\.navigate.select),
+                dispatch: .action(review: { .speedMonitor(.setRoute(simplified($0.shape))) })
+            )
 
         // Location fans out from the one feature that owns the stream. A second subscription would
         // clobber the delegate's single continuation slot — the failure that silently killed the

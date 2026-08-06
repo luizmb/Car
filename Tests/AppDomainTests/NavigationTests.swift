@@ -140,6 +140,55 @@ struct RouteOfferingTests {
     }
 }
 
+// MARK: - Drawing
+
+@Suite("Thinning a route for the map")
+struct RouteSimplificationTests {
+    private func shape(_ count: Int) -> [Coordinate] {
+        (0..<count).map {
+            Coordinate(
+                latitude: Latitude(52 + Double($0) / 100_000),
+                longitude: Longitude(-0.5)
+            )
+        }
+    }
+
+    @Test("A route already small enough is untouched")
+    func belowCap() {
+        let original = shape(50)
+        #expect(simplified(original, maxPoints: 2_000) == original)
+    }
+
+    @Test("A long route is brought under the cap")
+    func thinned() {
+        #expect(simplified(shape(40_000), maxPoints: 2_000).count <= 2_000)
+    }
+
+    /// Otherwise the line stops short of where the rider is going, which looks like a routing bug
+    /// rather than a drawing one.
+    @Test("The start and the destination always survive")
+    func endpointsKept() {
+        let original = shape(40_000)
+        let thin = simplified(original, maxPoints: 2_000)
+        #expect(thin.first == original.first)
+        #expect(thin.last == original.last)
+    }
+
+    @Test("An empty or single-point route is handled without thinning")
+    func degenerate() {
+        #expect(simplified([], maxPoints: 2_000).isEmpty)
+        #expect(simplified(shape(1), maxPoints: 2_000).count == 1)
+    }
+
+    /// A cap below two cannot keep both endpoints, so it declines to thin rather than returning
+    /// something that is not the route.
+    @Test("A nonsensical cap leaves the route alone")
+    func absurdCap() {
+        let original = shape(100)
+        #expect(simplified(original, maxPoints: 1) == original)
+    }
+}
+
 // MARK: - Wording
 
 @Suite("What navigation says")

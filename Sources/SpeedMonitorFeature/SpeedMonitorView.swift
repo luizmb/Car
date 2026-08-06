@@ -1,3 +1,4 @@
+import CoreLocation
 import SwiftRexArchitecture
 import SwiftUI
 
@@ -18,7 +19,10 @@ public struct SpeedMonitorView: View {
             altitudeText:       viewStore.state.altitudeText,
             roadLimitDisplay:   viewStore.state.roadLimitDisplay,
             roadRef:            viewStore.state.roadRef,
-            roadName:           viewStore.state.roadName
+            roadName:           viewStore.state.roadName,
+            routeShape:         viewStore.state.routeShape.map {
+                CLLocationCoordinate2D(latitude: $0.latitude.rawValue, longitude: $0.longitude.rawValue)
+            }
         )
         .onAppear { viewStore.dispatch(.onAppear) }
     }

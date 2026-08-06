@@ -159,6 +159,30 @@ struct WiringTests {
         #expect(state.latitude == Latitude(52.13))
         #expect(state.canRoute)
     }
+
+    /// The planner is a pushed screen and the map is the root, so neither can see the other. The
+    /// app-level join is the only thing that draws the route — and it is exactly the kind of line
+    /// that compiles perfectly well when deleted.
+    @Test("choosing a route draws it on the root map")
+    func chosenRouteReachesTheMap() async {
+        let store = MainStore.app(world: .stub)
+        store.dispatch(.navigation(.push(.navigate)), source: .init(file: #file, function: #function, line: #line))
+        #expect(store.state.speedMonitor.routeShape.isEmpty)
+
+        let shape = (0..<10).map {
+            Coordinate(latitude: Latitude(52 + Double($0) / 1_000), longitude: Longitude(-0.46))
+        }
+        store.dispatch(
+            .navigate(.select(RouteOption(
+                name: "A421", distance: Meters(1_000), travelTime: 120,
+                hasTolls: false, hasMotorways: false, steps: [], shape: shape
+            ))),
+            source: .init(file: #file, function: #function, line: #line)
+        )
+        for _ in 0..<10 { await Task.yield() }
+
+        #expect(store.state.speedMonitor.routeShape == shape)
+    }
 }
 
 @Suite("Journey rule")
