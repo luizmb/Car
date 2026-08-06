@@ -119,6 +119,46 @@ struct WiringTests {
         }
         #expect(state.litres == "12.5")
     }
+
+    @Test("the route planner's affine scope reaches state inside the path element")
+    func navigateScopeIsWired() {
+        let store = MainStore.app(world: .stub)
+        store.dispatch(.navigation(.push(.navigate)), source: .init(file: #file, function: #function, line: #line))
+        store.dispatch(.navigate(.setQuery("MK42")), source: .init(file: #file, function: #function, line: #line))
+
+        guard case let .navigate(state)? = store.state.path.first else {
+            Issue.record("route planner entry missing from the path")
+            return
+        }
+        #expect(state.query == "MK42")
+    }
+
+    /// Routing needs an origin, and the only one that makes sense is the bike's own position. It
+    /// arrives by fan-out from the single feature that owns the location stream — a wiring line that
+    /// compiles perfectly well when deleted, which is what this whole suite exists for.
+    @Test("a location fix reaches the route planner")
+    func positionReachesPlanner() async {
+        let store = MainStore.app(world: .stub)
+        store.dispatch(.navigation(.push(.navigate)), source: .init(file: #file, function: #function, line: #line))
+        store.dispatch(
+            .speedMonitor(.locationUpdate(LocationUpdate(
+                speed: MPS(0), speedAccuracy: MPS(1), course: nil,
+                latitude: Latitude(52.13), longitude: Longitude(-0.46),
+                altitude: Meters(30), timestamp: Date(timeIntervalSince1970: 0),
+                horizontalAccuracy: Meters(5)
+            ))),
+            source: .init(file: #file, function: #function, line: #line)
+        )
+        // The fan-out is an effect, not a reduction — the fix arrives on the next turn of the loop.
+        for _ in 0..<10 { await Task.yield() }
+
+        guard case let .navigate(state)? = store.state.path.first else {
+            Issue.record("route planner entry missing from the path")
+            return
+        }
+        #expect(state.latitude == Latitude(52.13))
+        #expect(state.canRoute)
+    }
 }
 
 @Suite("Journey rule")
@@ -216,10 +256,14 @@ struct RefuelRecordingTests {
             speakSequence: world.speakSequence,
             announceOverLimit: world.announceOverLimit,
             announceUnderLimit: world.announceUnderLimit,
+            searchAddresses: world.searchAddresses,
+            routes: world.routes,
             thresholds: world.thresholds,
             formatSpeed: world.formatSpeed,
             formatSpeedSpeech: world.formatSpeedSpeech,
             formatAltitude: world.formatAltitude,
+            formatDistance: world.formatDistance,
+            formatDuration: world.formatDuration,
             formatBearing: world.formatBearing,
             formatCoordinate: world.formatCoordinate
         )

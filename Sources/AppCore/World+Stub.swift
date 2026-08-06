@@ -49,10 +49,14 @@ public extension World {
             speakSequence: { _, _ in .empty() },
             announceOverLimit: { .empty() },
             announceUnderLimit: { .empty() },
+            searchAddresses: { _, _, _ in .empty() },
+            routes: { _, _, _ in .empty() },
             thresholds: [],
             formatSpeed: { "\($0.rawValue)" },
             formatSpeedSpeech: { "\($0.rawValue)" },
             formatAltitude: { "\($0.rawValue)" },
+            formatDistance: { "\($0.rawValue)" },
+            formatDuration: { "\($0)" },
             formatBearing: { "\($0.rawValue)" },
             formatCoordinate: { _, _ in "" }
         )

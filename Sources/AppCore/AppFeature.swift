@@ -104,6 +104,7 @@ public enum AppFeature {
         case weather(WeatherFeature.Action)
         case trip(TripFeature.Action)
         case fuel(FuelFeature.Action)
+        case navigate(NavigationFeature.Action)
         /// Speak the briefing on demand, at either verbosity.
         case speakFlightPlan(FlightPlanVerbosity)
         /// A journey began or ended. Carries the phase rather than recomputing it, so the reduction
@@ -316,6 +317,8 @@ public enum AppFeature {
 
         <> AppScopes.fuel.behavior(of: FuelFeature.self)
 
+        <> AppScopes.navigate.behavior(of: NavigationFeature.self)
+
         // Location fans out from the one feature that owns the stream. A second subscription would
         // clobber the delegate's single continuation slot — the failure that silently killed the
         // road-speed stream before it was made cold.
@@ -327,6 +330,10 @@ public enum AppFeature {
             return .produce { ctx in
                 Effect.just(.weather(.located(update.latitude, update.longitude, ctx.environment.now())))
                     <> Effect.just(.fuel(.setPosition(update.latitude, update.longitude)))
+                    // The planner needs an origin, and every fix is a new one. Sent unconditionally
+                    // rather than only while the screen is up: the scope is affine, so with no
+                    // planner on the stack this lands nowhere and costs nothing.
+                    <> Effect.just(.navigate(.setPosition(update.latitude, update.longitude)))
                     <> Effect.just(.trip(.located(update)))
             }
         }
@@ -568,4 +575,15 @@ public enum AppScopes: Rig {
         .environment(fanout(
             \.loadFuelLog, \.saveFuelLog, \.now, \.newID, \.logJourney, \.parseNumber, \.fetchStation
         ) >>> FuelFeature.Environment.init)
+
+    /// The route planner — affine for the same reason the fuel screen is, and narrowed the same way.
+    ///
+    /// `speakQueued` rather than `speak`: nothing the planner says is time-critical, and cutting off
+    /// a speed announcement to report a route would be the wrong trade in a helmet.
+    public static let navigate = ScopeOf<AppScopes>
+        .action(\.navigate)
+        .state(preview: topmost(StackEntry.prism.navigate), set: replacing(StackEntry.prism.navigate))
+        .environment(fanout(
+            \.searchAddresses, \.routes, \.speakQueued, \.formatDistance, \.formatDuration
+        ) >>> NavigationFeature.Environment.init)
 }

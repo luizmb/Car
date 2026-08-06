@@ -85,6 +85,15 @@ public struct AppRootView: View, Routable {
                                 .padding(14)
                                 .glassEffect(.regular, in: .circle)
                         }
+
+                        Button {
+                            viewStore.dispatch(.navigation(.push(.navigate)))
+                        } label: {
+                            Image(systemName: "arrow.triangle.turn.up.right.diamond.fill")
+                                .font(.title3)
+                                .padding(14)
+                                .glassEffect(.regular, in: .circle)
+                        }
                     }
                     .padding(.trailing, 16)
                     .padding(.bottom, 190)

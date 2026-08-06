@@ -65,6 +65,8 @@ public struct AppRouter {
     public func destination(for route: AppRoute) -> some View {
         switch route {
         case .fuel: AppScopes.fuel.pushedView(of: FuelFeature.self, from: store, world: world)
+        case .navigate:
+            AppScopes.navigate.pushedView(of: NavigationFeature.self, from: store, world: world)
         }
     }
 }

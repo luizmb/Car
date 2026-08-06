@@ -107,12 +107,29 @@ public struct World: Sendable {
     public let speakSequence: @Sendable ([String], TimeInterval) -> Publisher<Void, Never>
     public let announceOverLimit: @Sendable () -> Publisher<Void, Never>
     public let announceUnderLimit: @Sendable () -> Publisher<Void, Never>
+    // Navigation
+    /// Addresses and postcodes matching a query, biased toward a position. Addresses only — points
+    /// of interest are excluded at the source, because "Tesco" is a hundred places and picking one
+    /// from a list at a junction is the interaction this app exists to avoid.
+    public let searchAddresses: @Sendable (String, Latitude?, Longitude?)
+        -> Publisher<[AddressSuggestion], Never>
+    /// Every route found between two points, **unfiltered** — the preferences are passed on to the
+    /// routing service as a hint, and the domain then checks the answers and drops what does not
+    /// honour them. `Result` rather than an empty list, so "no route" and "routing failed" stay
+    /// distinguishable all the way to the screen.
+    public let routes: @Sendable (Coordinate, Coordinate, RoutePreferences)
+        -> Publisher<Result<[RouteOption], RouteError>, Never>
     // Domain config
     public let thresholds: [MPH]
     // Locale-dependent formatters
     public let formatSpeed: @Sendable (MPH) -> String
     public let formatSpeedSpeech: @Sendable (MPH) -> String
     public let formatAltitude: @Sendable (Meters) -> String
+    /// A travelling distance, as a rider reads it. Distinct from ``formatAltitude`` despite sharing
+    /// a unit: an altitude is metres above sea level and a route is miles on a sign, and collapsing
+    /// them would make one of the two wrong.
+    public let formatDistance: @Sendable (Meters) -> String
+    public let formatDuration: @Sendable (TimeInterval) -> String
     public let formatBearing: @Sendable (Course) -> String
     public let formatCoordinate: @Sendable (Latitude, Longitude) -> String
 }

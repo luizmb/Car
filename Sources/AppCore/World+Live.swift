@@ -375,6 +375,8 @@ extension World {
             announceUnderLimit: {
                 Publisher.future { DispatchQueue.main.async { speech.speak("back") } }
             },
+            searchAddresses: RoutingClient.searchAddresses,
+            routes: RoutingClient.routes,
             thresholds: [110.0, 99, 88, 77, 66, 55, 44, 33, 22, 11].map { MPH($0) },
             formatSpeed: {
                 Measurement(value: $0.rawValue, unit: UnitSpeed.milesPerHour).formatted(speedFmt)
@@ -382,6 +384,24 @@ extension World {
             formatSpeedSpeech: { @Sendable mph in numFmt0dp.format(mph.rawValue) },
             formatAltitude: {
                 Measurement(value: $0.rawValue, unit: UnitLength.meters).formatted(altFmt)
+            },
+            formatDistance: { metres in
+                // `.road` usage, which is what makes this different from `formatAltitude` despite
+                // the shared unit: it picks the unit the locale signs roads in — miles here — and
+                // rounds the way a sign does rather than to a fixed number of places.
+                Measurement(value: metres.rawValue, unit: UnitLength.meters)
+                    .formatted(
+                        .measurement(width: .abbreviated, usage: .road)
+                            .locale(locale)
+                    )
+            },
+            formatDuration: { seconds in
+                // `.abbreviated` reads as "1 hr 24 min", which is what a rider scans. `.short`
+                // would give "1:24" and be read as a time of day at a glance.
+                Duration.seconds(seconds).formatted(
+                    .units(allowed: [.hours, .minutes], width: .abbreviated)
+                        .locale(locale)
+                )
             },
             formatBearing: { @Sendable course in numFmt1dp.format(course.rawValue) },
             formatCoordinate: { lat, lon in
