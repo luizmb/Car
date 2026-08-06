@@ -326,6 +326,13 @@ public enum AppFeature {
                 .action(\.navigate.select),
                 dispatch: .action(review: { .speedMonitor(.setRoute(simplified($0.shape))) })
             )
+            // Clearing the destination has to rub out the line too. Without this the planner
+            // forgets where you were going while the map carries on drawing the route there, and
+            // the only way to get rid of it is to navigate somewhere else.
+            .on(
+                .action(\.navigate.clear),
+                dispatch: .action(review: const(.speedMonitor(.setRoute([]))))
+            )
 
         // Location fans out from the one feature that owns the stream. A second subscription would
         // clobber the delegate's single continuation slot — the failure that silently killed the
