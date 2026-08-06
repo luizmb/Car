@@ -145,8 +145,17 @@ The on-device extract is now the primary source; Overpass is cache refresh and b
 
 - **Refreshing the extract.** It is a hand-copied snapshot today. OSM moves — new limits, new
   cameras. Needs at minimum a "this file is from *date*" and a way to replace it.
-- **Cameras and stations from the file.** Both are already extracted and indexed, and both still go
-  to the network. Serving them locally removes the last per-ride Overpass dependency.
+- **Cameras from the file.** `LocalRoadStore.cameras(near:radius:)` exists but has **no callers** —
+  every camera still comes from Overpass, one request per journey. If that single request is refused,
+  the ride has no camera warnings at all, which is the same single-point-of-failure the road lookup
+  just escaped. Wiring it up is a small job and is the highest-value item here.
+- **Average-speed zones are not usable from the file.** Individual cameras carry `kind='average'`, so
+  their positions are there. The `zone` table is not: the extractor records the enforcement relation's
+  id and speed and **discards its members**, and a zone is defined entirely by its members. All 596
+  rows are effectively empty. Fixing it means extracting member ways and their geometry, which is a
+  real change to `extract.py` and a re-run, not a wiring job.
+- **Stations from the file.** Extracted and indexed, still fetched over the network. Lowest urgency
+  of the three — it runs once, while the rider is standing at the pump with a phone in hand.
 - **Size.** England is 500 MB with service roads, 269 MB without. Service roads matter for road
   selection near driveways and car parks — dropping them re-opens a bug that was already fixed once.
   A regional cut (London → Cambridge, covering the actual riding area) is the better lever if size
