@@ -17,6 +17,13 @@ public struct World: Sendable {
     /// Roads from the on-device extract, tried before Overpass. `nil` means the file is absent or
     /// has nothing here, and the network answers instead.
     public let localRoad: @Sendable (Latitude, Longitude, Course?) -> RoadInfo?
+    /// The cameras on one specific road — the road the rider just joined.
+    ///
+    /// `nil` when the extract cannot answer (predates road attachment, or the rider is outside
+    /// it), in which case the wide radius set below stays authoritative. Answering from the road
+    /// rather than from a circle is what finally separates a slip road's cameras from the
+    /// carriageway beside it.
+    public let camerasOnRoad: @Sendable (RoadKey, Latitude, Longitude) -> Publisher<[SpeedCamera]?, Never>
     /// Enforcement cameras over a wide radius, refreshed rarely. Held in state and filtered per fix —
     /// see `makeCameraStream` for why the cadence is the opposite of the road lookup's.
     public let subscribeToCameras: @Sendable () -> Publisher<CameraSet, Never>

@@ -49,6 +49,13 @@ public enum SpeedMonitorFeature {
         /// Every enforcement camera within the last fetch radius, ahead or behind. Filtered per fix
         /// rather than per fetch, so a camera does not vanish because the network did.
         public var cameras: [SpeedCamera]
+        /// The cameras on the road being ridden, when the extract can answer that question.
+        ///
+        /// The rider's design: query by the road just joined, discard on the next road. `nil` means
+        /// the question could not be answered — old extract, abroad — and the radius set above
+        /// stays authoritative. An **empty** array is an answer: this road has no cameras, and
+        /// nothing from a slip road or a crossing street can leak in to say otherwise.
+        public var roadCameras: [SpeedCamera]?
         /// Cameras already spoken on this approach, so a warning is given once rather than once per
         /// GPS fix. Pruned when a camera leaves the fetched set — which means riding back the other
         /// way legitimately announces it again.
@@ -121,6 +128,8 @@ public enum SpeedMonitorFeature {
         case roadMayHaveChanged
         // Cameras
         case camerasChanged(CameraSet)
+        /// The cameras on the road just joined, or `nil` when the extract cannot say.
+        case roadCamerasChanged([SpeedCamera]?)
         case camerasAnnounced(Set<Int>)
         /// Entering or leaving an average-speed zone. `nil` means left.
         case averageZoneChanged(AverageZone?)
@@ -136,6 +145,8 @@ public enum SpeedMonitorFeature {
         public let locationUpdates: @Sendable () -> Publisher<LocationUpdate, Never>
         public let subscribeToRoadSpeed: @Sendable () -> Publisher<RoadInfo, Never>
         public let subscribeToCameras: @Sendable () -> Publisher<CameraSet, Never>
+        /// The cameras on one road, from the extract. `nil` when it cannot answer.
+        public let camerasOnRoad: @Sendable (RoadKey, Latitude, Longitude) -> Publisher<[SpeedCamera]?, Never>
         public let refreshRoadNow: @Sendable (Latitude, Longitude) -> Publisher<Void, Never>
         public let speak: @Sendable (String) -> Publisher<Void, Never>
         /// Queues rather than interrupts. Road announcements are informational and must not cut a
@@ -159,6 +170,7 @@ public enum SpeedMonitorFeature {
             locationUpdates:      @escaping @Sendable () -> Publisher<LocationUpdate, Never>,
             subscribeToRoadSpeed: @escaping @Sendable () -> Publisher<RoadInfo, Never>,
             subscribeToCameras:   @escaping @Sendable () -> Publisher<CameraSet, Never>,
+            camerasOnRoad:        @escaping @Sendable (RoadKey, Latitude, Longitude) -> Publisher<[SpeedCamera]?, Never>,
             refreshRoadNow:       @escaping @Sendable (Latitude, Longitude) -> Publisher<Void, Never>,
             speak:                @escaping @Sendable (String) -> Publisher<Void, Never>,
             announceRoad:         @escaping @Sendable (String) -> Publisher<Void, Never>,
@@ -177,6 +189,7 @@ public enum SpeedMonitorFeature {
             self.locationUpdates      = locationUpdates
             self.subscribeToRoadSpeed = subscribeToRoadSpeed
             self.subscribeToCameras   = subscribeToCameras
+            self.camerasOnRoad        = camerasOnRoad
             self.refreshRoadNow       = refreshRoadNow
             self.speak                = speak
             self.announceRoad         = announceRoad
@@ -313,6 +326,7 @@ public enum SpeedMonitorFeature {
             lastLocation: nil,
             currentRoadInfo: nil,
             cameras: [],
+            roadCameras: nil,
             announcedCameraIDs: [],
             averageZones: [],
             activeAverageZone: nil,
@@ -379,6 +393,7 @@ public enum SpeedMonitorFeature {
                 let activeZone   = context.stateBefore?.activeAverageZone
                 let wasOver      = context.stateBefore?.wasOverAverageLimit ?? false
                 let routeShape   = context.stateBefore?.routeShape ?? []
+                let roadCameras  = context.stateBefore?.roadCameras
                 return .produce { ctx in
                     let display = buildDisplay(
                         previous: prevLocation, to: newLocation,
@@ -390,8 +405,9 @@ public enum SpeedMonitorFeature {
                             roadInfo: roadInfo, env: ctx.environment
                         )
                         <> cameraEffects(
-                            at: newLocation, cameras: cameras, announced: announced,
-                            roadInfo: roadInfo, routeShape: routeShape, env: ctx.environment
+                            at: newLocation, cameras: cameras, roadCameras: roadCameras,
+                            announced: announced, roadInfo: roadInfo, routeShape: routeShape,
+                            env: ctx.environment
                         )
                         <> averageZoneEffects(
                             at: newLocation,
@@ -433,8 +449,30 @@ public enum SpeedMonitorFeature {
                                 )
                             ))
                         } ?? .empty
-                        return announce <> refresh
+                        // The road changed hands — ask the extract which cameras stand on the new
+                        // one, and discard the old road's set either way. Asked only on an actual
+                        // change of identity: road detection re-fires constantly for the same
+                        // road, and the answer cannot differ.
+                        let roadCameras: Effect<SpeedMonitorFeature.Action>
+                        if info.key != prevInfo?.key {
+                            if let key = info.key, let loc = lastLocation {
+                                roadCameras = ctx.environment
+                                    .camerasOnRoad(key, loc.latitude, loc.longitude)
+                                    .asEffect(Action.roadCamerasChanged)
+                            } else {
+                                // No identity — geocoder fallback, or an unnamed way. The radius
+                                // set is all there is, and saying so beats holding the previous
+                                // road's cameras against a road they are not on.
+                                roadCameras = .just(.roadCamerasChanged(nil))
+                            }
+                        } else {
+                            roadCameras = .empty
+                        }
+                        return announce <> refresh <> roadCameras
                     }
+
+            case let .roadCamerasChanged(cameras):
+                return .reduce { $0.roadCameras = cameras }
 
             case let .camerasChanged(set):
                 return .reduce {
@@ -540,12 +578,13 @@ private func announceRoadInfo(
 private func cameraEffects(
     at location: LocationUpdate,
     cameras: [SpeedCamera],
+    roadCameras: [SpeedCamera]?,
     announced: Set<Int>,
     roadInfo: RoadInfo?,
     routeShape: [Coordinate],
     env: SpeedMonitorFeature.Environment
 ) -> Effect<SpeedMonitorFeature.Action> {
-    guard !cameras.isEmpty else { return .empty }
+    guard !(roadCameras ?? cameras).isEmpty else { return .empty }
 
     let speed = location.speed ?? MPS(0)
     // **Cheap filter first.** `onRoute` measures every camera against every segment of the route,
@@ -558,19 +597,35 @@ private func cameraEffects(
     // forty-three seconds on one ride, plus a 70 mph camera on a motorway crossing perpendicular.
     // The road's own limit, where it is known — a camera claiming to enforce a much higher speed
     // is watching a different road.
-    let roadLimit = roadLimitFor(roadInfo)
-    let ahead = plausible(
-        onRoute(
+    // The road-matched set when the extract answered; the radius set plus heuristics otherwise.
+    // The heuristics — route corridor, limit plausibility — exist to compensate for the radius set
+    // not knowing which road anything is on. A road-matched camera answered that at extract time,
+    // by geometry, and heuristics on top would only reintroduce the false negatives they trade in:
+    // the same-limit slip-road camera is excluded here by class, not guessed at by limit.
+    let ahead: [SpeedCamera]
+    if let roadCameras {
+        ahead = camerasAhead(
+            roadCameras,
+            at: (location.latitude, location.longitude),
+            course: location.course,
+            speed: speed
+        )
+        .filter { facingCompatible($0, course: location.course) }
+    } else {
+        ahead = plausible(
+            onRoute(
                 camerasAhead(
-                cameras,
-                at: (location.latitude, location.longitude),
-                course: location.course,
-                speed: speed
+                    cameras,
+                    at: (location.latitude, location.longitude),
+                    course: location.course,
+                    speed: speed
+                ),
+                shape: routeShape
             ),
-            shape: routeShape
-        ),
-        onRoadLimited: roadLimit
-    )
+            onRoadLimited: roadLimitFor(roadInfo)
+        )
+        .filter { facingCompatible($0, course: location.course) }
+    }
     guard let next = ahead.first(where: { !announced.contains($0.id) }) else { return .empty }
 
     let spoken = cameraAnnouncement(

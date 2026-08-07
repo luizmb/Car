@@ -198,7 +198,8 @@ public func roadInfo(from candidate: RoadCandidate?, among candidates: [RoadCand
     return RoadInfo(
         limit: limit, ref: tags.ref, name: tags.name,
         origin: origin,
-        isVariable: (tags.maxspeedVariable?.lowercased()).map { $0 != "no" } ?? false
+        isVariable: (tags.maxspeedVariable?.lowercased()).map { $0 != "no" } ?? false,
+        roadClass: candidate.tags.highway
     )
 }
 

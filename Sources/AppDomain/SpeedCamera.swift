@@ -426,6 +426,25 @@ public func plausible(_ zones: [AverageZone], onRoadLimited roadLimit: MPH?) -> 
     }
 }
 
+/// Whether a camera's facing is compatible with the rider's direction of travel.
+///
+/// OSM's `direction` tag is ambiguous in practice: a forward-facing Truvelo looks *at* the traffic
+/// it enforces, a rear-facing Gatso looks *away* from it, and mappers tag both conventions. So
+/// treating the tag as "the enforced direction" would wrongly drop half the country's real
+/// cameras. What the tag can say unambiguously is the camera's **axis** — and a camera whose axis
+/// is roughly perpendicular to the rider's course is watching a crossing road: the 70 mph camera
+/// announced from the motorway passing under the rider's 30 mph street.
+///
+/// Kept when either side is unknown, since a missed camera costs a fine.
+public func facingCompatible(_ camera: SpeedCamera, course: Course?) -> Bool {
+    guard let direction = camera.direction, let course else { return true }
+    var apart = abs(direction - course.rawValue).truncatingRemainder(dividingBy: 360)
+    if apart > 180 { apart = 360 - apart }
+    // Fold onto the axis: 0° = parallel either way, 90° = square across the road.
+    let axis = min(apart, 180 - apart)
+    return axis <= 55
+}
+
 // MARK: - Announcement
 
 /// What to say about a camera.

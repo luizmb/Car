@@ -19,6 +19,7 @@ private func makeExtract(
     bounds: (minLat: Double, maxLat: Double, minLon: Double, maxLon: Double)?
         = (51.0, 53.0, -1.0, 1.0),
     cameras: [(id: Int, kind: String, mph: Int?, direction: Double?, lat: Double, lon: Double)] = [],
+    roadCameras: [(id: Int, mph: Int?, ref: String?, name: String?, roadClass: Int, lat: Double, lon: Double)] = [],
     zones: [(id: Int, mph: Int?, start: (Double, Double)?, end: (Double, Double)?)] = [],
     stations: [(id: Int, name: String?, brand: String?, lat: Double, lon: Double)] = []
 ) throws -> URL {
@@ -42,7 +43,9 @@ private func makeExtract(
         CREATE TABLE road (id INTEGER PRIMARY KEY, name TEXT, ref TEXT, class INTEGER, mph INTEGER,
                            minlat REAL, maxlat REAL, minlon REAL, maxlon REAL, geom BLOB);
         CREATE TABLE camera (id INTEGER PRIMARY KEY, kind TEXT, mph INTEGER, direction REAL,
-                             lat REAL, lon REAL);
+                             lat REAL, lon REAL,
+                             road_id INTEGER, road_name TEXT, road_ref TEXT, road_class INTEGER,
+                             road_offset REAL);
         CREATE TABLE zone (id INTEGER PRIMARY KEY, mph INTEGER,
                            start_lat REAL, start_lon REAL, end_lat REAL, end_lon REAL);
         CREATE TABLE station (id INTEGER PRIMARY KEY, name TEXT, brand TEXT, lat REAL, lon REAL);
@@ -67,6 +70,18 @@ private func makeExtract(
         run("""
             INSERT INTO camera (id, kind, mph, direction, lat, lon)
               VALUES (\(id), '\(kind)', \(mph), \(direction), \(lat), \(lon));
+            INSERT INTO camera_bbox VALUES (\(id), \(lat), \(lat), \(lon), \(lon));
+            """)
+    }
+
+    for camera in roadCameras {
+        let (id, lat, lon) = (camera.id, camera.lat, camera.lon)
+        let ref = camera.ref.map { "'\($0)'" } ?? "NULL"
+        let name = camera.name.map { "'\($0)'" } ?? "NULL"
+        run("""
+            INSERT INTO camera (id, kind, mph, direction, lat, lon, road_ref, road_name, road_class)
+              VALUES (\(id), 'fixed', \(camera.mph.map { "\($0)" } ?? "NULL"), NULL,
+                      \(lat), \(lon), \(ref), \(name), \(camera.roadClass));
             INSERT INTO camera_bbox VALUES (\(id), \(lat), \(lat), \(lon), \(lon));
             """)
     }
@@ -296,5 +311,62 @@ struct LocalStationTests {
         ))
         #expect(station.brand == nil)
         #expect(station.label == "Ormsby Service Station")
+    }
+}
+
+// MARK: - Cameras that know their road
+
+@Suite("Cameras queried by road")
+struct RoadCameraQueryTests {
+    /// Class indices follow the extractor's sorted RIDEABLE order: 13 = trunk, 14 = trunk_link.
+    @Test("Same ref, different class: the slip road's cameras stay off the carriageway's list")
+    func classSeparatesSlipRoads() throws {
+        let store = try #require(LocalRoadStore(url: makeExtract(roadCameras: [
+            (1, 30, "A1081", nil, 13, 52.130, -0.46),
+            (2, 50, "A1081", nil, 14, 52.131, -0.46)
+        ])))
+        let onTrunk = store.cameras(
+            on: RoadKey(ref: "A1081", name: nil, roadClass: "trunk"),
+            near: Latitude(52.13), longitude: Longitude(-0.46)
+        )
+        #expect(onTrunk?.map(\.id) == [1])
+    }
+
+    /// Plenty of residential streets carry only a name.
+    @Test("A road with no ref matches by name")
+    func matchesByName() throws {
+        let store = try #require(LocalRoadStore(url: makeExtract(roadCameras: [
+            (3, 20, nil, "High Street", 5, 52.130, -0.46)
+        ])))
+        let found = store.cameras(
+            on: RoadKey(ref: nil, name: "High Street", roadClass: "residential"),
+            near: Latitude(52.13), longitude: Longitude(-0.46)
+        )
+        #expect(found?.map(\.id) == [3])
+    }
+
+    /// An empty answer from a road-aware extract is an answer: this road has no cameras.
+    @Test("A camera-free road answers empty, not unknown")
+    func emptyIsAnAnswer() throws {
+        let store = try #require(LocalRoadStore(url: makeExtract(roadCameras: [
+            (4, 40, "A6", nil, 13, 52.130, -0.46)
+        ])))
+        let found = store.cameras(
+            on: RoadKey(ref: "A421", name: nil, roadClass: "trunk"),
+            near: Latitude(52.13), longitude: Longitude(-0.46)
+        )
+        #expect(found != nil)
+        #expect(found?.isEmpty == true)
+    }
+
+    @Test("Outside the extract the answer is unknown")
+    func outsideIsNil() throws {
+        let store = try #require(LocalRoadStore(url: makeExtract(roadCameras: [
+            (5, 40, "A6", nil, 13, 52.130, -0.46)
+        ])))
+        #expect(store.cameras(
+            on: RoadKey(ref: "A6", name: nil, roadClass: "trunk"),
+            near: Latitude(50.95), longitude: Longitude(1.85)
+        ) == nil)
     }
 }

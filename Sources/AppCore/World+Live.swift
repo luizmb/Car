@@ -353,6 +353,9 @@ extension World {
             localRoad: { latitude, longitude, course in
                 localRoads?.road(at: latitude, longitude: longitude, course: course)
             },
+            camerasOnRoad: { key, latitude, longitude in
+                .just(localRoads?.cameras(on: key, near: latitude, longitude: longitude) ?? nil)
+            },
             subscribeToCameras: {
                 makeCameraStream(
                     box: cameraLoc,

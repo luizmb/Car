@@ -354,6 +354,7 @@ struct RefuelRecordingTests {
             locationUpdates: world.locationUpdates,
             subscribeToRoadSpeed: world.subscribeToRoadSpeed,
             localRoad: world.localRoad,
+            camerasOnRoad: world.camerasOnRoad,
             subscribeToCameras: world.subscribeToCameras,
             reverseGeocode: world.reverseGeocode,
             refreshRoadNow: world.refreshRoadNow,

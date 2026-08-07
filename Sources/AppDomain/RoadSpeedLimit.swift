@@ -72,16 +72,29 @@ public struct RoadInfo: Sendable, Equatable {
     /// data no static map has. So the number here is the default, and the honest thing is to say
     /// the limit is variable rather than assert a figure the signs may be contradicting.
     public let isVariable: Bool
+    /// The OSM highway class of the chosen way — `trunk`, `trunk_link`, `residential`.
+    ///
+    /// Carried because ref and name are not identity: the A1081's slip roads share its ref, and
+    /// the six phantom cameras that started all of this were "on the A1081" by ref while being on
+    /// a `trunk_link` beside the `trunk` the rider rode. The class is the discriminator.
+    public let roadClass: String?
 
     public init(
         limit: RoadSpeedLimit, ref: String?, name: String?,
-        origin: LimitOrigin, isVariable: Bool = false
+        origin: LimitOrigin, isVariable: Bool = false, roadClass: String? = nil
     ) {
         self.limit = limit
         self.ref = ref
         self.name = name
         self.origin = origin
         self.isVariable = isVariable
+        self.roadClass = roadClass
+    }
+
+    /// The road's identity for camera matching, when enough of one is known.
+    public var key: RoadKey? {
+        guard let roadClass, ref != nil || name != nil else { return nil }
+        return RoadKey(ref: ref, name: name, roadClass: roadClass)
     }
 
     public static let unknown = RoadInfo(
@@ -104,5 +117,25 @@ public struct RoadInfo: Sendable, Equatable {
         public let label: String?
         public let origin: LimitOrigin
         public let variable: Bool
+    }
+}
+
+// MARK: - Road identity
+
+/// Which road, as a rider means it: the number or name, and the kind of way.
+///
+/// Both parts matter. Ref alone conflates a trunk road with its own slip roads; class alone
+/// conflates every residential street with every other. Together they answer "is this camera on
+/// the road I am on" — the question straight-line distance can never settle at a junction, where
+/// every road is within a few tens of metres of every other.
+public struct RoadKey: Sendable, Equatable {
+    public let ref: String?
+    public let name: String?
+    public let roadClass: String
+
+    public init(ref: String?, name: String?, roadClass: String) {
+        self.ref = ref
+        self.name = name
+        self.roadClass = roadClass
     }
 }

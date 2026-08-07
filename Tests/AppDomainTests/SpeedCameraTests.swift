@@ -374,3 +374,40 @@ struct CameraPlausibilityTests {
         #expect(plausible([zone], onRoadLimited: MPH(50)).count == 1)
     }
 }
+
+// MARK: - Which way a camera looks
+
+@Suite("Camera facing")
+struct CameraFacingTests {
+    private func camera(direction: Double?) -> SpeedCamera {
+        SpeedCamera(
+            id: 1, kind: .fixed,
+            latitude: Latitude(51.86), longitude: Longitude(-0.417),
+            limit: MPH(70), direction: direction
+        )
+    }
+
+    /// The 70 mph camera announced from the motorway passing *under* the rider's street: its axis
+    /// is square across the rider's course, which is what "on a crossing road" looks like.
+    @Test("A camera facing square across the course is watching a crossing road")
+    func perpendicularDropped() {
+        #expect(!facingCompatible(camera(direction: 90), course: Course(0)))
+        #expect(!facingCompatible(camera(direction: 270), course: Course(0)))
+    }
+
+    /// OSM's direction tag is ambiguous between "looks at the traffic" (Truvelo) and "looks away
+    /// from it" (rear-facing Gatso), so both senses of parallel must survive — treating the tag as
+    /// the enforced direction would wrongly drop half the country's real cameras.
+    @Test("Both senses of parallel survive")
+    func parallelKeptEitherWay() {
+        #expect(facingCompatible(camera(direction: 0), course: Course(0)))
+        #expect(facingCompatible(camera(direction: 180), course: Course(0)))
+        #expect(facingCompatible(camera(direction: 350), course: Course(10)))
+    }
+
+    @Test("Unknown facing or unknown course keeps the camera")
+    func unknownKept() {
+        #expect(facingCompatible(camera(direction: nil), course: Course(0)))
+        #expect(facingCompatible(camera(direction: 90), course: nil))
+    }
+}
