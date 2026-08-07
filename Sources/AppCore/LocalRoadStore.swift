@@ -20,6 +20,17 @@ import SQLite3
 final class LocalRoadStore: @unchecked Sendable {
     private let lock = NSLock()
     private var handle: OpaquePointer?
+    /// Where the extract actually has data.
+    ///
+    /// Not decoration, and the reason cameras can be served from here at all: outside the extract,
+    /// "no cameras near here" and "no data for here" are the same empty result. Roads do not need
+    /// this — there is always a road underneath you, so an empty answer is self-evidently a miss —
+    /// but an empty camera set is a perfectly ordinary correct answer, and acting on it in France
+    /// would silently disarm every warning.
+    ///
+    /// `nil` for an extract built before the `meta` table existed. Reading that as "covers nothing"
+    /// is the safe direction: roads still come from the file, and cameras go back to the network.
+    private let bounds: (minLat: Double, maxLat: Double, minLon: Double, maxLon: Double)?
 
     /// The extract, if one has been put in Documents. Absent is normal and not an error — the app
     /// simply falls through to Overpass, which is what it did before this existed.
@@ -31,19 +42,57 @@ final class LocalRoadStore: @unchecked Sendable {
             .appendingPathComponent(filename)
     }
 
-    init?() {
-        guard FileManager.default.fileExists(atPath: Self.url.path) else { return nil }
+    /// The extract in Documents, if the rider has put one there.
+    convenience init?() { self.init(url: Self.url) }
+
+    /// A specific file. Exists so the query logic can be tested against a fixture — everything this
+    /// type decides (which road, whether a camera set can be trusted, which forecourt) is decided
+    /// here rather than in the domain, so it needs to be reachable without a 500 MB file on a phone.
+    init?(url: URL) {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         var db: OpaquePointer?
         // Read-only: nothing in the app ever writes to it, and saying so lets SQLite skip its
         // locking machinery entirely.
-        guard sqlite3_open_v2(Self.url.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+        guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
             sqlite3_close(db)
             return nil
         }
         handle = db
+        bounds = Self.readBounds(db)
     }
 
     deinit { sqlite3_close(handle) }
+
+    /// Whether the extract has data for a position, and therefore whether an empty answer from it
+    /// can be believed.
+    func covers(latitude: Latitude, longitude: Longitude) -> Bool {
+        guard let bounds else { return false }
+        return latitude.rawValue >= bounds.minLat && latitude.rawValue <= bounds.maxLat
+            && longitude.rawValue >= bounds.minLon && longitude.rawValue <= bounds.maxLon
+    }
+
+    private static func readBounds(
+        _ db: OpaquePointer?
+    ) -> (minLat: Double, maxLat: Double, minLon: Double, maxLon: Double)? {
+        var values: [String: Double] = [:]
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT key, value FROM meta", -1, &statement, nil) == SQLITE_OK
+        else { return nil }
+        defer { sqlite3_finalize(statement) }
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard
+                let key = sqlite3_column_text(statement, 0).map({ String(cString: $0) }),
+                let raw = sqlite3_column_text(statement, 1).map({ String(cString: $0) }),
+                let value = Double(raw)
+            else { continue }
+            values[key] = value
+        }
+        guard
+            let minLat = values["minlat"], let maxLat = values["maxlat"],
+            let minLon = values["minlon"], let maxLon = values["maxlon"]
+        else { return nil }
+        return (minLat, maxLat, minLon, maxLon)
+    }
 
     /// The road at a position, chosen by the same rules the Overpass path uses.
     ///
@@ -58,32 +107,144 @@ final class LocalRoadStore: @unchecked Sendable {
         return roadInfo(from: chosen, among: candidates)
     }
 
-    /// Cameras within `radius` metres.
-    func cameras(near latitude: Latitude, longitude: Longitude, radius: Meters) -> [SpeedCamera] {
-        let degrees = radius.rawValue / 111_320
+    /// Every camera and average-speed zone within `radius` metres.
+    ///
+    /// `nil` — not an empty set — when the position falls outside the extract, so the caller can
+    /// tell "there is nothing here" from "I do not know about here" and go to the network for the
+    /// second. An empty `CameraSet` from inside the bounds is a real answer and means exactly what
+    /// it says.
+    ///
+    /// Cameras and zones are returned together for the same reason the Overpass query fetches them
+    /// in one request: they are two halves of one picture, and a set where they disagree about what
+    /// is currently known would announce a zone whose cameras are missing, or the reverse.
+    func cameraSet(near latitude: Latitude, longitude: Longitude, radius: Meters) -> CameraSet? {
+        guard covers(latitude: latitude, longitude: longitude) else { return nil }
+        let box = boundingBox(latitude: latitude, longitude: longitude, radius: radius)
+        return CameraSet(cameras: cameras(in: box), zones: zones(in: box))
+    }
+
+    /// The nearest petrol station within `radius` metres.
+    ///
+    /// Nearest rather than first, matching ``nearestStation(_:to:)``: paired forecourts either side
+    /// of a road and motorway services both return several, and the one being filled from is the
+    /// one underfoot.
+    ///
+    /// No coverage check, unlike ``cameraSet(near:longitude:radius:)``. A miss here simply falls
+    /// through to the network, which is the right behaviour whether the cause is riding abroad or a
+    /// forecourt that opened after the extract was built — and it costs one request, made once,
+    /// while the rider is stationary at a pump.
+    func station(near latitude: Latitude, longitude: Longitude, radius: Meters) -> FuelStation? {
+        let box = boundingBox(latitude: latitude, longitude: longitude, radius: radius)
+        var best: (FuelStation, Double)?
+        query(
+            """
+            SELECT s.id, s.name, s.brand, s.lat, s.lon
+            FROM station_bbox b JOIN station s ON s.id = b.id
+            WHERE b.maxlat >= ? AND b.minlat <= ? AND b.maxlon >= ? AND b.minlon <= ?
+            """,
+            bind: box.rtree
+        ) { statement in
+            let position = (
+                Latitude(sqlite3_column_double(statement, 3)),
+                Longitude(sqlite3_column_double(statement, 4))
+            )
+            let station = FuelStation(
+                id: Int(sqlite3_column_int64(statement, 0)),
+                // `brand` is the tag that means the operator, and the extractor already folded
+                // `operator` into it, so there is one column here where Overpass has two.
+                brand: text(statement, 2),
+                name: text(statement, 1)
+            )
+            let distance = distanceMetres(from: (latitude, longitude), to: position)
+            guard distance <= radius.rawValue else { return }
+            if best.map({ distance < $0.1 }) ?? true { best = (station, distance) }
+        }
+        return best?.0
+    }
+
+    // MARK: - Private
+
+    private struct BoundingBox {
+        let minLat: Double, maxLat: Double, minLon: Double, maxLon: Double
+        /// In the order an R-tree overlap test binds them: `maxlat >= minLat`, `minlat <= maxLat`, …
+        var rtree: [Double] { [minLat, maxLat, minLon, maxLon] }
+        /// In the order a plain `BETWEEN` pair binds them.
+        var between: [Double] { [minLat, maxLat, minLon, maxLon] }
+    }
+
+    private func boundingBox(
+        latitude: Latitude, longitude: Longitude, radius: Meters
+    ) -> BoundingBox {
+        let pad = radius.rawValue / 111_320
+        // Longitude degrees shrink toward the poles. At 52° N a degree of longitude is about 69 km
+        // against 111 km of latitude, so a box padded equally in both would reach barely half as
+        // far east and west as it should.
+        let lonPad = pad / cos(latitude.rawValue * .pi / 180)
+        return BoundingBox(
+            minLat: latitude.rawValue - pad, maxLat: latitude.rawValue + pad,
+            minLon: longitude.rawValue - lonPad, maxLon: longitude.rawValue + lonPad
+        )
+    }
+
+    private func cameras(in box: BoundingBox) -> [SpeedCamera] {
         var found: [SpeedCamera] = []
         query(
-            "SELECT id, kind, mph, lat, lon FROM camera WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?",
-            bind: [
-                latitude.rawValue - degrees, latitude.rawValue + degrees,
-                longitude.rawValue - degrees / cos(latitude.rawValue * .pi / 180),
-                longitude.rawValue + degrees / cos(latitude.rawValue * .pi / 180)
-            ]
+            """
+            SELECT c.id, c.kind, c.mph, c.direction, c.lat, c.lon
+            FROM camera_bbox b JOIN camera c ON c.id = b.id
+            WHERE b.maxlat >= ? AND b.minlat <= ? AND b.maxlon >= ? AND b.minlon <= ?
+            """,
+            bind: box.rtree
         ) { statement in
             found.append(SpeedCamera(
                 id: Int(sqlite3_column_int64(statement, 0)),
                 kind: kind(from: text(statement, 1)),
-                latitude: Latitude(sqlite3_column_double(statement, 3)),
-                longitude: Longitude(sqlite3_column_double(statement, 4)),
+                latitude: Latitude(sqlite3_column_double(statement, 4)),
+                longitude: Longitude(sqlite3_column_double(statement, 5)),
                 limit: sqlite3_column_type(statement, 2) == SQLITE_NULL
                     ? nil : MPH(Double(sqlite3_column_int(statement, 2))),
-                direction: nil
+                direction: sqlite3_column_type(statement, 3) == SQLITE_NULL
+                    ? nil : sqlite3_column_double(statement, 3)
             ))
         }
         return found
     }
 
-    // MARK: - Private
+    /// Zones touching the box by either end.
+    ///
+    /// Either end, not just the start: a zone entered before the last fetch is one whose *exit* is
+    /// the only thing still ahead, and dropping it would leave the rider inside an average check
+    /// with no way to be told it had ended.
+    private func zones(in box: BoundingBox) -> [AverageZone] {
+        var found: [AverageZone] = []
+        query(
+            """
+            SELECT id, mph, start_lat, start_lon, end_lat, end_lon FROM zone
+            WHERE (start_lat BETWEEN ? AND ? AND start_lon BETWEEN ? AND ?)
+               OR (end_lat   BETWEEN ? AND ? AND end_lon   BETWEEN ? AND ?)
+            """,
+            bind: box.between + box.between
+        ) { statement in
+            func coordinate(_ latColumn: Int32, _ lonColumn: Int32) -> Coordinate? {
+                guard
+                    sqlite3_column_type(statement, latColumn) != SQLITE_NULL,
+                    sqlite3_column_type(statement, lonColumn) != SQLITE_NULL
+                else { return nil }
+                return Coordinate(
+                    latitude: Latitude(sqlite3_column_double(statement, latColumn)),
+                    longitude: Longitude(sqlite3_column_double(statement, lonColumn))
+                )
+            }
+            found.append(AverageZone(
+                id: Int(sqlite3_column_int64(statement, 0)),
+                limit: sqlite3_column_type(statement, 1) == SQLITE_NULL
+                    ? nil : MPH(Double(sqlite3_column_int(statement, 1))),
+                start: coordinate(2, 3),
+                end: coordinate(4, 5)
+            ))
+        }
+        return found
+    }
 
     /// Roads whose bounding box is within ~120 m. Wider than the 40 m Overpass query on purpose: a
     /// bounding box is a coarse thing, and a long diagonal road can be close to you while its box
