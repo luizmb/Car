@@ -701,6 +701,68 @@ public func trackingRoute(_ state: RerouteState, distanceOff: Double) -> Reroute
     return next
 }
 
+// MARK: - Choosing where to rejoin
+
+/// One place the original route could be rejoined at, and what it would cost to finish from there.
+public struct RejoinCandidate: Sendable, Equatable {
+    /// Index into the route's located steps — the manoeuvre being rejoined at.
+    public let stepIndex: Int
+    public let point: Coordinate
+    /// Time from this manoeuvre to the destination **along the original route**.
+    ///
+    /// Estimated rather than requested: the route already knows its own distance and duration, so
+    /// the remaining distance scaled by its average speed costs nothing and needs no network. It is
+    /// only ever compared against other candidates on the same route, so a systematic error in the
+    /// average cancels out.
+    public let remainingTime: TimeInterval
+}
+
+/// The next few manoeuvres, each as a place the route could be picked up again.
+///
+/// Bounded because each candidate costs a routing request. Four covers the realistic cases — a
+/// missed turn, a deliberate detour of a junction or two — and Apple throttles well before ten.
+public func rejoinCandidates(
+    _ route: RouteOption, from stepIndex: Int, limit: Int = 4
+) -> [RejoinCandidate] {
+    let steps = route.steps.filter { $0.start != nil }
+    // `stepIndex` can be past the end — guidance runs off the last manoeuvre on the approach to the
+    // destination — and `9..<4` is a crash, not an empty range.
+    guard
+        stepIndex < steps.count, stepIndex >= 0,
+        route.travelTime > 0, route.distance.rawValue > 0
+    else { return [] }
+    let metresPerSecond = route.distance.rawValue / route.travelTime
+
+    return (stepIndex..<min(stepIndex + limit, steps.count)).compactMap { index in
+        guard let point = steps[index].start else { return nil }
+        // Everything still to drive once back on the route at this manoeuvre.
+        let remaining = steps[index...].reduce(0.0) { $0 + $1.distance.rawValue }
+        return RejoinCandidate(
+            stepIndex: index,
+            point: point,
+            remainingTime: remaining / metresPerSecond
+        )
+    }
+}
+
+/// The candidate that gets to the destination soonest.
+///
+/// The whole point of comparing rather than always taking the first: a rider who *deliberately*
+/// went a different way has not made a mistake to be undone. Sending them back to the turn they
+/// skipped is a U-turn plus the leg they just rode, and it loses to simply carrying on and picking
+/// the route up further along — which is what a rider means when they take a road they prefer.
+///
+/// `legTimes` is the time from where the rider is now to each candidate, in the same order. `nil`
+/// means that leg could not be routed, and the candidate is dropped rather than guessed at.
+public func bestRejoin(
+    _ candidates: [RejoinCandidate], legTimes: [TimeInterval?]
+) -> RejoinCandidate? {
+    zip(candidates, legTimes)
+        .compactMap { candidate, leg in leg.map { (candidate, $0 + candidate.remainingTime) } }
+        .min { $0.1 < $1.1 }?
+        .0
+}
+
 // MARK: - Stitching a way back on
 
 /// The rejoin route, followed by whatever was left of the original.

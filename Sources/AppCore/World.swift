@@ -127,6 +127,10 @@ public struct World: Sendable {
     /// distinguishable all the way to the screen.
     public let routes: @Sendable (Coordinate, Coordinate, RoutePreferences)
         -> Publisher<Result<[RouteOption], RouteError>, Never>
+    /// The quickest route to each of several targets, asked for concurrently. Used when rejoining a
+    /// route, where the candidates have to be compared before one can be picked.
+    public let routesToEach: @Sendable (Coordinate, [Coordinate], RoutePreferences)
+        -> Publisher<[RouteOption?], Never>
     // Domain config
     public let thresholds: [MPH]
     // Locale-dependent formatters

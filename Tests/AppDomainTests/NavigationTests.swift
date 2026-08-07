@@ -912,6 +912,91 @@ struct SkippedStepTests {
     }
 }
 
+@Suite("Where to rejoin")
+struct RejoinChoiceTests {
+    private func coordinate(_ latitude: Double) -> Coordinate {
+        Coordinate(latitude: Latitude(latitude), longitude: Longitude(-0.46))
+    }
+
+    /// Four manoeuvres a kilometre apart, 4 km and 8 minutes end to end.
+    private var route: RouteOption {
+        RouteOption(
+            name: "A", distance: Meters(4_000), travelTime: 480,
+            hasTolls: false, hasMotorways: false,
+            steps: [
+                RouteStep(instructions: "Left onto A", distance: Meters(1_000), notice: nil, start: coordinate(52.00)),
+                RouteStep(instructions: "Right onto B", distance: Meters(1_000), notice: nil, start: coordinate(52.01)),
+                RouteStep(instructions: "Right onto High Street", distance: Meters(1_000), notice: nil, start: coordinate(52.02)),
+                RouteStep(instructions: "Left onto C", distance: Meters(1_000), notice: nil, start: coordinate(52.03))
+            ],
+            shape: (0..<40).map { coordinate(52 + Double($0) / 1_000) }
+        )
+    }
+
+    @Test("Candidates are the next few manoeuvres, bounded")
+    func bounded() {
+        #expect(rejoinCandidates(route, from: 0, limit: 4).map(\.stepIndex) == [0, 1, 2, 3])
+        #expect(rejoinCandidates(route, from: 2, limit: 4).map(\.stepIndex) == [2, 3])
+    }
+
+    /// Rejoining later leaves less of the original still to ride, and the estimate has to reflect
+    /// that or every comparison would favour the earliest candidate.
+    @Test("Rejoining later leaves less of the route to finish")
+    func remainingShrinks() {
+        let candidates = rejoinCandidates(route, from: 0)
+        #expect(candidates[0].remainingTime > candidates[3].remainingTime)
+        // 4 km in 480 s, so the last kilometre is about two minutes.
+        #expect(abs(candidates[3].remainingTime - 120) < 1)
+    }
+
+    /// The case that motivates all of this: a rider who deliberately took a different road that
+    /// converges further along should carry on, not be sent back to the turn they skipped.
+    @Test("Carrying on beats a U-turn back to the missed turn")
+    func prefersConvergingAhead() {
+        let candidates = rejoinCandidates(route, from: 0)
+        // Going back to the first manoeuvre is a long way; the last is close ahead.
+        let legs: [TimeInterval?] = [400, 300, 200, 60]
+        #expect(bestRejoin(candidates, legTimes: legs)?.stepIndex == 3)
+    }
+
+    /// And the opposite must still work, or a genuine missed turn would never be corrected.
+    @Test("A genuine missed turn still goes back for it")
+    func goesBackWhenCloser() {
+        let candidates = rejoinCandidates(route, from: 0)
+        let legs: [TimeInterval?] = [20, 400, 600, 800]
+        #expect(bestRejoin(candidates, legTimes: legs)?.stepIndex == 0)
+    }
+
+    @Test("A candidate that could not be routed to is dropped, not guessed at")
+    func dropsUnroutable() {
+        let candidates = rejoinCandidates(route, from: 0)
+        let legs: [TimeInterval?] = [nil, nil, nil, 90]
+        #expect(bestRejoin(candidates, legTimes: legs)?.stepIndex == 3)
+    }
+
+    @Test("With nothing routable there is no winner")
+    func noneRoutable() {
+        let candidates = rejoinCandidates(route, from: 0)
+        #expect(bestRejoin(candidates, legTimes: [nil, nil, nil, nil]) == nil)
+    }
+
+    @Test("Past the last manoeuvre there is nowhere left to rejoin")
+    func pastTheEnd() {
+        #expect(rejoinCandidates(route, from: 9).isEmpty)
+    }
+
+    /// A route with no duration cannot yield an average speed, and dividing by it would be a crash
+    /// or an infinity that poisons every comparison.
+    @Test("A degenerate route yields no candidates rather than infinities")
+    func degenerate() {
+        let broken = RouteOption(
+            name: "", distance: Meters(0), travelTime: 0,
+            hasTolls: false, hasMotorways: false, steps: route.steps, shape: []
+        )
+        #expect(rejoinCandidates(broken, from: 0).isEmpty)
+    }
+}
+
 // MARK: - Badges
 
 @Suite("Route labels")

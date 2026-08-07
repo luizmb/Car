@@ -364,6 +364,7 @@ struct RefuelRecordingTests {
             completeAddress: world.completeAddress,
             resolveAddress: world.resolveAddress,
             routes: world.routes,
+            routesToEach: world.routesToEach,
             thresholds: world.thresholds,
             formatSpeed: world.formatSpeed,
             formatSpeedSpeech: world.formatSpeedSpeech,

@@ -8,6 +8,60 @@ import ReactiveConcurrency
 /// Separate from `AppFeature` because it is a small recursion rather than a reaction: a request, a
 /// judgement about the answer, and possibly a second request on relaxed terms. Written once here
 /// instead of inline, where the retry would have to be spelled out twice.
+/// Rejoining: compare several places to pick the route back up, and take the soonest.
+///
+/// The rule this replaces always aimed at the *next* manoeuvre, which is wrong whenever the rider
+/// left the route on purpose. Riding a preferred road that converges further along is not a mistake
+/// to be undone, and being sent back to the turn they skipped costs a U-turn plus the leg they just
+/// rode. Comparing candidates lets the obvious answer — carry on, pick it up ahead — win on its
+/// merits rather than by a special case.
+///
+/// Only the legs need routing. The remainder along the original is estimated from the route's own
+/// distance and duration, so four candidates cost one round trip's worth of waiting, not five
+/// requests in series.
+func rejoinRequest(
+    from position: Coordinate,
+    original: RouteOption,
+    fromStep stepIndex: Int,
+    preferences: RoutePreferences,
+    chosen: RoutePreferences,
+    finished: RerouteState,
+    world: World
+) -> Publisher<AppAction, Never> {
+    let candidates = rejoinCandidates(original, from: stepIndex)
+    guard !candidates.isEmpty else {
+        // Nothing left to rejoin at — past the last manoeuvre, so the destination is the only
+        // target and a plain replan is the honest answer.
+        return rerouteRequest(
+            from: position, to: original.shape.last ?? position,
+            preferences: preferences, chosen: chosen, original: original,
+            decision: .replan, fromStep: stepIndex, finished: finished, world: world
+        )
+    }
+
+    return world.routesToEach(position, candidates.map(\.point), preferences)
+        .map { legs -> Publisher<AppAction, Never> in
+            let times = legs.map { $0?.travelTime }
+            guard
+                let winner = bestRejoin(candidates, legTimes: times),
+                let index = candidates.firstIndex(of: winner),
+                let leg = legs[index]
+            else {
+                // Every leg failed. Fall back to a full replan rather than leaving the rider on a
+                // route they are not on.
+                return rerouteRequest(
+                    from: position, to: original.shape.last ?? position,
+                    preferences: preferences, chosen: chosen, original: original,
+                    decision: .replan, fromStep: stepIndex, finished: finished, world: world
+                )
+            }
+            return .just(.rerouted(
+                splice(rejoin: leg, onto: original, fromStep: winner.stepIndex), finished
+            ))
+        }
+        .switchToLatest()
+}
+
 func rerouteRequest(
     from position: Coordinate,
     to target: Coordinate,
@@ -28,13 +82,7 @@ func rerouteRequest(
 
             switch outcome {
             case let .routes(routes) where !routes.isEmpty:
-                // Rejoining keeps the rest of the route the rider chose; replanning replaces it.
-                // Routing straight to the destination after one missed turn is exactly how a single
-                // mistake becomes a completely different ride.
-                let route = decision == .rejoin
-                    ? splice(rejoin: routes[0], onto: original, fromStep: stepIndex)
-                    : routes[0]
-                return .just(.rerouted(route, finished))
+                return .just(.rerouted(routes[0], finished))
 
             case .excludedByPreferences:
                 // Routes exist and every one of them breaks a rule. The rider may well be *on* the

@@ -482,26 +482,27 @@ public enum AppFeature {
                 isRerouting: false
             )
 
-            // Rejoin aims at the next manoeuvre on the original; replan aims at the destination.
             let stepIndex = state.guidance.stepIndex
-            let steps = route.steps.filter { $0.start != nil }
-            let target: Coordinate? = decision == .rejoin
-                ? (stepIndex < steps.count ? steps[stepIndex].start : route.shape.last)
-                : route.shape.last
-            guard let target else { return .doNothing }
-
             let preferences = state.routePreferences
+            let destination = route.shape.last
             return .reduce { $0.reroute = starting }
                 .produce { ctx in
                     // The tone, not a sentence. A reroute is routine and usually follows a turn the
                     // rider knows they missed; being told about it in words is nagging.
                     let tone = ctx.environment.playRerouteTone() |> Effect<AppAction>.fireAndForget
-                    return tone <> rerouteRequest(
-                        from: position, to: target,
-                        preferences: preferences, chosen: preferences,
-                        original: route, decision: decision, fromStep: stepIndex,
-                        finished: finished, world: ctx.environment
-                    ).asEffect { $0 }
+                    let request = decision == .rejoin
+                        ? rejoinRequest(
+                            from: position, original: route, fromStep: stepIndex,
+                            preferences: preferences, chosen: preferences,
+                            finished: finished, world: ctx.environment
+                        )
+                        : rerouteRequest(
+                            from: position, to: destination ?? position,
+                            preferences: preferences, chosen: preferences,
+                            original: route, decision: decision, fromStep: stepIndex,
+                            finished: finished, world: ctx.environment
+                        )
+                    return tone <> request.asEffect { $0 }
                 }
         }
 
