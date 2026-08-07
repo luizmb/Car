@@ -133,6 +133,37 @@ struct WiringTests {
         #expect(state.query == "MK42")
     }
 
+    /// Position reaches the planner by fan-out from the location stream, which is affine: a fix
+    /// arriving while the planner is not on the stack lands nowhere. Open it between fixes and it
+    /// has no origin — for ever, if the bike is stationary and Core Location has settled, which is
+    /// exactly when a rider plans a route. Seen in the simulator: four fixes all session, all
+    /// before the screen existed, and the planner sat on "waiting for a GPS fix".
+    @Test("opening the planner seeds it with the last known fix")
+    func plannerSeedsFromLastFix() async {
+        let store = MainStore.app(world: .stub)
+        store.dispatch(
+            .speedMonitor(.locationUpdate(LocationUpdate(
+                speed: MPS(0), speedAccuracy: MPS(1), course: nil,
+                latitude: Latitude(52.13), longitude: Longitude(-0.46),
+                altitude: Meters(30), timestamp: Date(timeIntervalSince1970: 0),
+                horizontalAccuracy: Meters(5)
+            ))),
+            source: .init(file: #file, function: #function, line: #line)
+        )
+        for _ in 0..<10 { await Task.yield() }
+
+        // Pushed *after* the only fix, exactly as it happens when a rider stops and opens it.
+        store.dispatch(.navigation(.push(.navigate)), source: .init(file: #file, function: #function, line: #line))
+        store.dispatch(.navigate(.appeared), source: .init(file: #file, function: #function, line: #line))
+        for _ in 0..<10 { await Task.yield() }
+
+        guard case let .navigate(state)? = store.state.path.first else {
+            Issue.record("route planner entry missing"); return
+        }
+        #expect(state.canRoute)
+        #expect(state.latitude == Latitude(52.13))
+    }
+
     /// Routing needs an origin, and the only one that makes sense is the bike's own position. It
     /// arrives by fan-out from the single feature that owns the location stream — a wiring line that
     /// compiles perfectly well when deleted, which is what this whole suite exists for.

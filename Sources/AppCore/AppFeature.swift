@@ -345,6 +345,25 @@ public enum AppFeature {
 
         <> AppScopes.navigate.behavior(of: NavigationFeature.self)
 
+        // Seed the planner with where the bike already is.
+        //
+        // Position reaches it by fan-out from the location stream, which is affine: a fix arriving
+        // while the planner is not on the stack lands nowhere. So a planner opened *between* fixes
+        // starts with no origin and shows "waiting for a GPS fix" until the next one — for ever if
+        // the bike is stationary and Core Location has settled, which is exactly when a rider plans
+        // a route. The app already knows the last fix; there is no reason to make the screen wait
+        // for another.
+        <> Behavior<AppAction, AppState, World>.handle { action, context in
+            guard
+                AppAction.prism.navigate.preview(action)
+                    .flatMap(NavigationFeature.Action.prism.appeared.preview) != nil,
+                let last = context.stateBefore?.speedMonitor.lastLocation
+            else { return .doNothing }
+            return .produce { _ in
+                Effect.just(.navigate(.setPosition(last.latitude, last.longitude)))
+            }
+        }
+
         // The navigation session, owned here rather than by the planner.
         //
         // GO pops the planner, and the ride carries on against the *home* map — which is the one
