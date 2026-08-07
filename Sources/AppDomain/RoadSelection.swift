@@ -193,7 +193,8 @@ public func roadInfo(from candidate: RoadCandidate?, among candidates: [RoadCand
     guard let candidate else { return .unknown }
     let tags = bestTags(for: candidate, among: candidates)
     let (limit, origin) = parseLimitAndOrigin(
-        maxspeed: tags.maxspeed, highway: tags.highway, maxspeedType: tags.maxspeedType
+        maxspeed: tags.maxspeed, highway: tags.highway, maxspeedType: tags.maxspeedType,
+        lit: tags.lit
     )
     return RoadInfo(
         limit: limit, ref: tags.ref, name: tags.name,
@@ -217,19 +218,30 @@ func bestTags(
     // would be guesswork, and borrowing a limit from the wrong road is worse than defaulting.
     guard own.name != nil || own.ref != nil else { return own }
 
-    let sibling = candidates.first { other in
-        other.tags.name == own.name
-            && other.tags.ref == own.ref
-            && !(other.tags.maxspeed?.trimmingCharacters(in: .whitespaces).isEmpty ?? true)
+    let siblings = candidates.filter { other in
+        other.tags.name == own.name && other.tags.ref == own.ref
     }
-    guard let sibling else { return own }
+    let limitDonor = siblings.first { other in
+        !(other.tags.maxspeed?.trimmingCharacters(in: .whitespaces).isEmpty ?? true)
+    }
+    // Lamps borrow too, and it is sound where borrowing a limit across a village boundary would
+    // not be: every candidate here is within ~120 m of the rider, and street lighting does not
+    // change within a block of itself. OSM tags `lit` patchily — the A505 through Dunstable
+    // alternates tagged and untagged segments of the same road — and landing on an untagged one
+    // resurrected "national 60" lamps-in-view. Any sibling saying yes outweighs one saying no,
+    // because a phantom 30 embarrasses and a phantom 60 endangers.
+    let litValues = siblings.compactMap { $0.tags.lit?.lowercased() }
+    let borrowedLit = litValues.first { !["no", "disused"].contains($0) } ?? litValues.first
+
+    guard limitDonor != nil || (own.lit == nil && borrowedLit != nil) else { return own }
 
     return OverpassResponse.Element.Tags(
-        maxspeed: sibling.tags.maxspeed,
+        maxspeed: limitDonor?.tags.maxspeed ?? own.maxspeed,
         name: own.name,
         ref: own.ref,
         highway: own.highway,
-        maxspeedType: sibling.tags.maxspeedType ?? own.maxspeedType,
-        maxspeedVariable: sibling.tags.maxspeedVariable ?? own.maxspeedVariable
+        maxspeedType: limitDonor?.tags.maxspeedType ?? own.maxspeedType,
+        maxspeedVariable: limitDonor?.tags.maxspeedVariable ?? own.maxspeedVariable,
+        lit: own.lit ?? borrowedLit
     )
 }

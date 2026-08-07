@@ -421,12 +421,16 @@ public func navigationCameraDistance(speed: MPS, nextTurn: Meters?) -> Double {
 /// The early call scales with speed for the same reason ``lookaheadDistance`` does: 300 m is a
 /// comfortable twenty seconds at 30 mph and six at 70.
 public func guidanceDistances(speed: MPS) -> (early: Meters, imminent: Meters) {
-    let early = min(800, max(200, speed.rawValue * 20))
-    // The "now" call scales too. A fixed 40 m is four seconds at walking pace and *two* at 45 mph —
-    // and a fix only arrives each second, so a fast road could pass clean through the window
-    // between two of them and never announce the turn at all. Replayed against a real ride, that is
-    // exactly what happened at High Street.
-    let imminent = min(120, max(40, speed.rawValue * 4))
+    // Thirty seconds of warning, measured against a real ride, not guessed. The previous windows
+    // put the "now" call 3.5-6 s before every junction - the sentence takes three to four seconds
+    // to speak, so it *ended* as the rider entered - and the early call about twenty. A lane
+    // change and a gear change both have to happen before the turn, and both need the sentence
+    // finished first.
+    let early = min(1_200, max(300, speed.rawValue * 30))
+    // Eight seconds for the final call: enough to hear it, act, and arrive. The floor matters most
+    // - at town speeds the old 40 m floor was four seconds, and every measured call on a real
+    // ride sat between 3.5 and 6.
+    let imminent = min(250, max(80, speed.rawValue * 8))
     return (Meters(early), Meters(imminent))
 }
 
@@ -747,7 +751,14 @@ public func guidance(
         )
     }
 
-    if remaining <= windows.early.rawValue, state.stage < .early {
+    if
+        remaining <= windows.early.rawValue,
+        // Only when the early call still buys anything. Inside about one-and-a-half imminent
+        // windows the "now" call is seconds away, and a real ride produced "In 40 m, turn left"
+        // followed one second later by "Turn left" - two sentences for one junction, the second
+        // interrupting the first's usefulness.
+        remaining > windows.imminent.rawValue * 1.5,
+        state.stage < .early {
         next.stage = .early
         return GuidanceUpdate(
             announcement: "In \(formatDistance(Meters(remaining))), "
@@ -840,6 +851,11 @@ public struct RerouteState: Sendable, Equatable {
     /// Counted in fixes rather than seconds because the domain has no clock, and a fix a second is
     /// the only tick it needs.
     public var reroutingFixes: Int
+    /// Fixes spent on the route since the last deviation. The forgiveness clock: three quarters
+    /// of a minute back on the line and past mistakes stop counting toward the replan threshold —
+    /// a rider who deviated twice this morning has not earned a replan for this afternoon's
+    /// missed turn.
+    public var onRouteFixes: Int
     /// Fixes to wait after a reroute completes before another may start.
     ///
     /// Without it, a rider still off the *new* route — stopped at a light beside it, say — triggers
@@ -854,13 +870,15 @@ public struct RerouteState: Sendable, Equatable {
         deviations: Int = 0,
         isRerouting: Bool = false,
         reroutingFixes: Int = 0,
-        cooldownFixes: Int = 0
+        cooldownFixes: Int = 0,
+        onRouteFixes: Int = 0
     ) {
         self.offRouteFixCount = offRouteFixCount
         self.deviations = deviations
         self.isRerouting = isRerouting
         self.reroutingFixes = reroutingFixes
         self.cooldownFixes = cooldownFixes
+        self.onRouteFixes = onRouteFixes
     }
 }
 
@@ -897,10 +915,33 @@ public func rerouteDecision(
 /// poor connection, short enough that a rider who has gone the wrong way is not abandoned.
 public let reroutePatienceFixes: Int = 30
 
+/// How long back on the route before past deviations are forgiven.
+public let deviationForgivenessFixes: Int = 45
+
+/// The cooldown after `deviations` reroutes, escalating.
+///
+/// A rider who keeps not following the routes offered is not going to follow the next one either —
+/// ten minutes of a real ride produced a fresh set of instructions every fifteen seconds, twenty
+/// spoken sentences about roads the rider never intended to take. Each successive deviation
+/// doubles the quiet period, up to two minutes: the reroute still happens, but the machine stops
+/// narrating its own persistence.
+public func rerouteCooldown(afterDeviations deviations: Int) -> Int {
+    min(120, rerouteCooldownFixes << min(3, max(0, deviations - 1)))
+}
+
 public func trackingRoute(_ state: RerouteState, distanceOff: Double) -> RerouteState {
     var next = state
     next.offRouteFixCount = distanceOff > offRouteMetres ? state.offRouteFixCount + 1 : 0
     next.cooldownFixes = max(0, state.cooldownFixes - 1)
+    if distanceOff <= offRouteMetres {
+        next.onRouteFixes = state.onRouteFixes + 1
+        if next.onRouteFixes >= deviationForgivenessFixes {
+            next.deviations = 0
+            next.onRouteFixes = 0
+        }
+    } else {
+        next.onRouteFixes = 0
+    }
     guard state.isRerouting else { return next }
     next.reroutingFixes = state.reroutingFixes + 1
     if next.reroutingFixes > reroutePatienceFixes {

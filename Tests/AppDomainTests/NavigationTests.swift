@@ -408,19 +408,34 @@ struct GuidanceTests {
         #expect(again.announcement == nil)
     }
 
-    /// 300 m is a comfortable twenty seconds at 30 mph and six at 70, which is why the early window
-    /// scales rather than being a constant.
+    /// Thirty seconds of warning and eight for the final call — numbers measured against a real
+    /// ride, where the old windows put every "now" call 3.5–6 s before the junction: the sentence
+    /// itself takes three to four seconds to speak, so it ended as the rider entered.
     @Test("The early window grows with speed")
     func windowScalesWithSpeed() {
         #expect(guidanceDistances(speed: MPS(13)).early.rawValue < guidanceDistances(speed: MPS(31)).early.rawValue)
         // Clamped at both ends, so it is neither useless when crawling nor absurd on a motorway.
-        #expect(guidanceDistances(speed: MPS(0)).early == Meters(200))
-        #expect(guidanceDistances(speed: MPS(100)).early == Meters(800))
-        // The "now" call scales too: a fixed 40 m is two seconds at 45 mph, and with a fix a
-        // second a fast road can pass clean through the window between two of them.
-        #expect(guidanceDistances(speed: MPS(0)).imminent == Meters(40))
-        #expect(guidanceDistances(speed: MPS(20)).imminent == Meters(80))
-        #expect(guidanceDistances(speed: MPS(100)).imminent == Meters(120))
+        #expect(guidanceDistances(speed: MPS(0)).early == Meters(300))
+        #expect(guidanceDistances(speed: MPS(100)).early == Meters(1_200))
+        // The "now" call scales too: with a fix a second a fast road can pass clean through a
+        // narrow window between two of them.
+        #expect(guidanceDistances(speed: MPS(0)).imminent == Meters(80))
+        #expect(guidanceDistances(speed: MPS(20)).imminent == Meters(160))
+        #expect(guidanceDistances(speed: MPS(100)).imminent == Meters(250))
+    }
+
+    /// A rider close enough for the "now" call gains nothing from an "In 40 m…" first — a real
+    /// ride produced both sentences one second apart for the same junction.
+    @Test("The early call is skipped when the now call is seconds away")
+    func earlySkippedNearTheJunction() {
+        // ~111 m out at walking pace: inside the early window's 300 m floor, but within 1.5× the
+        // imminent window's 80 m floor — so the early call must stay quiet and wait for the "now".
+        let update = guidance(
+            route: routeWithSteps(2), at: at(52.009), speed: MPS(0),
+            state: GuidanceState(), formatDistance: metres
+        )
+        #expect(update.announcement == nil)
+        #expect(update.state.stage == .none)
     }
 
     @Test("Only the first character is lowercased, so road names survive")

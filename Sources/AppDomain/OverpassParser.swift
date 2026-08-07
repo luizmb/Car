@@ -13,9 +13,14 @@ public struct OverpassResponse: Decodable, Sendable {
             public let maxspeedType: String?    // OSM key: "maxspeed:type"
             /// OSM key `maxspeed:variable` — smart motorways with gantry signs.
             public let maxspeedVariable: String?
+            /// OSM key `lit` — street lighting. In the UK this is law, not decoration: a road with
+            /// lamps and no signs is a *restricted road*, 30 mph, whatever its class. The tag is
+            /// what distinguishes the A505 through a town (lamps, 30) from the same A505 in the
+            /// fields (none, 60) when neither segment carries a `maxspeed`.
+            public let lit: String?
 
             enum CodingKeys: String, CodingKey {
-                case maxspeed, name, ref, highway
+                case maxspeed, name, ref, highway, lit
                 case maxspeedType = "maxspeed:type"
                 case maxspeedVariable = "maxspeed:variable"
             }
@@ -26,7 +31,8 @@ public struct OverpassResponse: Decodable, Sendable {
             /// can drift.
             public init(
                 maxspeed: String?, name: String?, ref: String?, highway: String?,
-                maxspeedType: String? = nil, maxspeedVariable: String? = nil
+                maxspeedType: String? = nil, maxspeedVariable: String? = nil,
+                lit: String? = nil
             ) {
                 self.maxspeed = maxspeed
                 self.name = name
@@ -34,6 +40,7 @@ public struct OverpassResponse: Decodable, Sendable {
                 self.highway = highway
                 self.maxspeedType = maxspeedType
                 self.maxspeedVariable = maxspeedVariable
+                self.lit = lit
             }
         }
         public let tags: Tags?
@@ -191,16 +198,19 @@ public func parseRoadInfo(
 
 /// Returns the parsed limit together with how it was arrived at.
 func parseLimitAndOrigin(
-    maxspeed: String?, highway: String?, maxspeedType: String?
+    maxspeed: String?, highway: String?, maxspeedType: String?, lit: String? = nil
 ) -> (RoadSpeedLimit, LimitOrigin) {
     guard let raw = maxspeed?.lowercased().trimmingCharacters(in: .whitespaces), !raw.isEmpty else {
         // No explicit tag does not mean no limit. In the UK an untagged road is subject to the
         // default for its class, and that class is known — so resolve it rather than reporting
         // `.unknown` and losing the over/under announcements entirely.
-        return resolveUntagged(highway: highway, maxspeedType: maxspeedType)
+        return resolveUntagged(highway: highway, maxspeedType: maxspeedType, lit: lit)
     }
     if raw == "national" {
-        return resolveUntagged(highway: highway, maxspeedType: maxspeedType)
+        // A mapper wrote "national" because they saw the derestriction sign — the white circle
+        // with the diagonal. Signs beat lamps, so `lit` deliberately does not reach this branch:
+        // an NSL sign on a lit road means exactly what it says.
+        return resolveUntagged(highway: highway, maxspeedType: maxspeedType, lit: nil)
     }
     guard let mph = parseMaxspeedMPH(raw) else { return (.unknown, .unattributed) }
     return (.value(mph), .signed)
@@ -231,9 +241,9 @@ func parseMaxspeedMPH(_ raw: String?) -> MPH? {
 /// *national speed limit*; the third is not, and keeping them apart is the whole point of returning
 /// an origin rather than a boolean — see `LimitOrigin`.
 ///
-/// Priority: `maxspeed:type` > `highway` classification > `.national` (truly ambiguous).
+/// Priority: `maxspeed:type` > `lit` > `highway` classification > `.national` (truly ambiguous).
 private func resolveUntagged(
-    highway: String?, maxspeedType: String?
+    highway: String?, maxspeedType: String?, lit: String?
 ) -> (RoadSpeedLimit, LimitOrigin) {
     // maxspeed:type is the most authoritative — set by mappers who know the exact context.
     if let type = maxspeedType?.lowercased() {
@@ -244,7 +254,18 @@ private func resolveUntagged(
         default: break
         }
     }
-    let resolved: (RoadSpeedLimit, LimitOrigin) = switch highway?.lowercased() {
+    let classOf = highway?.lowercased()
+    // Street lamps, no signs: a *restricted road* — 30 mph by law, whatever the class. This is the
+    // rule the class table below cannot see, and skipping it announced "national speed limit, 60"
+    // on the A505 through Dunstable — an untagged urban primary — on a real ride, twice. Lamps
+    // never restrict a motorway, which keeps its 70. `lit=no` and its variants fall through to the
+    // class defaults, exactly as the law falls back when the lamps stop.
+    if
+        let lit = lit?.lowercased(), !["no", "disused"].contains(lit),
+        classOf != "motorway", classOf != "motorway_link" {
+        return (.value(MPH(30)), .builtUpArea)
+    }
+    let resolved: (RoadSpeedLimit, LimitOrigin) = switch classOf {
     case "motorway", "motorway_link":
         (.value(MPH(70)), .nationalSpeedLimit)
     case "trunk":

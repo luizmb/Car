@@ -274,3 +274,134 @@ struct OverpassRequestTests {
         )
     }
 }
+
+// MARK: - Street lamps
+
+/// The rule these encode is the Road Traffic Regulation Act's own: a road with street lamps and no
+/// signs is a *restricted road*, 30 mph, whatever its class. Skipping it announced "national speed
+/// limit, 60" on the A505 through Dunstable — an untagged, lamp-lined urban primary — twice on one
+/// real ride.
+@Suite("Lit roads")
+struct LitRoadTests {
+    @Test("An untagged lit primary is a restricted road: 30")
+    func litPrimary() {
+        let (limit, origin) = parseLimitAndOrigin(
+            maxspeed: nil, highway: "primary", maxspeedType: nil, lit: "yes"
+        )
+        #expect(limit == .value(MPH(30)))
+        #expect(origin == .builtUpArea)
+    }
+
+    @Test("Lamp tags that mean lamps all count, not only 'yes'")
+    func litVariants() {
+        for value in ["24/7", "automatic", "sunset-sunrise", "limited"] {
+            let (limit, _) = parseLimitAndOrigin(
+                maxspeed: nil, highway: "tertiary", maxspeedType: nil, lit: value
+            )
+            #expect(limit == .value(MPH(30)), "lit=\(value) should read as lamps")
+        }
+    }
+
+    @Test("An explicitly unlit primary keeps the rural default")
+    func unlitPrimary() {
+        let (limit, origin) = parseLimitAndOrigin(
+            maxspeed: nil, highway: "primary", maxspeedType: nil, lit: "no"
+        )
+        #expect(limit == .value(MPH(60)))
+        #expect(origin == .nationalSpeedLimit)
+    }
+
+    @Test("Signs beat lamps: maxspeed=national on a lit road stays national")
+    func nslSignOnLitRoad() {
+        // A mapper wrote "national" because they saw the derestriction sign — the one legal way a
+        // lit road is not restricted.
+        let (limit, origin) = parseLimitAndOrigin(
+            maxspeed: "national", highway: "primary", maxspeedType: nil, lit: "yes"
+        )
+        #expect(limit == .value(MPH(60)))
+        #expect(origin == .nationalSpeedLimit)
+    }
+
+    @Test("maxspeed:type beats lamps too")
+    func nslTypeOnLitRoad() {
+        let (limit, _) = parseLimitAndOrigin(
+            maxspeed: nil, highway: "primary", maxspeedType: "GB:nsl_single", lit: "yes"
+        )
+        #expect(limit == .value(MPH(60)))
+    }
+
+    @Test("Lamps never restrict a motorway")
+    func litMotorway() {
+        let (limit, _) = parseLimitAndOrigin(
+            maxspeed: nil, highway: "motorway", maxspeedType: nil, lit: "yes"
+        )
+        #expect(limit == .value(MPH(70)))
+    }
+
+    @Test("A signed limit is untouched by lighting")
+    func signedBeatsEverything() {
+        let (limit, origin) = parseLimitAndOrigin(
+            maxspeed: "40 mph", highway: "primary", maxspeedType: nil, lit: "yes"
+        )
+        #expect(limit == .value(MPH(40)))
+        #expect(origin == .signed)
+    }
+}
+
+/// OSM tags `lit` segment by segment and unevenly — the A505 through Dunstable alternates tagged
+/// and untagged ways of the same road. Candidates all sit within ~120 m of the rider, where the
+/// lighting cannot differ, so a sibling's lamps are this stretch's lamps.
+@Suite("Borrowed lamps")
+struct BorrowedLampTests {
+    private func candidate(
+        lit: String?, maxspeed: String? = nil, lat: Double
+    ) -> RoadCandidate {
+        RoadCandidate(
+            tags: OverpassResponse.Element.Tags(
+                maxspeed: maxspeed, name: "Dunstable Road", ref: "A505", highway: "primary",
+                maxspeedType: nil, maxspeedVariable: nil, lit: lit
+            ),
+            points: [(Latitude(lat), Longitude(-0.48)), (Latitude(lat), Longitude(-0.47))]
+        )
+    }
+
+    @Test("An untagged segment inherits a nearby sibling's lamps")
+    func inheritsLamps() {
+        let own = candidate(lit: nil, lat: 51.884)
+        let sibling = candidate(lit: "yes", lat: 51.8845)
+        let info = roadInfo(from: own, among: [own, sibling])
+        #expect(info.limit == .value(MPH(30)))
+        #expect(info.origin == .builtUpArea)
+    }
+
+    @Test("A yes outweighs a no among siblings")
+    func yesWins() {
+        let own = candidate(lit: nil, lat: 51.884)
+        let dark = candidate(lit: "no", lat: 51.8845)
+        let bright = candidate(lit: "yes", lat: 51.8846)
+        let info = roadInfo(from: own, among: [own, dark, bright])
+        #expect(info.limit == .value(MPH(30)))
+    }
+
+    @Test("A different road's lamps are not borrowed")
+    func strangersKeepTheirLamps() {
+        let own = candidate(lit: nil, lat: 51.884)
+        let other = RoadCandidate(
+            tags: OverpassResponse.Element.Tags(
+                maxspeed: nil, name: "Chiltern Road", ref: nil, highway: "residential",
+                maxspeedType: nil, maxspeedVariable: nil, lit: "yes"
+            ),
+            points: [(Latitude(51.8841), Longitude(-0.48)), (Latitude(51.8841), Longitude(-0.47))]
+        )
+        let info = roadInfo(from: own, among: [own, other])
+        #expect(info.limit == .value(MPH(60)))   // rural default stands; the stranger is ignored
+    }
+
+    @Test("The segment's own tag beats every sibling")
+    func ownTagWins() {
+        let own = candidate(lit: "no", lat: 51.884)
+        let sibling = candidate(lit: "yes", lat: 51.8845)
+        let info = roadInfo(from: own, among: [own, sibling])
+        #expect(info.limit == .value(MPH(60)))
+    }
+}
