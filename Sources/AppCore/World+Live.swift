@@ -431,10 +431,17 @@ extension World {
                 Publisher.future { journeyLog.append(event) }
             },
             speak: { text in
-                Publisher.future { DispatchQueue.main.async { speech.speak(text) } }
+                // Every utterance, with the time it was handed over. Step transitions were already
+                // logged and were not enough: they show which manoeuvre is current, not what the
+                // rider actually heard or when. Told that an instruction arrived one junction
+                // early, there was no way to tell a wrong step from the right step at the wrong
+                // moment from something arriving late — three different bugs.
+                rideLog.append("say! \(text)")
+                return Publisher.future { DispatchQueue.main.async { speech.speak(text) } }
             },
             speakQueued: { text in
-                Publisher.future { DispatchQueue.main.async { speech.enqueue(text) } }
+                rideLog.append("say \(text)")
+                return Publisher.future { DispatchQueue.main.async { speech.enqueue(text) } }
             },
             speakSequence: { texts, gap in
                 Publisher.future { DispatchQueue.main.async { speech.speakSequence(texts, gap: gap) } }

@@ -383,6 +383,16 @@ public struct GuidanceState: Sendable, Equatable {
     /// metres from where the bike is parked, so pressing GO consumed it on the spot and the very
     /// first instruction shown was the *second* turn of the route.
     public var closest: Double
+    /// Whether the announcement just made already covered the *next* manoeuvre too.
+    ///
+    /// Chaining says two things at once — "turn right onto Markyate St Lane, then in 40 metres keep
+    /// left" — and the second one then arrived again seconds later on its own, because passing the
+    /// first leaves the rider already inside the second's window. That is what makes the whole
+    /// sequence run ahead: each pair spends two announcements to cover two manoeuvres but only one
+    /// junction's worth of road, so by the second junction the *third* instruction is current.
+    ///
+    /// Carried so the covered step can be entered already-announced rather than said twice.
+    public var nextAlreadyAnnounced: Bool
     /// Set once the last step has been passed, so arrival is announced exactly once.
     public var arrived: Bool
 
@@ -390,11 +400,13 @@ public struct GuidanceState: Sendable, Equatable {
         stepIndex: Int = 0,
         stage: GuidanceStage = .none,
         closest: Double = .greatestFiniteMagnitude,
+        nextAlreadyAnnounced: Bool = false,
         arrived: Bool = false
     ) {
         self.stepIndex = stepIndex
         self.stage = stage
         self.closest = closest
+        self.nextAlreadyAnnounced = nextAlreadyAnnounced
         self.arrived = arrived
     }
 }
@@ -434,6 +446,12 @@ func formatGap(_ distance: Meters) -> String {
 /// **Spoken only.** The banner deliberately keeps showing the immediate next manoeuvre alone, since
 /// a glance has to answer one question, and the chained pair is twice the text for the half of it
 /// that matters right now.
+/// Whether the instruction at `index` carries the next one with it.
+public func chains(_ steps: [RouteStep], from index: Int, within: Double = chainWithinMetres) -> Bool {
+    guard let step = steps[safe: index] else { return false }
+    return step.distance.rawValue <= within && steps[safe: index + 1] != nil
+}
+
 public func chainedInstruction(
     _ steps: [RouteStep], from index: Int, within: Double = chainWithinMetres
 ) -> String {
@@ -502,12 +520,17 @@ public func guidanceBanner(
     )
 }
 
-/// Move on to the next manoeuvre with nothing carried over from this one.
+/// Move on to the next manoeuvre.
+///
+/// Carries one thing over: whether that manoeuvre has already been spoken as the tail of a chained
+/// announcement. It enters at `.imminent` if so — nothing left to say about it — which is what stops
+/// a close pair from spending two announcements and pulling everything after it forward.
 private func advanced(_ state: GuidanceState) -> GuidanceState {
     var next = state
     next.stepIndex += 1
-    next.stage = .none
+    next.stage = state.nextAlreadyAnnounced ? .imminent : .none
     next.closest = .greatestFiniteMagnitude
+    next.nextAlreadyAnnounced = false
     return next
 }
 
@@ -576,6 +599,7 @@ public func guidance(
 
     if distance.rawValue <= windows.imminent.rawValue, state.stage < .imminent {
         next.stage = .imminent
+        next.nextAlreadyAnnounced = chains(steps, from: state.stepIndex)
         return GuidanceUpdate(
             announcement: chainedInstruction(steps, from: state.stepIndex), state: next
         )

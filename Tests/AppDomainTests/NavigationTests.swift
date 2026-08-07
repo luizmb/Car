@@ -997,6 +997,95 @@ struct RejoinChoiceTests {
     }
 }
 
+@Suite("A chained pair is announced once, not twice")
+struct ChainDriftTests {
+    private func metres(_ m: Meters) -> String { "\(Int(m.rawValue)) m" }
+
+    private func coordinate(_ latitude: Double) -> Coordinate {
+        Coordinate(latitude: Latitude(latitude), longitude: Longitude(-0.46))
+    }
+
+    /// A fork: two manoeuvres 44 m apart, then a long run to a third.
+    private var route: RouteOption {
+        RouteOption(
+            name: "Markyate St Lane", distance: Meters(5_000), travelTime: 600,
+            hasTolls: false, hasMotorways: false,
+            steps: [
+                RouteStep(instructions: "Turn right onto Markyate St Lane", distance: Meters(44),
+                          notice: nil, start: coordinate(52.0100)),
+                RouteStep(instructions: "Keep left onto Markyate St Lane", distance: Meters(4_000),
+                          notice: nil, start: coordinate(52.0104)),
+                RouteStep(instructions: "Turn left onto Hicks Road", distance: Meters(500),
+                          notice: nil, start: coordinate(52.0464))
+            ],
+            shape: (0..<60).map { coordinate(52 + Double($0) / 1_000) }
+        )
+    }
+
+    /// The observed drift, in one sequence. "A, then in 40 metres B" is said at A; B must not then
+    /// be said again on its own moments later, because passing A already leaves the rider inside
+    /// B's window — that is what spends two announcements on one junction's worth of road and puts
+    /// the *third* instruction on the second junction.
+    @Test("The second of a chained pair is not announced again on its own")
+    func chainedStepIsNotRepeated() {
+        // Reaching the fork announces both.
+        let atFork = guidance(
+            route: route, at: coordinate(52.00985), speed: MPS(13),
+            state: GuidanceState(), formatDistance: metres
+        )
+        #expect(atFork.announcement?.contains("Turn right onto Markyate St Lane") == true)
+        #expect(atFork.announcement?.contains("keep left onto Markyate St Lane") == true)
+        #expect(atFork.state.nextAlreadyAnnounced)
+
+        // Passing it moves on to the second, already spoken.
+        let passed = guidance(
+            route: route, at: coordinate(52.0106), speed: MPS(13),
+            state: atFork.state, formatDistance: metres
+        )
+        #expect(passed.state.stepIndex == 1)
+        #expect(passed.state.stage == .imminent)
+        #expect(passed.announcement == nil)
+
+        // And sitting right at the second says nothing, rather than repeating it.
+        let atSecond = guidance(
+            route: route, at: coordinate(52.01042), speed: MPS(13),
+            state: passed.state, formatDistance: metres
+        )
+        #expect(atSecond.announcement == nil)
+    }
+
+    /// The third instruction must still arrive — on its own approach, not at the second junction.
+    @Test("The instruction after a chained pair waits for its own approach")
+    func thirdWaitsItsTurn() {
+        var state = GuidanceState(stepIndex: 1, stage: .imminent, closest: 10)
+        // Leaving the fork advances to the long leg's end, which is 4 km off.
+        let leaving = guidance(
+            route: route, at: coordinate(52.0110), speed: MPS(13),
+            state: state, formatDistance: metres
+        )
+        #expect(leaving.state.stepIndex == 2)
+        state = leaving.state
+
+        // Well down the long road, still nothing to say about a turn kilometres away.
+        let midway = guidance(
+            route: route, at: coordinate(52.0200), speed: MPS(13),
+            state: state, formatDistance: metres
+        )
+        #expect(midway.announcement == nil)
+    }
+
+    /// A step with a long run after it never chained, so nothing changes for it.
+    @Test("An isolated manoeuvre is unaffected")
+    func isolatedStep() {
+        let update = guidance(
+            route: route, at: coordinate(52.0461), speed: MPS(13),
+            state: GuidanceState(stepIndex: 2), formatDistance: metres
+        )
+        #expect(update.announcement == "Turn left onto Hicks Road")
+        #expect(!update.state.nextAlreadyAnnounced)
+    }
+}
+
 // MARK: - Badges
 
 @Suite("Route labels")
