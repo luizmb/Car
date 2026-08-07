@@ -22,20 +22,21 @@ import ReactiveConcurrency
 /// requests in series.
 func rejoinRequest(
     from position: Coordinate,
+    heading: Course?,
     original: RouteOption,
     fromStep stepIndex: Int,
     preferences: RoutePreferences,
-    chosen: RoutePreferences,
+    chosen chosenPreferences: RoutePreferences,
     finished: RerouteState,
     world: World
 ) -> Publisher<AppAction, Never> {
-    let candidates = rejoinCandidates(original, from: stepIndex, at: position)
+    let candidates = rejoinCandidates(original, from: stepIndex, at: position, heading: heading)
     guard !candidates.isEmpty else {
         // Nothing left to rejoin at — past the last manoeuvre, so the destination is the only
         // target and a plain replan is the honest answer.
         return rerouteRequest(
             from: position, to: original.shape.last ?? position,
-            preferences: preferences, chosen: chosen, original: original,
+            preferences: preferences, chosen: chosenPreferences, original: original,
             decision: .replan, fromStep: stepIndex, finished: finished, world: world
         )
     }
@@ -43,22 +44,40 @@ func rejoinRequest(
     return world.routesToEach(position, candidates.map(\.point), preferences)
         .map { legs -> Publisher<AppAction, Never> in
             let times = legs.map { $0?.travelTime }
+            // Why this candidate and not another. Every reroute so far has been diagnosed by
+            // reasoning about what *should* have been chosen, and that has been wrong twice: a
+            // candidate can lose because it is genuinely slower, or because its leg failed to route
+            // and it was dropped, and those two look identical from outside.
+            let scores = zip(candidates, times)
+                .map { candidate, leg in
+                    "step\(candidate.stepIndex)="
+                        + (leg.map { "\(Int($0))+\(Int(candidate.remainingTime))=\(Int($0 + candidate.remainingTime))" }
+                            ?? "failed")
+                }
+                .joined(separator: " ")
+            let chosen = bestRejoin(candidates, legTimes: times)
+            let logged = world.logAction("rejoin \(scores) -> step\(chosen.map { String($0.stepIndex) } ?? "none")")
+
             guard
-                let winner = bestRejoin(candidates, legTimes: times),
+                let winner = chosen,
                 let index = candidates.firstIndex(of: winner),
                 let leg = legs[safe: index] ?? nil
             else {
                 // Every leg failed. Fall back to a full replan rather than leaving the rider on a
                 // route they are not on.
-                return rerouteRequest(
-                    from: position, to: original.shape.last ?? position,
-                    preferences: preferences, chosen: chosen, original: original,
-                    decision: .replan, fromStep: stepIndex, finished: finished, world: world
-                )
+                return logged.flatMap { _ in
+                    rerouteRequest(
+                        from: position, to: original.shape.last ?? position,
+                        preferences: preferences, chosen: chosenPreferences, original: original,
+                        decision: .replan, fromStep: stepIndex, finished: finished, world: world
+                    )
+                }
             }
-            return .just(.rerouted(
-                splice(rejoin: leg, onto: original, fromStep: winner.stepIndex), finished
-            ))
+            return logged.flatMap { _ in
+                Publisher<AppAction, Never>.just(.rerouted(
+                    splice(rejoin: leg, onto: original, fromStep: winner.stepIndex), finished
+                ))
+            }
         }
         .switchToLatest()
 }

@@ -513,7 +513,8 @@ public enum AppFeature {
                     let tone = ctx.environment.playRerouteTone() |> Effect<AppAction>.fireAndForget
                     let request = decision == .rejoin
                         ? rejoinRequest(
-                            from: position, original: route, fromStep: stepIndex,
+                            from: position, heading: update.course,
+                            original: route, fromStep: stepIndex,
                             preferences: preferences, chosen: preferences,
                             finished: finished, world: ctx.environment
                         )

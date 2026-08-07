@@ -825,6 +825,9 @@ public func rejoinCandidates(
     from stepIndex: Int,
     /// Where the rider is, so candidates already behind them can be dropped.
     at position: Coordinate? = nil,
+    /// Which way they are going, which is the only usable answer to "is that behind me" once too
+    /// far off the route to measure progress along it.
+    heading: Course? = nil,
     limit: Int = 4
 ) -> [RejoinCandidate] {
     let steps = route.steps.filter { $0.start != nil }
@@ -852,6 +855,23 @@ public func rejoinCandidates(
             let junction = distanceAlongRoute(route.shape, to: point),
             junction < progress {
             return nil
+        }
+        // And when progress cannot be measured — more than a couple of hundred metres off the
+        // route, which is exactly when a reroute happens — direction of travel is the only thing
+        // left that says what is behind. Without it the rider was sent back down roads they had
+        // just ridden, one reroute after another.
+        //
+        // A wide cone: rejoining legitimately involves turning, and only something genuinely
+        // behind the shoulder should be ruled out.
+        if
+            progress == nil,
+            let heading,
+            let position,
+            distanceMetres(from: position.pair, to: point.pair) > 100 {
+            var apart = abs(bearing(from: position.pair, to: point.pair) - heading.rawValue)
+                .truncatingRemainder(dividingBy: 360)
+            if apart > 180 { apart = 360 - apart }
+            if apart > 120 { return nil }
         }
         // Everything still to drive once back on the route at this manoeuvre.
         let remaining = steps.dropFirst(index).reduce(0.0) { $0 + $1.distance.rawValue }

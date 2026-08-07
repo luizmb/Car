@@ -993,12 +993,26 @@ struct RejoinChoiceTests {
         #expect(ahead.contains(3))
     }
 
-    /// Too far off the route to place, and nothing can be ruled out — every candidate stands rather
-    /// than the rider being left with none.
-    @Test("Far off the route, every candidate is still offered")
+    /// Too far off the route to place, and with no heading either, nothing can be ruled out.
+    @Test("Far off the route with no heading, every candidate is still offered")
     func keepsAllWhenUnplaceable() {
         let miles = Coordinate(latitude: Latitude(53.5), longitude: Longitude(-2.0))
         #expect(rejoinCandidates(route, from: 0, at: miles).count == 4)
+    }
+
+    /// The one that kept happening: too far off the route to measure progress — which is exactly
+    /// when a reroute fires — so nothing ruled out the manoeuvres behind, and the rider was sent
+    /// back down roads they had just ridden, one reroute after another.
+    @Test("Far off the route, a manoeuvre behind the shoulder is still ruled out")
+    func headingRulesOutBehind() {
+        // Past the end of the route and still heading north: every manoeuvre is due south, so
+        // every one of them is behind.
+        let past = Coordinate(latitude: Latitude(52.05), longitude: Longitude(-0.46))
+        #expect(rejoinCandidates(route, from: 0, at: past, heading: Course(0)).isEmpty)
+
+        // Turn around and they are ahead again.
+        let turned = rejoinCandidates(route, from: 0, at: past, heading: Course(180))
+        #expect(turned.map(\.stepIndex) == [0, 1, 2, 3])
     }
 
     @Test("Candidates are the next few manoeuvres, bounded")
