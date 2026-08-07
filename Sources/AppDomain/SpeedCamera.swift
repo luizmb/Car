@@ -72,7 +72,7 @@ public func overpassCameraRequest(
     latitude: Latitude, longitude: Longitude, radius: Meters,
     endpoint: OverpassEndpoint = .cameras,
     hostIndex: Int = 0
-) -> URLRequest {
+) -> URLRequest? {
     let r = Int(radius.rawValue)
     let around = "around:\(r),\(latitude.rawValue),\(longitude.rawValue)"
     let query = """

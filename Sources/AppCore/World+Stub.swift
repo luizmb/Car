@@ -41,7 +41,9 @@ public extension World {
             parseNumber: { parseDecimal($0).map(Result.success) ?? .failure(.unparseable($0)) },
             formatNumber: { .success(String($0)) },
             now: { Date(timeIntervalSince1970: 0) },
-            newID: { UUID(uuidString: "00000000-0000-0000-0000-000000000000")! },
+            // A fixed all-zero UUID, built without an unwrap. `UUID(uuid:)` takes the bytes
+            // directly, so there is no parse to fail.
+            newID: { UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)) },
             logAction: { _ in .empty() },
             logJourney: { _ in .empty() },
             speak: { _ in .empty() },

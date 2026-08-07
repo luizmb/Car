@@ -79,7 +79,9 @@ func nearestSegment(
         var bearing = atan2(dx, dy) * 180 / .pi
         if bearing < 0 { bearing += 360 }
 
-        if best == nil || distance < best!.distance {
+        // `map ?? true` rather than a nil check and a force unwrap: the unwrap is safe only
+        // because of the check beside it, and that is a pairing a later edit can silently break.
+        if best.map({ distance < $0.distance }) ?? true {
             best = (distance, bearing)
         }
     }

@@ -40,7 +40,7 @@ public func overpassStationRequest(
     latitude: Latitude, longitude: Longitude, radius: Meters = Meters(150),
     endpoint: OverpassEndpoint = .primary,
     hostIndex: Int = 0
-) -> URLRequest {
+) -> URLRequest? {
     let around = "around:\(Int(radius.rawValue)),\(latitude.rawValue),\(longitude.rawValue)"
     let query = """
     [out:json][timeout:10];(\

@@ -82,7 +82,10 @@ final class ChigeeCentral: NSObject, CBCentralManagerDelegate, @unchecked Sendab
     private func send(_ event: ChigeeEvent) { lock.withLock { emit }?(event) }
 
     private func note(_ event: String, _ fields: [String: Any] = [:]) {
-        let parts = fields.keys.sorted().map { "\($0)=\(fields[$0]!)" }
+        // Iterating the dictionary directly rather than its keys and looking each back up: the
+        // lookup cannot miss, which is precisely why the force unwrap was there and precisely why
+        // it should not be — there is a total way to say the same thing.
+        let parts = fields.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }
         lock.withLock { log }?(([event] + parts).joined(separator: " "))
     }
 

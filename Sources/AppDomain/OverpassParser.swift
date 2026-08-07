@@ -121,11 +121,16 @@ public struct OverpassEndpoint: Sendable, Equatable {
     /// cheap query for ourselves would be poor manners.
     public static let cameras = OverpassEndpoint(urls: [canonical])
 
-    /// Percent-encoded, with a template that cannot fail to parse.
-    public func request(_ query: String, hostIndex: Int = 0) -> URLRequest {
+    /// Percent-encoded. `nil` if the URL will not parse, which is a thing that cannot happen from a
+    /// fixed template and percent-escaped query — and is exactly the reasoning that puts a `!` in
+    /// code that later crashes. The callers all have a failure path already; this one just uses it.
+    public func request(_ query: String, hostIndex: Int = 0) -> URLRequest? {
         let escaped = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
-        let base = urls[min(hostIndex, urls.count - 1)]
-        var request = URLRequest(url: URL(string: "\(base)?data=\(escaped)")!)
+        guard
+            let base = urls[safe: min(hostIndex, urls.count - 1)],
+            let url = URL(string: "\(base)?data=\(escaped)")
+        else { return nil }
+        var request = URLRequest(url: url)
         // Six seconds, not the default sixty. A road name that arrives a minute later is useless —
         // by then the rider is on a different road — and every second spent waiting is a second the
         // Apple fallback is not being asked.
@@ -145,7 +150,7 @@ public func overpassRequest(
     latitude: Latitude, longitude: Longitude,
     endpoint: OverpassEndpoint = .primary,
     hostIndex: Int = 0
-) -> URLRequest {
+) -> URLRequest? {
     // Asks for every `highway` way, not only those tagged `maxspeed`.
     //
     // Filtering on `maxspeed` was actively harmful: ordinary UK roads frequently carry no such tag,

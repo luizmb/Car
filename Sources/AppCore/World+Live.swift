@@ -395,7 +395,12 @@ extension World {
                 }
                 // A miss falls through rather than being trusted — abroad, or a forecourt that
                 // opened after the extract was built, and this request is made once while stopped.
-                return httpClient(overpassStationRequest(latitude: latitude, longitude: longitude))
+                // A fill with no station is worth far more than no fill, so a request that will
+                // not build is simply no station.
+                guard let request = overpassStationRequest(
+                    latitude: latitude, longitude: longitude
+                ) else { return .just(nil) }
+                return httpClient(request)
                     .validateStatusCode()
                     .decode(using: stationDecoder)
                     .map { nearestStation($0, to: (latitude, longitude)) }

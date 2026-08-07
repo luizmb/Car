@@ -144,7 +144,7 @@ public struct RouteOption: Sendable, Equatable, Identifiable {
         let samples = 8
         return (0..<samples).map { index in
             let position = Int((Double(shape.count - 1) * Double(index) / Double(samples - 1)).rounded())
-            let point = shape[max(0, min(shape.count - 1, position))]
+            guard let point = shape[safe: max(0, min(shape.count - 1, position))] else { return "" }
             return "\(Int(point.latitude.rawValue * 1_000)),\(Int(point.longitude.rawValue * 1_000))"
         }
         .joined(separator: "|")
@@ -259,7 +259,7 @@ public func badgeAnchor(_ route: RouteOption, index: Int, of count: Int) -> Coor
     guard !route.shape.isEmpty else { return nil }
     let spread = count > 1 ? 0.3 + 0.4 * (Double(index) / Double(count - 1)) : 0.5
     let position = Int((Double(route.shape.count - 1) * spread).rounded())
-    return route.shape[max(0, min(route.shape.count - 1, position))]
+    return route.shape[safe: max(0, min(route.shape.count - 1, position))]
 }
 
 /// A point `metres` away on a bearing.
@@ -313,11 +313,12 @@ public func routeBearing(
     var travelled = 0.0
     var index = nearest
     while index + 1 < shape.count, travelled < lookahead {
-        travelled += distanceMetres(from: shape[index].pair, to: shape[index + 1].pair)
+        guard let here = shape[safe: index], let next = shape[safe: index + 1] else { break }
+        travelled += distanceMetres(from: here.pair, to: next.pair)
         index += 1
     }
-    guard index > nearest else { return nil }
-    return bearing(from: position.pair, to: shape[index].pair)
+    guard index > nearest, let target = shape[safe: index] else { return nil }
+    return bearing(from: position.pair, to: target.pair)
 }
 
 /// How far above the road the camera should sit while following a route.
@@ -436,20 +437,20 @@ func formatGap(_ distance: Meters) -> String {
 public func chainedInstruction(
     _ steps: [RouteStep], from index: Int, within: Double = chainWithinMetres
 ) -> String {
-    guard steps.indices.contains(index) else { return "" }
-    let instruction = steps[index].instructions
+    guard let step = steps[safe: index] else { return "" }
+    let instruction = step.instructions
     // The step's own length *is* the gap to the next manoeuvre: a step runs from one turn to the
     // next, so no geometry is needed to measure it.
     guard
-        steps[index].distance.rawValue <= within,
-        steps.indices.contains(index + 1)
+        step.distance.rawValue <= within,
+        let following = steps[safe: index + 1]
     else { return instruction }
     // The gap, spoken. "Then immediately turn left" is a claim about *which* left, and on a
     // residential street with side roads every thirty metres it is the wrong one — a rider who
     // takes the next left is on the wrong road. The distance says the same thing without asserting
     // anything false.
-    let gap = formatGap(steps[index].distance)
-    return "\(instruction), then in \(gap) \(lowercasedFirst(steps[index + 1].instructions))"
+    let gap = formatGap(step.distance)
+    return "\(instruction), then in \(gap) \(lowercasedFirst(following.instructions))"
 }
 
 /// One thing to say, and the guidance state that follows from having said it.
@@ -492,12 +493,10 @@ public func guidanceBanner(
 ) -> GuidanceBanner? {
     guard !state.arrived else { return nil }
     let steps = route.steps.filter { $0.start != nil }
-    guard state.stepIndex < steps.count, let start = steps[state.stepIndex].start else {
-        return nil
-    }
+    guard let step = steps[safe: state.stepIndex], let start = step.start else { return nil }
     let remaining = Meters(distanceMetres(from: position.pair, to: start.pair))
     return GuidanceBanner(
-        instruction: steps[state.stepIndex].instructions,
+        instruction: step.instructions,
         distanceText: formatDistance(remaining),
         distance: remaining
     )
@@ -545,8 +544,9 @@ public func guidance(
         return GuidanceUpdate(announcement: "You have arrived.", state: next)
     }
 
-    let step = steps[state.stepIndex]
-    guard let start = step.start else { return GuidanceUpdate(announcement: nil, state: state) }
+    guard let step = steps[safe: state.stepIndex], let start = step.start else {
+        return GuidanceUpdate(announcement: nil, state: state)
+    }
 
     let distance = Meters(distanceMetres(from: position.pair, to: start.pair))
     let windows = guidanceDistances(speed: speed)
@@ -569,8 +569,7 @@ public func guidance(
     // well clear, so this cannot fire while manoeuvring around one.
     if
         distance.rawValue > passedByMetres * 2,
-        state.stepIndex + 1 < steps.count,
-        let following = steps[state.stepIndex + 1].start,
+        let following = steps[safe: state.stepIndex + 1]?.start,
         distanceMetres(from: position.pair, to: following.pair) < distance.rawValue {
         return GuidanceUpdate(announcement: nil, state: advanced(next))
     }
@@ -614,7 +613,8 @@ public func distanceToRoute(shape: [Coordinate], from position: Coordinate) -> D
 
     var best = Double.greatestFiniteMagnitude
     for index in 0..<(shape.count - 1) {
-        best = min(best, distanceToSegment(position, shape[index], shape[index + 1]))
+        guard let a = shape[safe: index], let b = shape[safe: index + 1] else { continue }
+        best = min(best, distanceToSegment(position, a, b))
     }
     return best
 }
@@ -734,9 +734,9 @@ public func rejoinCandidates(
     let metresPerSecond = route.distance.rawValue / route.travelTime
 
     return (stepIndex..<min(stepIndex + limit, steps.count)).compactMap { index in
-        guard let point = steps[index].start else { return nil }
+        guard let point = steps[safe: index]?.start else { return nil }
         // Everything still to drive once back on the route at this manoeuvre.
-        let remaining = steps[index...].reduce(0.0) { $0 + $1.distance.rawValue }
+        let remaining = steps.dropFirst(index).reduce(0.0) { $0 + $1.distance.rawValue }
         return RejoinCandidate(
             stepIndex: index,
             point: point,
@@ -778,9 +778,7 @@ public func bestRejoin(
 public func splice(
     rejoin: RouteOption, onto original: RouteOption, fromStep index: Int
 ) -> RouteOption {
-    let remainingSteps = index < original.steps.count
-        ? Array(original.steps[index...])
-        : []
+    let remainingSteps = Array(original.steps.dropFirst(index))
     // The tail of the original's geometry, from the manoeuvre being rejoined at. Falls back to the
     // whole of it when that manoeuvre has no position, which is the same fallback guidance uses.
     let joinPoint = remainingSteps.first?.start

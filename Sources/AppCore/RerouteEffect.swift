@@ -1,4 +1,5 @@
 import AppDomain
+import CoreFP
 import FP
 import Foundation
 import ReactiveConcurrency
@@ -45,7 +46,7 @@ func rejoinRequest(
             guard
                 let winner = bestRejoin(candidates, legTimes: times),
                 let index = candidates.firstIndex(of: winner),
-                let leg = legs[index]
+                let leg = legs[safe: index] ?? nil
             else {
                 // Every leg failed. Fall back to a full replan rather than leaving the rider on a
                 // route they are not on.
