@@ -218,8 +218,20 @@ func bestTags(
     // would be guesswork, and borrowing a limit from the wrong road is worse than defaulting.
     guard own.name != nil || own.ref != nil else { return own }
 
+    // "The same road" as a rider means it — not as strict tag equality means it. OSM splits one
+    // road into ways that carry its identity unevenly: the A505 through Luton has segments tagged
+    // `ref=A505 name=Dunstable Road` beside segments tagged `name=Dunstable Road` alone, and the
+    // A5183 through Markyate has ref-only segments beside ref-and-name ones. Requiring both fields
+    // to match exactly made those strangers, so an untagged segment could borrow nothing from the
+    // signed one three metres on. A missing field is silence, not disagreement: match on whichever
+    // identity both sides actually carry, and only treat them as different roads when a field they
+    // *both* have differs.
     let siblings = candidates.filter { other in
-        other.tags.name == own.name && other.tags.ref == own.ref
+        let nameAgrees = own.name != nil && other.tags.name == own.name
+        let refAgrees = own.ref != nil && other.tags.ref == own.ref
+        let nameCompatible = own.name == nil || other.tags.name == nil || other.tags.name == own.name
+        let refCompatible = own.ref == nil || other.tags.ref == nil || other.tags.ref == own.ref
+        return (nameAgrees && refCompatible) || (refAgrees && nameCompatible)
     }
     let limitDonor = siblings.first { other in
         !(other.tags.maxspeed?.trimmingCharacters(in: .whitespaces).isEmpty ?? true)
