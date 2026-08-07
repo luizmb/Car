@@ -409,7 +409,9 @@ public enum AppFeature {
                 let spoken = advanced.announcement.map {
                     ctx.environment.speakQueued($0) |> Effect<AppAction>.fireAndForget
                 } ?? .empty
-                return Effect.just(.guidanceUpdated(advanced.state, banner)) <> spoken
+                return Effect.just(.guidanceUpdated(advanced.state, banner))
+                    <> Effect.just(.speedMonitor(.setNextTurn(banner?.distance)))
+                    <> spoken
             }
         }
 

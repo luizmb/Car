@@ -69,6 +69,8 @@ public enum SpeedMonitorFeature {
         /// that once a second would become the most expensive thing the app does, to redraw a line
         /// that has not changed.
         public var routeShape: [Coordinate]
+        /// Distance to the next manoeuvre, when following a route.
+        public var nextTurn: Meters?
 
         public struct Display: Sendable, Equatable {
             public var mapLatitude: Double
@@ -107,6 +109,9 @@ public enum SpeedMonitorFeature {
         case locationUpdate(LocationUpdate)
         /// The route to draw, already thinned. Empty clears it.
         case setRoute([Coordinate])
+        /// How far to the next manoeuvre, or `nil` when not following one. Drives the camera only —
+        /// the instruction itself belongs to the banner.
+        case setNextTurn(Meters?)
         case locationReady(LocationUpdate, State.Display)
         // Road speed
         case roadSpeedChanged(RoadInfo)
@@ -225,7 +230,7 @@ public enum SpeedMonitorFeature {
         /// course, which is undefined when stopped and jitters at walking pace.
         public var cameraHeading: Double
 
-        init(display: State.Display, routeShape: [Coordinate]) {
+        init(display: State.Display, routeShape: [Coordinate], nextTurn: Meters?) {
             self.routeShape     = routeShape
             let here = Coordinate(
                 latitude: Latitude(display.mapLatitude), longitude: Longitude(display.mapLongitude)
@@ -237,8 +242,12 @@ public enum SpeedMonitorFeature {
                 cameraHeading  = display.mapHeading
             } else {
                 let along = routeBearing(shape: routeShape, from: here) ?? display.mapHeading
-                cameraCentre   = coordinate(from: here, bearing: along, metres: 110)
-                cameraDistance = 420
+                cameraDistance = navigationCameraDistance(
+                    speed: MPS(display.speedValue * 0.44704), nextTurn: nextTurn
+                )
+                // The rider sits low on screen, and how far ahead the camera looks scales with how
+                // far it can see — a fixed offset puts them in the middle again when zoomed out.
+                cameraCentre   = coordinate(from: here, bearing: along, metres: cameraDistance * 0.26)
                 cameraPitch    = 68
                 cameraHeading  = along
             }
@@ -266,7 +275,7 @@ public enum SpeedMonitorFeature {
     // MARK: - Mappings (env-aware Readers)
 
     public static let mapState = Reader<Environment, @MainActor @Sendable (State) -> ViewState> { _ in
-        { ViewState(display: $0.display, routeShape: $0.routeShape) }
+        { ViewState(display: $0.display, routeShape: $0.routeShape, nextTurn: $0.nextTurn) }
     }
 
     public static let mapAction = Reader<Environment, @Sendable (ViewAction) -> Action> { _ in
@@ -286,7 +295,8 @@ public enum SpeedMonitorFeature {
             activeAverageZone: nil,
             wasOverAverageLimit: false,
             display: .empty,
-            routeShape: []
+            routeShape: [],
+            nextTurn: nil
         )
     }
 
@@ -333,6 +343,9 @@ public enum SpeedMonitorFeature {
 
             case let .setRoute(shape):
                 return .reduce { $0.routeShape = shape }
+
+            case let .setNextTurn(distance):
+                return .reduce { $0.nextTurn = distance }
 
             case let .locationUpdate(newLocation):
                 let prevLocation = context.stateBefore?.lastLocation

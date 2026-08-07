@@ -320,6 +320,26 @@ public func routeBearing(
     return bearing(from: position.pair, to: shape[index].pair)
 }
 
+/// How far above the road the camera should sit while following a route.
+///
+/// Two pulls, and the tighter wins.
+///
+/// **Speed** sets the baseline, because what a rider needs to see is *time* ahead rather than
+/// distance: at 70 mph a fixed 400 m of view is twelve seconds of warning, and at walking pace it is
+/// two minutes of empty road. Roughly fifteen seconds of travel, floored so a stationary map is not
+/// pressed against the tarmac and capped so a motorway does not zoom to a county.
+///
+/// **The next turn** overrides it on the approach. A junction is read from its shape — which lane,
+/// which exit — and that is unreadable from height, so the last few hundred metres pull the camera
+/// down regardless of speed.
+public func navigationCameraDistance(speed: MPS, nextTurn: Meters?) -> Double {
+    let forSpeed = min(1_100, max(280, speed.rawValue * 15))
+    guard let nextTurn, nextTurn.rawValue < 400 else { return forSpeed }
+    // Closing on the junction: 250 m up at 400 m out, down to 180 m at the junction itself.
+    let approach = 180 + (nextTurn.rawValue / 400) * 70
+    return min(forSpeed, approach)
+}
+
 // MARK: - Following it
 
 /// How far from a manoeuvre each of the two calls is made.
@@ -386,10 +406,14 @@ public struct GuidanceBanner: Sendable, Equatable {
     /// router and nothing else — so the distance arrives as text rather than as something the view
     /// would need a formatter to render.
     public let distanceText: String
+    /// The same distance as a number, for the camera. Text cannot be compared against a threshold,
+    /// and the map has to tighten as a junction approaches.
+    public let distance: Meters
 
-    public init(instruction: String, distanceText: String) {
+    public init(instruction: String, distanceText: String, distance: Meters) {
         self.instruction = instruction
         self.distanceText = distanceText
+        self.distance = distance
     }
 }
 
@@ -403,9 +427,11 @@ public func guidanceBanner(
     guard state.stepIndex < steps.count, let start = steps[state.stepIndex].start else {
         return nil
     }
+    let remaining = Meters(distanceMetres(from: position.pair, to: start.pair))
     return GuidanceBanner(
         instruction: steps[state.stepIndex].instructions,
-        distanceText: formatDistance(Meters(distanceMetres(from: position.pair, to: start.pair)))
+        distanceText: formatDistance(remaining),
+        distance: remaining
     )
 }
 

@@ -46,13 +46,11 @@ public struct AppRootView: View, Routable {
                     VStack(alignment: .leading, spacing: 6) {
                         roadBubble
                         fuelBubble
-                        // Hidden while following a route. Seven diagnostic pills down the left of
-                        // the screen are a pre-ride check, not something to read at a junction —
-                        // and stacked under the guidance banner they were simply in the way of the
-                        // one thing that has a deadline.
-                        if viewStore.state.activeRoute == nil {
-                            router.statusBubbles()
-                        }
+                        // Kept while navigating. They were hidden for a build and that was wrong:
+                        // riding *is* when tyre pressure and ignition state matter, and the reason
+                        // navigation happens on this map at all is so the instrumentation is still
+                        // there. They move down instead, out from under the banner.
+                        router.statusBubbles()
                     }
                     .padding(.leading, 12)
                     .padding(.top, viewStore.state.activeRoute == nil ? 6 : 76)

@@ -487,6 +487,50 @@ struct CameraOffsetTests {
     }
 }
 
+@Suite("How far above the road")
+struct CameraDistanceTests {
+    /// What a rider needs to see is *time* ahead, not distance: 400 m is twelve seconds at 70 mph
+    /// and two minutes at walking pace.
+    @Test("Faster means further out")
+    func scalesWithSpeed() {
+        let slow = navigationCameraDistance(speed: MPS(9), nextTurn: nil)
+        let fast = navigationCameraDistance(speed: MPS(31), nextTurn: nil)
+        #expect(slow < fast)
+    }
+
+    @Test("Clamped at both ends")
+    func clamped() {
+        #expect(navigationCameraDistance(speed: MPS(0), nextTurn: nil) == 280)
+        #expect(navigationCameraDistance(speed: MPS(200), nextTurn: nil) == 1_100)
+    }
+
+    /// A junction is read from its shape — which lane, which exit — and that is unreadable from
+    /// height, so the approach pulls the camera down whatever the speed.
+    @Test("A junction ahead pulls the camera down regardless of speed")
+    func turnOverridesSpeed() {
+        let cruising = navigationCameraDistance(speed: MPS(31), nextTurn: nil)
+        let approaching = navigationCameraDistance(speed: MPS(31), nextTurn: Meters(120))
+        #expect(approaching < cruising)
+        #expect(approaching < 250)
+    }
+
+    @Test("The closer the junction, the tighter the view")
+    func tightensOnApproach() {
+        let far = navigationCameraDistance(speed: MPS(13), nextTurn: Meters(350))
+        let near = navigationCameraDistance(speed: MPS(13), nextTurn: Meters(50))
+        #expect(near < far)
+    }
+
+    /// A turn still miles off must not hold the camera down for the whole ride.
+    @Test("A distant turn does not override the speed baseline")
+    func distantTurnIgnored() {
+        #expect(
+            navigationCameraDistance(speed: MPS(31), nextTurn: Meters(5_000))
+                == navigationCameraDistance(speed: MPS(31), nextTurn: nil)
+        )
+    }
+}
+
 // MARK: - Badges
 
 @Suite("Route labels")

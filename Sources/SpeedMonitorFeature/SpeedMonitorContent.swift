@@ -25,6 +25,12 @@ public struct SpeedMonitorContent: View {
     /// The chosen route, already thinned. Empty when nothing is being navigated to.
     public let routeShape: [CLLocationCoordinate2D]
 
+    /// Camera the view drives itself, so the rider can pan, rotate and zoom for a look around.
+    /// Reset to the followed camera once they let go — see ``returnToFollowing()``.
+    @State private var camera: MapCameraPosition = .automatic
+    @State private var isBrowsing = false
+    @State private var returnTask: Task<Void, Never>?
+
     public var body: some View {
         ZStack(alignment: .top) {
             map
@@ -34,7 +40,11 @@ public struct SpeedMonitorContent: View {
                     Spacer()
                     limitSignArea
                         .padding(.trailing, 16)
-                        .padding(.top, 8)
+                        // Below the guidance banner while navigating, rather than beside it. Side by
+                        // side, the banner had to stop short of the trailing edge and the two read
+                        // as one crowded strip; the sign is the more important of the two and gets
+                        // its own line.
+                        .padding(.top, isNavigating ? 84 : 8)
                 }
                 Spacer()
             }
@@ -57,16 +67,24 @@ public struct SpeedMonitorContent: View {
 
     // MARK: - Map
 
+    private var isNavigating: Bool { routeShape.count > 1 }
+
+    private var followingCamera: MapCameraPosition {
+        .camera(MapCamera(
+            centerCoordinate: .init(latitude: mapLatitude, longitude: mapLongitude),
+            distance: mapDistance,
+            heading: mapHeading,
+            pitch: mapPitch
+        ))
+    }
+
+    /// Anything that should move the camera when the rider is *not* holding it themselves.
+    private var followingKey: String {
+        "\(mapLatitude),\(mapLongitude),\(mapDistance),\(mapHeading),\(mapPitch)"
+    }
+
     private var map: some View {
-        Map(
-            position: .constant(.camera(MapCamera(
-                centerCoordinate: .init(latitude: mapLatitude, longitude: mapLongitude),
-                distance: mapDistance,
-                heading: mapHeading,
-                pitch: mapPitch
-            ))),
-            interactionModes: []
-        ) {
+        Map(position: $camera, interactionModes: .all) {
             // Under the rider marker, so the arrow is never hidden by the line it is following.
             if routeShape.count > 1 {
                 MapPolyline(coordinates: routeShape)
@@ -84,6 +102,62 @@ public struct SpeedMonitorContent: View {
         }
         .mapControlVisibility(.hidden)
         .ignoresSafeArea()
+        .onAppear { camera = followingCamera }
+        // Follow, unless the rider has taken hold of the map.
+        .onChange(of: followingKey) { if !isBrowsing { camera = followingCamera } }
+        // Any of the three map gestures counts as taking hold. `simultaneousGesture` rather than
+        // `gesture`, so the map still pans and zooms normally — this only observes.
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 2)
+                .onChanged { _ in beginBrowsing() }
+                .onEnded { _ in scheduleReturn() }
+        )
+        .simultaneousGesture(
+            MagnifyGesture()
+                .onChanged { _ in beginBrowsing() }
+                .onEnded { _ in scheduleReturn() }
+        )
+        .simultaneousGesture(
+            RotateGesture()
+                .onChanged { _ in beginBrowsing() }
+                .onEnded { _ in scheduleReturn() }
+        )
+        .onDisappear { returnTask?.cancel() }
+    }
+
+    // MARK: - Browsing
+
+    /// The rider has the map. Stop moving it under them — nothing is more disorienting than a map
+    /// that fights the finger dragging it.
+    private func beginBrowsing() {
+        returnTask?.cancel()
+        returnTask = nil
+        isBrowsing = true
+    }
+
+    /// Fingers off. Come back to the followed camera two seconds later — but **only once moving**.
+    ///
+    /// The speed condition is the point of the whole thing. Stopped at the kerb, a rider looking
+    /// ahead at the next few junctions should be left alone indefinitely; the moment they set off
+    /// again the map is theirs no longer, because a browsed camera while riding is a map showing
+    /// somewhere that is not where you are.
+    ///
+    /// A raw sleep rather than an injected clock, deliberately: nothing decides anything on this
+    /// interval and no test would want to control it. It is an interaction debounce, local to this
+    /// view, and dressing it as a schedule would imply a domain rule that does not exist.
+    private func scheduleReturn() {
+        returnTask?.cancel()
+        returnTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            while !Task.isCancelled {
+                if speedValue > 5 {
+                    isBrowsing = false
+                    withAnimation(.easeInOut(duration: 0.45)) { camera = followingCamera }
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(400))
+            }
+        }
     }
 
     /// "A505 - High Street", "M25", "High Street", or nil. Never shows duplicates.
