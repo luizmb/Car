@@ -265,7 +265,10 @@ struct GuidanceTests {
             state: GuidanceState(), formatDistance: metres
         )
         #expect(update.announcement == nil)
-        #expect(update.state == GuidanceState())
+        // `closest` tracks on every fix by design, so the step and stage are what "nothing
+        // happened" means here.
+        #expect(update.state.stepIndex == 0)
+        #expect(update.state.stage == .none)
     }
 
     /// The early call is the one that matters on a bike: a lane change and a gear change both have
@@ -298,15 +301,76 @@ struct GuidanceTests {
         #expect(second.announcement == nil)
     }
 
-    @Test("At the junction the instruction is given plainly and the next step becomes current")
-    func imminentAdvances() {
+    @Test("At the junction the instruction is given plainly")
+    func imminentAnnounces() {
         let update = guidance(
             route: routeWithSteps(3), at: at(52.00973), speed: MPS(13.4),
             state: GuidanceState(stepIndex: 0, stage: .early), formatDistance: metres
         )
         #expect(update.announcement == "Turn left onto Road 1")
-        #expect(update.state.stepIndex == 1)
-        #expect(update.state.stage == .none)
+        #expect(update.state.stage == .imminent)
+        // Still the current step — reaching a junction is not taking it.
+        #expect(update.state.stepIndex == 0)
+    }
+
+    /// The bug this rule exists for. MapKit's first manoeuvre is routinely a few dozen metres from
+    /// where the bike is parked — 24 m in the route that exposed it — so a step consumed by mere
+    /// proximity meant pressing GO ate the first turn on the spot, and the first instruction shown
+    /// was the *second* turn of the route.
+    @Test("A first turn close to the parked bike is not consumed by sitting near it")
+    func firstStepSurvivesBeingParked() {
+        let route = routeWithSteps(3)
+        // 30 m short of the first junction, stationary, as if just parked and pressing GO.
+        var state = GuidanceState()
+        for _ in 0..<5 {
+            let update = guidance(
+                route: route, at: at(52.00973), speed: MPS(0),
+                state: state, formatDistance: metres
+            )
+            state = update.state
+        }
+        #expect(state.stepIndex == 0)
+        #expect(guidanceBanner(
+            route: route, at: at(52.00973), state: state, formatDistance: metres
+        )?.instruction == "Turn left onto Road 1")
+    }
+
+    /// The other half: once actually through the junction, the next instruction must arrive.
+    @Test("The step advances once the junction is receding")
+    func advancesOncePassed() {
+        let route = routeWithSteps(3)
+        // Reach it…
+        let reached = guidance(
+            route: route, at: at(52.00995), speed: MPS(13.4),
+            state: GuidanceState(), formatDistance: metres
+        )
+        #expect(reached.state.stage == .imminent)
+        #expect(reached.state.stepIndex == 0)
+
+        // …then carry on past it.
+        let passed = guidance(
+            route: route, at: at(52.0106), speed: MPS(13.4),
+            state: reached.state, formatDistance: metres
+        )
+        #expect(passed.state.stepIndex == 1)
+        #expect(passed.state.stage == .none)
+    }
+
+    /// Stopped at the junction waiting to turn, GPS wanders. That must not read as having gone
+    /// through it and skip to the next instruction.
+    @Test("A jittery fix while stopped at the junction does not skip it")
+    func jitterDoesNotAdvance() {
+        let route = routeWithSteps(3)
+        let reached = guidance(
+            route: route, at: at(52.00995), speed: MPS(0),
+            state: GuidanceState(), formatDistance: metres
+        )
+        // ~11 m of wander, well inside the 30 m margin.
+        let wobbled = guidance(
+            route: route, at: at(52.00985), speed: MPS(0),
+            state: reached.state, formatDistance: metres
+        )
+        #expect(wobbled.state.stepIndex == 0)
     }
 
     /// Steps are followed in order rather than by proximity: a route that doubles back passes close
@@ -528,6 +592,80 @@ struct CameraDistanceTests {
             navigationCameraDistance(speed: MPS(31), nextTurn: Meters(5_000))
                 == navigationCameraDistance(speed: MPS(31), nextTurn: nil)
         )
+    }
+}
+
+@Suite("Manoeuvres that come at once")
+struct ChainedInstructionTests {
+    private func step(_ text: String, runningOn metres: Double) -> RouteStep {
+        RouteStep(
+            instructions: text, distance: Meters(metres), notice: nil,
+            start: Coordinate(latitude: Latitude(52), longitude: Longitude(-0.46))
+        )
+    }
+
+    /// Being told only the first, where both happen within a few seconds, puts a rider in the wrong
+    /// lane for the second.
+    @Test("Two turns in quick succession are spoken as one instruction")
+    func chainsWhenClose() {
+        let steps = [step("Turn left onto Tennyson Road", runningOn: 80), step("Turn right onto London Road", runningOn: 500)]
+        #expect(
+            chainedInstruction(steps, from: 0)
+                == "Turn left onto Tennyson Road, then immediately turn right onto London Road"
+        )
+    }
+
+    @Test("A turn with a long run after it stands alone")
+    func doesNotChainWhenFar() {
+        let steps = [step("Turn left onto Tennyson Road", runningOn: 800), step("Turn right onto London Road", runningOn: 500)]
+        #expect(chainedInstruction(steps, from: 0) == "Turn left onto Tennyson Road")
+    }
+
+    /// A third would be a paragraph, and by then the first is done and its own call is due.
+    @Test("At most two are chained")
+    func chainsAtMostTwo() {
+        let steps = [
+            step("Turn left onto A", runningOn: 40),
+            step("Turn right onto B", runningOn: 40),
+            step("Turn left onto C", runningOn: 40)
+        ]
+        let spoken = chainedInstruction(steps, from: 0)
+        #expect(spoken.contains("onto A"))
+        #expect(spoken.contains("onto B"))
+        #expect(!spoken.contains("onto C"))
+    }
+
+    @Test("The last step has nothing to chain to")
+    func lastStep() {
+        let steps = [step("The destination is on your left", runningOn: 10)]
+        #expect(chainedInstruction(steps, from: 0) == "The destination is on your left")
+    }
+
+    @Test("An index off the end is empty rather than a crash")
+    func outOfRange() {
+        #expect(chainedInstruction([], from: 0) == "")
+    }
+
+    /// The banner is a glance, and a glance answers one question — so it keeps showing the
+    /// immediate next manoeuvre alone even when the spoken call chains two.
+    @Test("The banner shows only the immediate next manoeuvre")
+    func bannerIsNotChained() {
+        let close = Coordinate(latitude: Latitude(52.01), longitude: Longitude(-0.46))
+        let route = RouteOption(
+            name: "A421", distance: Meters(2_000), travelTime: 300,
+            hasTolls: false, hasMotorways: false,
+            steps: [
+                RouteStep(instructions: "Turn left onto Tennyson Road", distance: Meters(80), notice: nil, start: close),
+                RouteStep(instructions: "Turn right onto London Road", distance: Meters(500), notice: nil, start: close)
+            ],
+            shape: [Coordinate(latitude: Latitude(52), longitude: Longitude(-0.46)), close]
+        )
+        let banner = guidanceBanner(
+            route: route,
+            at: Coordinate(latitude: Latitude(52.0), longitude: Longitude(-0.46)),
+            state: GuidanceState(), formatDistance: { "\(Int($0.rawValue)) m" }
+        )
+        #expect(banner?.instruction == "Turn left onto Tennyson Road")
     }
 }
 

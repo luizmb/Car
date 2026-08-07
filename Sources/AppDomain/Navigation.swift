@@ -374,14 +374,66 @@ public struct GuidanceState: Sendable, Equatable {
     /// would announce it then.
     public var stepIndex: Int
     public var stage: GuidanceStage
+    /// The closest this step's junction has been so far.
+    ///
+    /// A step is finished by *receding*, not by being reached — which is the difference between
+    /// "you are near the turn" and "you have taken it". Being near it was the rule at first and it
+    /// was wrong in the most visible way possible: MapKit's first manoeuvre is often a few dozen
+    /// metres from where the bike is parked, so pressing GO consumed it on the spot and the very
+    /// first instruction shown was the *second* turn of the route.
+    public var closest: Double
     /// Set once the last step has been passed, so arrival is announced exactly once.
     public var arrived: Bool
 
-    public init(stepIndex: Int = 0, stage: GuidanceStage = .none, arrived: Bool = false) {
+    public init(
+        stepIndex: Int = 0,
+        stage: GuidanceStage = .none,
+        closest: Double = .greatestFiniteMagnitude,
+        arrived: Bool = false
+    ) {
         self.stepIndex = stepIndex
         self.stage = stage
+        self.closest = closest
         self.arrived = arrived
     }
+}
+
+/// How far past the closest approach counts as having taken the turn.
+///
+/// Generous enough not to trip on GPS noise while stopped at the junction — a fix wandering by ten
+/// metres must not read as having gone through it — and small enough that the next instruction
+/// arrives promptly once actually moving.
+let passedByMetres: Double = 30
+
+/// How short a run between two manoeuvres counts as "and then immediately".
+///
+/// At 30 mph, 150 m is about eleven seconds — not enough to hear one instruction, act on it, and
+/// then be told the next in time to get into the right lane for it. Below that the two are really
+/// one manoeuvre and are spoken as one.
+public let chainWithinMetres: Double = 150
+
+/// The instruction for a step, with the one after it attached when they come too close together.
+///
+/// "Turn left onto Tennyson Road, then immediately turn right onto London Road" — because being
+/// told only the first, in a junction where both happen within a few seconds, puts a rider in the
+/// wrong lane. Only ever two: a third would be a paragraph, and by then the first is done and the
+/// next call is due anyway.
+///
+/// **Spoken only.** The banner deliberately keeps showing the immediate next manoeuvre alone, since
+/// a glance has to answer one question, and the chained pair is twice the text for the half of it
+/// that matters right now.
+public func chainedInstruction(
+    _ steps: [RouteStep], from index: Int, within: Double = chainWithinMetres
+) -> String {
+    guard steps.indices.contains(index) else { return "" }
+    let instruction = steps[index].instructions
+    // The step's own length *is* the gap to the next manoeuvre: a step runs from one turn to the
+    // next, so no geometry is needed to measure it.
+    guard
+        steps[index].distance.rawValue <= within,
+        steps.indices.contains(index + 1)
+    else { return instruction }
+    return "\(instruction), then immediately \(lowercasedFirst(steps[index + 1].instructions))"
 }
 
 /// One thing to say, and the guidance state that follows from having said it.
@@ -473,24 +525,34 @@ public func guidance(
 
     let distance = Meters(distanceMetres(from: position.pair, to: start.pair))
     let windows = guidanceDistances(speed: speed)
+    var next = state
+    next.closest = min(state.closest, distance.rawValue)
 
-    if distance.rawValue <= windows.imminent.rawValue {
-        var next = state
+    // Taken the turn: it was reached, and is now receding.
+    if state.stage == .imminent, distance.rawValue > next.closest + passedByMetres {
         next.stepIndex += 1
         next.stage = .none
-        return GuidanceUpdate(announcement: step.instructions, state: next)
+        next.closest = .greatestFiniteMagnitude
+        return GuidanceUpdate(announcement: nil, state: next)
+    }
+
+    if distance.rawValue <= windows.imminent.rawValue, state.stage < .imminent {
+        next.stage = .imminent
+        return GuidanceUpdate(
+            announcement: chainedInstruction(steps, from: state.stepIndex), state: next
+        )
     }
 
     if distance.rawValue <= windows.early.rawValue, state.stage < .early {
-        var next = state
         next.stage = .early
         return GuidanceUpdate(
-            announcement: "In \(formatDistance(distance)), \(lowercasedFirst(step.instructions))",
+            announcement: "In \(formatDistance(distance)), "
+                + lowercasedFirst(chainedInstruction(steps, from: state.stepIndex)),
             state: next
         )
     }
 
-    return GuidanceUpdate(announcement: nil, state: state)
+    return GuidanceUpdate(announcement: nil, state: next)
 }
 
 /// "Turn left onto A421" becomes "turn left onto A421", so it reads as one sentence after "In 300
