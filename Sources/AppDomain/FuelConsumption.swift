@@ -75,6 +75,89 @@ public extension FuelLog {
     }
 }
 
+// MARK: - Leg by leg
+
+/// One measured interval of consumption — the unit the history is tracked in.
+///
+/// A leg closes at the event that makes its consumption computable: a brim fill (the litres that
+/// refill the tank are the litres the leg burned) or a reserve switch (the main tank's usable
+/// litres are gone, however far they went). Between those events consumption is unknowable on a
+/// bike with no flow meter, which is why the chart is a series of legs rather than a curve.
+public struct ConsumptionLeg: Sendable, Equatable, Identifiable {
+    public enum End: String, Sendable, Equatable {
+        case brim
+        case reserve
+    }
+
+    /// When the leg closed. Two fills cannot land on the same instant, so this is identity.
+    public var id: Date { date }
+    public let date: Date
+    public let kilometres: Double
+    public let litres: Double
+    public let endedBy: End
+
+    public init(date: Date, kilometres: Double, litres: Double, endedBy: End) {
+        self.date = date
+        self.kilometres = kilometres
+        self.litres = litres
+        self.endedBy = endedBy
+    }
+
+    public var kilometresPerLitre: Double { kilometres / litres }
+    public var litresPer100km: Double { 100 * litres / kilometres }
+    /// Imperial gallons — the unit UK riders actually compare in.
+    public var milesPerGallon: Double { kilometresPerLitre * 4.546_09 / 1.609_344 }
+}
+
+public extension FuelLog {
+    /// Every measured leg, oldest first.
+    ///
+    /// Brim-to-brim intervals come from the fills themselves. Reserve switches contribute a leg
+    /// too — the main tank's usable litres over the distance they lasted. That capacity is
+    /// ``usableBeforeReserve(spec:)``: the spec's 9 L assumption until real intervals raise it,
+    /// which is honest to within the same uncertainty the whole reserve strategy already carries —
+    /// and a reserve switch is the *better* calibration point, since it pins consumption to the
+    /// tank's actual bottom rather than to a brim judged by eye.
+    func consumptionLegs(spec: BikeSpec) -> [ConsumptionLeg] {
+        let brims = consumptionSamples.map { sample in
+            ConsumptionLeg(
+                date: sample.to.date,
+                kilometres: sample.kilometres,
+                litres: sample.litres,
+                endedBy: .brim
+            )
+        }
+        let usable = usableBeforeReserve(spec: spec).rawValue
+        let switches = reserves.compactMap { event -> ConsumptionLeg? in
+            guard
+                usable > 0,
+                let kilometres = event.gpsKilometres?.rawValue,
+                kilometres > 0
+            else { return nil }
+            return ConsumptionLeg(
+                date: event.date,
+                kilometres: kilometres,
+                litres: usable,
+                endedBy: .reserve
+            )
+        }
+        return (brims + switches).sorted { $0.date < $1.date }
+    }
+}
+
+/// The average across a set of legs — total distance over total litres.
+///
+/// Not the mean of each leg's ratio: that weights a 30 km town hop the same as 300 km of motorway,
+/// and one short trip drags the figure further than a tankful. Weighting by distance is what "how
+/// much fuel does this bike use" means, and it is the line the chart draws so drift is judged
+/// against the right baseline.
+public func averageKilometresPerLitre(_ legs: [ConsumptionLeg]) -> Double? {
+    let kilometres = legs.reduce(0) { $0 + $1.kilometres }
+    let litres = legs.reduce(0) { $0 + $1.litres }
+    guard kilometres > 0, litres > 0 else { return nil }
+    return kilometres / litres
+}
+
 // MARK: - Range
 
 /// What is left, on the evidence available.

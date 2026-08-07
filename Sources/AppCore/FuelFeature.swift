@@ -44,6 +44,8 @@ public enum FuelFeature {
         /// into a reserve record or vice versa.
         public var reserveOdometer: String = ""
         public var tab: FuelTab = .refuel
+        /// Table or chart, on the stats tab.
+        public var consumptionDisplay: ConsumptionDisplay = .chart
 
         /// The forecourt, resolved once when the position first arrives.
         ///
@@ -84,6 +86,7 @@ public enum FuelFeature {
     public enum Action: Sendable {
         case appeared
         case setTab(FuelTab)
+        case setConsumptionDisplay(ConsumptionDisplay)
         case setReserveOdometer(String)
         case setLitres(String)
         case setPrice(String)
@@ -189,6 +192,8 @@ public enum FuelFeature {
                     }
                 }
             case let .setTab(tab):             return .reduce { $0.tab = tab }
+            case let .setConsumptionDisplay(display):
+                return .reduce { $0.consumptionDisplay = display }
             case let .setGrade(grade):         return .reduce { $0.grade = grade }
             case let .setFilledToBrim(value):  return .reduce { $0.filledToBrim = value }
             case let .setGPSDistance(distance):

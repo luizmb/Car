@@ -285,3 +285,102 @@ struct ReserveTests {
     }
 }
 
+// MARK: - Leg by leg
+
+@Suite("Consumption legs")
+struct ConsumptionLegTests {
+    private func at(_ day: Int) -> Date { Date(timeIntervalSince1970: Double(day) * 86_400) }
+
+    private func fill(
+        _ day: Int, litres: Double, km: Double?, brim: Bool = true
+    ) -> RefuelRecord {
+        RefuelRecord(
+            id: UUID(uuid: (0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0, UInt8(day))),
+            date: at(day), litres: Litres(litres), pricePerLitre: 1.5, grade: .e5,
+            filledToBrim: brim, odometer: nil,
+            gpsKilometres: km.map { Kilometres($0) },
+            latitude: nil, longitude: nil, station: nil
+        )
+    }
+
+    private func reserve(_ day: Int, km: Double) -> ReserveEvent {
+        ReserveEvent(
+            id: UUID(uuid: (1,0,0,0,0,0,0,0, 0,0,0,0,0,0,0, UInt8(day))),
+            date: at(day), odometer: nil, gpsKilometres: Kilometres(km),
+            latitude: nil, longitude: nil
+        )
+    }
+
+    @Test("Brim-to-brim intervals become legs, oldest first")
+    func brimLegs() {
+        let log = FuelLog(refuels: [
+            fill(1, litres: 8, km: nil),
+            fill(5, litres: 6, km: 180),
+            fill(9, litres: 7, km: 200)
+        ], reserves: [])
+        let legs = log.consumptionLegs(spec: .vt400)
+        #expect(legs.count == 2)
+        #expect(legs[safe: 0]?.kilometres == 180)
+        #expect(legs[safe: 0]?.litres == 6)
+        #expect(legs[safe: 0]?.endedBy == .brim)
+        #expect(abs((legs[safe: 0]?.kilometresPerLitre ?? 0) - 30) < 0.001)
+    }
+
+    /// The first fill measures nothing — there is no known starting level before it.
+    @Test("One fill yields no legs")
+    func oneFillNothing() {
+        let log = FuelLog(refuels: [fill(1, litres: 8, km: nil)], reserves: [])
+        #expect(log.consumptionLegs(spec: .vt400).isEmpty)
+    }
+
+    /// A reserve switch is a leg too: the main tank's usable litres, however far they went — and
+    /// the better calibration point, pinned to the tank's actual bottom rather than a brim judged
+    /// by eye.
+    @Test("A reserve switch closes a leg on the main tank's capacity")
+    func reserveLeg() {
+        let log = FuelLog(
+            refuels: [fill(1, litres: 8, km: nil)],
+            reserves: [reserve(4, km: 190)]
+        )
+        let legs = log.consumptionLegs(spec: .vt400)
+        #expect(legs.count == 1)
+        #expect(legs[safe: 0]?.endedBy == .reserve)
+        #expect(legs[safe: 0]?.kilometres == 190)
+        // No evidence has raised it, so the capacity is the spec's 9 L.
+        #expect(legs[safe: 0]?.litres == 9)
+    }
+
+    @Test("Brim and reserve legs interleave by date")
+    func interleaved() {
+        let log = FuelLog(
+            refuels: [
+                fill(1, litres: 8, km: nil),
+                fill(6, litres: 6, km: 180)
+            ],
+            reserves: [reserve(3, km: 190)]
+        )
+        let legs = log.consumptionLegs(spec: .vt400)
+        #expect(legs.map(\.endedBy) == [.reserve, .brim])
+    }
+
+    /// Total distance over total litres — a 30 km town hop must not drag the average the way a
+    /// mean of ratios would let it.
+    @Test("The average is weighted by distance")
+    func weightedAverage() {
+        let legs = [
+            ConsumptionLeg(date: at(1), kilometres: 300, litres: 10, endedBy: .brim),
+            ConsumptionLeg(date: at(2), kilometres: 30, litres: 3, endedBy: .brim)
+        ]
+        // 330 km / 13 L ≈ 25.4 — not the 20 a mean of 30 and 10 would claim.
+        #expect(abs((averageKilometresPerLitre(legs) ?? 0) - 330.0 / 13.0) < 0.001)
+        #expect(averageKilometresPerLitre([]) == nil)
+    }
+
+    @Test("Imperial conversion is the UK gallon")
+    func mpg() {
+        let leg = ConsumptionLeg(date: at(1), kilometres: 100, litres: 5, endedBy: .brim)
+        // 20 km/L = 56.5 mpg imperial.
+        #expect(abs(leg.milesPerGallon - 56.49) < 0.1)
+        #expect(abs(leg.litresPer100km - 5.0) < 0.001)
+    }
+}

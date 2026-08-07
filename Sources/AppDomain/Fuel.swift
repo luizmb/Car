@@ -32,6 +32,16 @@ public enum FuelGrade: String, Sendable, Equatable, CaseIterable, Codable {
 public enum FuelTab: String, Sendable, Equatable, CaseIterable, Codable {
     case refuel = "Refuel"
     case reserve = "Reserve"
+    /// The consumption history — the reason the other two tabs collect what they collect.
+    case stats = "Stats"
+
+    public var label: String { rawValue }
+}
+
+/// How the stats tab shows its legs.
+public enum ConsumptionDisplay: String, Sendable, Equatable, CaseIterable {
+    case table = "Table"
+    case chart = "Chart"
 
     public var label: String { rawValue }
 }
