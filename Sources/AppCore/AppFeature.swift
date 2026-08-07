@@ -58,6 +58,13 @@ public enum AppFeature {
         /// is spoken when it is *not* — setting off is precisely when the rider is in the dark about
         /// fuel — so the log has to be somewhere that outlives the screen.
         public var fuelLog: FuelLog = .empty
+        /// The maintenance schedule, kept at app level like the fuel log and for the same reason:
+        /// the briefing and the home badge need it whether or not the screen was ever opened.
+        public var maintenanceLog: MaintenanceLog = .empty
+        /// The worst status across the log — the colour of the wrench on the home screen.
+        /// Recomputed by effect whenever the log, the fuel log or the journey phase moves, because
+        /// working it out needs a clock and reducers do not have one.
+        public var maintenanceStatus: MaintenanceStatus = .ok
 
         /// The route being followed, if any, and where it has got to.
         ///
@@ -123,6 +130,7 @@ public enum AppFeature {
         case fuel(FuelFeature.Action)
         case navigate(NavigationFeature.Action)
         case rides(RideReviewFeature.Action)
+        case maintenance(MaintenanceFeature.Action)
         /// Speak the briefing on demand, at either verbosity.
         case speakFlightPlan(FlightPlanVerbosity)
         /// A journey began or ended. Carries the phase rather than recomputing it, so the reduction
@@ -130,6 +138,9 @@ public enum AppFeature {
         case journeyChanged(JourneyPhase)
         /// The refuel history, read from disk at launch and after every save.
         case fuelLogLoaded(FuelLog)
+        /// The maintenance schedule, read from disk at launch and after every save.
+        case maintenanceLogLoaded(MaintenanceLog)
+        case maintenanceStatusChanged(MaintenanceStatus)
         /// Guidance advanced for a fix. Carries both, because working them out needs the distance
         /// formatter and so happens inside an effect.
         case guidanceUpdated(GuidanceState, GuidanceBanner?)
@@ -205,6 +216,75 @@ public enum AppFeature {
         <> Behavior<AppAction, AppState, World>.handle { action, _ in
             guard let log = AppAction.prism.fuelLogLoaded.preview(action) else { return .doNothing }
             return .reduce { $0.fuelLog = log }
+        }
+
+        // The maintenance log, kept at app level for the same reasons as the fuel log: the
+        // pre-ride briefing and the home badge need it with the screen never opened.
+        <> Behavior<AppAction, AppState, World>.handle { action, _ in
+            let isLaunch = AppAction.prism.appLaunch.preview(action) != nil
+            let isSaved = AppAction.prism.maintenance.preview(action)
+                .flatMap(MaintenanceFeature.Action.prism.persisted.preview) != nil
+            guard isLaunch || isSaved else { return .doNothing }
+            return .produce { ctx in
+                ctx.environment.loadMaintenanceLog()
+                    .asEffect { (result: Result<MaintenanceLog, FileError>) in
+                        AppAction.maintenanceLogLoaded((try? result.get()) ?? .empty)
+                    }
+            }
+        }
+
+        <> Behavior<AppAction, AppState, World>.handle { action, _ in
+            guard let log = AppAction.prism.maintenanceLogLoaded.preview(action)
+            else { return .doNothing }
+            return .reduce { $0.maintenanceLog = log }
+        }
+
+        // The wrench's colour. Recomputed on every edge that can move it - the log, the odometer's
+        // base (a fill), or a journey beginning - because the computation needs a clock, which the
+        // reducer does not have. Post-reduction state, so the log just loaded is the log measured.
+        <> Behavior<AppAction, AppState, World>.handle { action, _ in
+            let logMoved = AppAction.prism.maintenanceLogLoaded.preview(action) != nil
+            let fuelMoved = AppAction.prism.fuelLogLoaded.preview(action) != nil
+            let journeyMoved = AppAction.prism.journeyChanged.preview(action) != nil
+            guard logMoved || fuelMoved || journeyMoved else { return .doNothing }
+            return .produce { ctx in
+                ctx.readLiveState()
+                    .compactMap { state -> AppAction? in
+                        .maintenanceStatusChanged(maintenanceStatus(
+                            of: state.maintenanceLog,
+                            today: ctx.environment.now(),
+                            odometer: currentOdometer(
+                                fuel: state.fuelLog, sinceFill: state.trip.kilometresSinceFill
+                            )
+                        ))
+                    }
+                    .asEffect()
+            }
+        }
+
+        <> Behavior<AppAction, AppState, World>.handle { action, _ in
+            guard let status = AppAction.prism.maintenanceStatusChanged.preview(action)
+            else { return .doNothing }
+            return .reduce { $0.maintenanceStatus = status }
+        }
+
+        // The screen asks; the app answers what only it knows - the reconstructed odometer and
+        // the last fix, neither of which a pushed screen can see.
+        <> Behavior<AppAction, AppState, World>.handle { action, context in
+            guard
+                let maintenance = AppAction.prism.maintenance.preview(action),
+                MaintenanceFeature.Action.prism.appeared.preview(maintenance) != nil,
+                let state = context.stateBefore
+            else { return .doNothing }
+            let odometer = currentOdometer(
+                fuel: state.fuelLog, sinceFill: state.trip.kilometresSinceFill
+            )
+            let place = state.speedMonitor.lastLocation.map {
+                Coordinate(latitude: $0.latitude, longitude: $0.longitude)
+            }
+            return .produce { _ in
+                Effect.just(.maintenance(.contextResolved(odometer, place)))
+            }
         }
 
         <> navigationBehavior()
@@ -347,6 +427,7 @@ public enum AppFeature {
         <> AppScopes.navigate.behavior(of: NavigationFeature.self)
 
         <> AppScopes.rides.behavior(of: RideReviewFeature.self)
+        <> AppScopes.maintenance.behavior(of: MaintenanceFeature.self)
 
         // Seed the planner with where the bike already is.
         //
@@ -741,7 +822,12 @@ public extension AppState {
             phoneBattery: world.phoneBattery(),
             lowPowerMode: world.isLowPowerMode(),
             gpsAccuracy: gpsAccuracy,
-            fuel: fuelBriefing(world)
+            fuel: fuelBriefing(world),
+            maintenance: maintenanceAnnouncements(
+                maintenanceLog,
+                today: world.now(),
+                odometer: currentOdometer(fuel: fuelLog, sinceFill: trip.kilometresSinceFill)
+            )
         )
     }
 }
@@ -876,6 +962,16 @@ public enum AppScopes: Rig {
             \.loadJourneyRecords, \.writeShareFile,
             \.formatDistance, \.formatDuration, \.formatTime, \.formatSpeed
         ) >>> RideReviewFeature.Environment.init)
+
+    /// The maintenance screen - affine like the other pushed screens. It owns its own file and
+    /// clock; the odometer it displays is handed to it by the app, which is the only party that
+    /// can reconstruct it.
+    public static let maintenance = ScopeOf<AppScopes>
+        .action(\.maintenance)
+        .state(preview: topmost(StackEntry.prism.maintenance), set: replacing(StackEntry.prism.maintenance))
+        .environment(fanout(
+            \.loadMaintenanceLog, \.saveMaintenanceLog, \.now, \.newID, \.parseNumber
+        ) >>> MaintenanceFeature.Environment.init)
 
     public static let navigate = ScopeOf<AppScopes>
         .action(\.navigate)

@@ -36,6 +36,8 @@ public extension World {
             saveTripDistance: { _ in .just(.success(())) },
             loadFuelLog: { .just(.success(.empty)) },
             saveFuelLog: { _ in .just(.success(())) },
+            loadMaintenanceLog: { .just(.success(.empty)) },
+            saveMaintenanceLog: { _ in .just(.success(())) },
             phoneBattery: { 1.0 },
             isLowPowerMode: { false },
             fetchStation: { _, _ in .just(nil) },

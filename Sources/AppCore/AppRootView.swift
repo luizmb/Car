@@ -114,6 +114,19 @@ public struct AppRootView: View, Routable {
                                 .padding(14)
                                 .glassEffect(.regular, in: .circle)
                         }
+
+                        // The wrench doubles as the status lamp: white when nothing is owed,
+                        // amber inside a warning window, red when overdue — the same colours the
+                        // rows on its screen wear, driven by the same computation.
+                        Button {
+                            viewStore.dispatch(.navigation(.push(.maintenance)))
+                        } label: {
+                            Image(systemName: "wrench.and.screwdriver.fill")
+                                .font(.title3)
+                                .foregroundStyle(maintenanceTint)
+                                .padding(14)
+                                .glassEffect(.regular, in: .circle)
+                        }
                     }
                     .padding(.trailing, 16)
                     .padding(.bottom, 190)
@@ -130,6 +143,14 @@ public struct AppRootView: View, Routable {
     /// Shown continuously rather than only when spoken. The two spoken calls happen and stop; this
     /// keeps answering "what am I doing next" for the whole approach, which is what replaces
     /// glancing at a phone on a bike.
+    private var maintenanceTint: Color {
+        switch viewStore.state.maintenanceStatus {
+        case .ok: .primary
+        case .warning: .yellow
+        case .due: .red
+        }
+    }
+
     @ViewBuilder
     private var guidanceBanner: some View {
         if let banner = viewStore.state.guidanceBanner {

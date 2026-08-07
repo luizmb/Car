@@ -18,6 +18,7 @@ public enum AppRoute: Hashable, Sendable {
     case fuel
     case navigate
     case rides
+    case maintenance
 }
 
 // MARK: - NavigationRequest
@@ -36,4 +37,6 @@ public enum NavigationRequest: Sendable, Equatable {
     case navigate
     /// And likewise again: the review screen reads the journey log itself.
     case rides
+    /// Likewise: the maintenance screen reads its own log and asks the app for the odometer.
+    case maintenance
 }
