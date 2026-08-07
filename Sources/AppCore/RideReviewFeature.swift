@@ -30,6 +30,17 @@ public enum RideReviewFeature {
         /// share sheet can never offer the previous ride's file.
         public var exportURL: URL?
 
+        /// The moment the finger names on any chart — the same rule on all of them, and the ball
+        /// on the map. Store state rather than view state: every UI event lands here, so the scrub
+        /// is inspectable, loggable, and one source of truth across four charts and a map.
+        public var scrubTime: Date?
+        /// Seconds of ride visible in the charts. Reset to the whole ride on selection; a pinch
+        /// narrows it, and every chart wears the same window.
+        public var chartWindowSeconds: Double = 3_600
+        /// The window the current pinch began on, so zoom is relative to it rather than
+        /// compounding per frame. `nil` between pinches.
+        public var pinchBaseSeconds: Double?
+
         public init() {}
 
         public var selectedRide: Ride? {
@@ -44,6 +55,12 @@ public enum RideReviewFeature {
         case appeared
         case loaded([Ride])
         case select(Date?)
+        /// A finger over a chart named a moment, or lifted (`nil`).
+        case scrub(Date?)
+        /// The pinch's current magnification. The reducer owns the arithmetic, so the view carries
+        /// no zoom state of its own.
+        case chartPinchChanged(Double)
+        case chartPinchEnded
         case exportGPX
         case exported(URL?)
     }
@@ -100,11 +117,34 @@ public enum RideReviewFeature {
                 }
 
             case let .select(id):
-                return .reduce {
-                    $0.selected = id
+                return .reduce { state in
+                    state.selected = id
                     // A share sheet must never offer the previous ride's file.
-                    $0.exportURL = nil
+                    state.exportURL = nil
+                    state.scrubTime = nil
+                    state.pinchBaseSeconds = nil
+                    // The window opens on the whole ride; the floor keeps a 30-second hop from
+                    // producing a chart too narrow to hold a single axis label.
+                    if let id, let ride = state.rides.first(where: { $0.id == id }) {
+                        state.chartWindowSeconds = max(60, ride.duration)
+                    }
                 }
+
+            case let .scrub(time):
+                return .reduce { $0.scrubTime = time }
+
+            case let .chartPinchChanged(magnification):
+                return .reduce {
+                    let full = $0.selectedRide.map { max(60, $0.duration) } ?? 3_600
+                    let base = $0.pinchBaseSeconds ?? $0.chartWindowSeconds
+                    $0.pinchBaseSeconds = base
+                    // Horizontal only, by construction: the window narrows, the y-axes stay put.
+                    // Clamped between half a minute and the whole ride.
+                    $0.chartWindowSeconds = min(full, max(30, base / max(0.1, magnification)))
+                }
+
+            case .chartPinchEnded:
+                return .reduce { $0.pinchBaseSeconds = nil }
 
             case .exportGPX:
                 guard let ride = context.stateBefore?.selectedRide else { return .doNothing }
