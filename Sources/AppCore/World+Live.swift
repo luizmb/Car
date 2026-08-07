@@ -24,6 +24,25 @@ private final class LocationBox: @unchecked Sendable {
     nonisolated(unsafe) let delegate = LocationDelegate()
 }
 
+/// How good a voice is, as one number.
+///
+/// `quality` is the headline, but it does not separate the two worst tiers: both `compact` and
+/// `super-compact` report `.default`, and super-compact is markedly the more synthetic of the two.
+/// The identifier says which, so it breaks the tie.
+private func voiceRank(_ voice: AVSpeechSynthesisVoice) -> Int {
+    let identifier = voice.identifier.lowercased()
+    let tier: Int = if identifier.contains("premium") {
+        30
+    } else if identifier.contains("enhanced") {
+        20
+    } else if identifier.contains("super-compact") {
+        0
+    } else {
+        10
+    }
+    return voice.quality.rawValue * 100 + tier
+}
+
 private final class SpeechBox: @unchecked Sendable {
     nonisolated(unsafe) let synth = AVSpeechSynthesizer()
     // Releasing the session between journeys is a real saving — an active `.playback` session with
@@ -79,10 +98,34 @@ private final class SpeechBox: @unchecked Sendable {
 
     private func utterance(_ text: String) -> AVSpeechUtterance {
         let u = AVSpeechUtterance(string: text)
-        u.voice = AVSpeechSynthesisVoice(language: "en-GB")
+        u.voice = SpeechBox.voice
         u.rate  = 0.65
         return u
     }
+
+    /// The best British voice actually installed, rather than whatever the language defaults to.
+    ///
+    /// `AVSpeechSynthesisVoice(language: "en-GB")` returns the system default, which on a phone
+    /// nobody has configured is `com.apple.voice.super-compact.en-GB.Daniel` — the smallest and
+    /// most synthetic tier Apple ships, and the reason the app sounded like a 1990s answering
+    /// machine. Enumerating and ranking costs nothing and picks a premium or enhanced voice the
+    /// moment one exists.
+    ///
+    /// The good ones are **downloads**, not code: Settings → Accessibility → Spoken Content →
+    /// Voices → English (UK). Until one is installed there is genuinely nothing better on the
+    /// device, so this degrades to the same voice as before rather than pretending otherwise.
+    nonisolated(unsafe) static let voice: AVSpeechSynthesisVoice? = {
+        let candidates = AVSpeechSynthesisVoice.speechVoices().filter {
+            // British first. The novelty voices (Zarvox, Bells, Bad News) are `en-US` and live
+            // under a different identifier prefix — excluded explicitly, because a ranking that
+            // ever picked one would be a very bad surprise at 60 mph.
+            $0.language.hasPrefix("en-GB")
+                && !$0.identifier.hasPrefix("com.apple.speech.synthesis.voice.")
+                && !$0.identifier.lowercased().contains("eloquence")
+        }
+        return candidates.max { voiceRank($0) < voiceRank($1) }
+            ?? AVSpeechSynthesisVoice(language: "en-GB")
+    }()
 
     /// Speaks a sequence with a pause between each item.
     ///
@@ -117,7 +160,7 @@ private final class SpeechBox: @unchecked Sendable {
     private func enqueue(_ texts: [String], gap: TimeInterval) {
         for text in texts {
             let u = AVSpeechUtterance(string: text)
-            u.voice = AVSpeechSynthesisVoice(language: "en-GB")
+            u.voice = SpeechBox.voice
             u.rate  = 0.65
             u.postUtteranceDelay = gap
             synth.speak(u)
@@ -177,6 +220,14 @@ extension World {
         // Absent is normal: without the extract the app behaves exactly as it did before, which is
         // the point of it being a cache rather than a replacement.
         let localRoads = LocalRoadStore()
+
+        // Which voice actually got picked, once, at startup. Without it there is no way to tell a
+        // phone with premium voices installed from one still on super-compact — they sound
+        // different and nothing else reports which is in use.
+        rideLog.append(
+            "voice \(SpeechBox.voice?.identifier ?? "none") "
+                + "quality=\(SpeechBox.voice?.quality.rawValue ?? 0)"
+        )
 
         // Locale captured once — all formatters below are pure closures over this snapshot
         let locale     = Locale.current
