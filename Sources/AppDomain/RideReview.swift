@@ -226,6 +226,33 @@ public func assembleRides(from records: [JourneyRecord]) -> [Ride] {
     return rides
 }
 
+/// The places routes have been started to, newest first, deduplicated.
+///
+/// The best completion list is the places someone actually goes: home, work, the parents', the
+/// usual fuel stop. Each carries the coordinates it was resolved to at the time, so choosing one
+/// skips the completer round-trip entirely — it is already a resolved destination.
+public func recentDestinations(from records: [JourneyRecord]) -> [AddressSuggestion] {
+    var seen: Set<String> = []
+    return records
+        .sorted { $0.time > $1.time }
+        .compactMap { record -> AddressSuggestion? in
+            guard let payload = record.payload as? DestinationPayload else { return nil }
+            let title = payload.name ?? String(format: "%.4f, %.4f", payload.lat, payload.lon)
+            guard seen.insert(title).inserted else { return nil }
+            return AddressSuggestion(
+                title: title, subtitle: "",
+                latitude: Latitude(payload.lat), longitude: Longitude(payload.lon)
+            )
+        }
+}
+
+/// The destination a ride was heading to, when one was set.
+public extension Ride {
+    var destination: DestinationPayload? {
+        records.compactMap { $0.payload as? DestinationPayload }.last
+    }
+}
+
 // MARK: - GPX
 
 /// The ride's track as GPX 1.1 — the lingua franca every mapping tool imports.

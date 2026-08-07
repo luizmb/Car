@@ -59,6 +59,26 @@ struct RoutePlannerView: View {
                 }
             }
 
+            // Where this rider actually goes, offered before they type. Each entry already
+            // carries the coordinates it resolved to at the time, so choosing one skips the
+            // completer and the geocoder entirely.
+            if viewStore.state.query.isEmpty, viewStore.state.suggestions.isEmpty,
+               !viewStore.state.recentDestinations.isEmpty {
+                Section("Recent") {
+                    ForEach(viewStore.state.recentDestinations) { recent in
+                        Button {
+                            viewStore.dispatch(.destinationResolved(recent))
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "clock.arrow.circlepath")
+                                    .foregroundStyle(.secondary)
+                                Text(recent.title).foregroundStyle(.primary)
+                            }
+                        }
+                    }
+                }
+            }
+
             // No Search button. Completions are what Apple Maps' own suggestion list uses — cheap,
             // and they arrive as you type, which is what makes a street name give more than the one
             // result a full search resolves it to.

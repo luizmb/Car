@@ -29,6 +29,9 @@ public enum NavigationFeature {
         /// a separate thing that arrives later.
         public var query: String = ""
         public var suggestions: [AddressSuggestion] = []
+        /// The places routes have actually been started to, newest first. Shown while the search
+        /// box is empty — the best completion list is where this rider actually goes.
+        public var recentDestinations: [AddressSuggestion] = []
         public var isSearching: Bool = false
 
         /// Where they chose to go. Set on selection, and the trigger for routing.
@@ -78,6 +81,7 @@ public enum NavigationFeature {
         /// Carries the query it answers, so a slow completion for "amp" cannot overwrite the
         /// results for "ampthill" typed since.
         case suggestionsLoaded(String, [AddressSuggestion])
+        case recentsLoaded([AddressSuggestion])
         case choose(AddressSuggestion)
         /// The chosen suggestion, now with coordinates. `nil` means it could not be placed.
         case destinationResolved(AddressSuggestion?)
@@ -100,6 +104,8 @@ public enum NavigationFeature {
         /// Completions for a fragment. Cheap and local-ish, so it runs as the rider types.
         public let completeAddress: @Sendable (String, Latitude?, Longitude?)
             -> Publisher<[AddressSuggestion], Never>
+        /// The journey log, for the recent-destinations list.
+        public let loadJourneyRecords: @Sendable () -> Publisher<[JourneyRecord], Never>
         /// A completion turned into a position. Costs a request, so it runs once, for the one picked.
         public let resolveAddress: @Sendable (AddressSuggestion) -> Publisher<AddressSuggestion?, Never>
         public let routes: @Sendable (Coordinate, Coordinate, RoutePreferences)
@@ -117,6 +123,7 @@ public enum NavigationFeature {
         public init(
             completeAddress: @escaping @Sendable (String, Latitude?, Longitude?)
                 -> Publisher<[AddressSuggestion], Never>,
+            loadJourneyRecords: @escaping @Sendable () -> Publisher<[JourneyRecord], Never>,
             resolveAddress: @escaping @Sendable (AddressSuggestion) -> Publisher<AddressSuggestion?, Never>,
             routes: @escaping @Sendable (Coordinate, Coordinate, RoutePreferences)
                 -> Publisher<Result<[RouteOption], RouteError>, Never>,
@@ -127,6 +134,7 @@ public enum NavigationFeature {
             now: @escaping @Sendable () -> Date
         ) {
             self.completeAddress = completeAddress
+            self.loadJourneyRecords = loadJourneyRecords
             self.resolveAddress = resolveAddress
             self.routes = routes
             self.speak = speak
@@ -145,7 +153,13 @@ public enum NavigationFeature {
         .handle { action, context in
             switch action {
             case .appeared:
-                return .doNothing
+                return .produce { ctx in
+                    ctx.environment.loadJourneyRecords()
+                        .asEffect { Action.recentsLoaded(recentDestinations(from: $0)) }
+                }
+
+            case let .recentsLoaded(recents):
+                return .reduce { $0.recentDestinations = recents }
 
             case let .setQuery(text):
                 return .reduce {

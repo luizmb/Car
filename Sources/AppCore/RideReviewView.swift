@@ -209,6 +209,21 @@ private struct RideDetailView: View {
                 }
             }
 
+            if let destination = ride.destination {
+                Section {
+                    Button {
+                        viewStore.dispatch(.navigateAgain(destination))
+                    } label: {
+                        Label(
+                            "Ride there again" + (destination.name.map { " · \($0)" } ?? ""),
+                            systemImage: "arrow.triangle.turn.up.right.diamond"
+                        )
+                    }
+                } footer: {
+                    Text("Routes are computed fresh — same destination, today's roads.")
+                }
+            }
+
             Section {
                 if let url = viewStore.state.exportURL {
                     ShareLink(item: url) {

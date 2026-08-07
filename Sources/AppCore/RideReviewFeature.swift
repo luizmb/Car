@@ -63,6 +63,11 @@ public enum RideReviewFeature {
         case chartPinchEnded
         case exportGPX
         case exported(URL?)
+        /// Ride to this destination again. MapKit cannot replay a route's steps — directions are
+        /// computed fresh for current traffic — but the *destination* replays perfectly, and it is
+        /// the part the rider means. Handled at app level, which is the only place that can close
+        /// this screen and open the planner.
+        case navigateAgain(DestinationPayload)
     }
 
     // MARK: Environment
@@ -158,6 +163,10 @@ public enum RideReviewFeature {
 
             case let .exported(url):
                 return .reduce { $0.exportURL = url }
+
+            // App-level: closes this screen, opens the planner, hands it the destination.
+            case .navigateAgain:
+                return .doNothing
             }
         }
     }
