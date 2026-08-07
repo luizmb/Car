@@ -314,3 +314,59 @@ struct AverageZoneTests {
         #expect(averageZoneEndAnnouncement(z) == "Average speed check ends.")
     }
 }
+
+// MARK: - Cameras on the road beside
+
+@Suite("Cameras that belong to another road")
+struct CameraPlausibilityTests {
+    private func camera(_ id: Int, _ mph: Double?) -> SpeedCamera {
+        SpeedCamera(
+            id: id, kind: .fixed,
+            latitude: Latitude(51.86), longitude: Longitude(-0.417),
+            limit: mph.map { MPH($0) }, direction: nil
+        )
+    }
+
+    /// Six real cameras were announced on a 30 mph stretch of the A1081, every one of them five to
+    /// eight metres from a `trunk_link` — the M1 slip roads alongside. At a junction every road is
+    /// within a few tens of metres of every other, so distance cannot separate them; the limit can.
+    @Test("A camera claiming a much higher limit than the road is watching another road")
+    func dropsFasterCameras() {
+        let kept = plausible([camera(1, 50)], onRoadLimited: MPH(30))
+        #expect(kept.isEmpty)
+    }
+
+    /// Deliberately one-directional. A camera claiming *less* than the road is what roadworks look
+    /// like, and those are ours — suppressing a real camera costs a fine.
+    @Test("A camera claiming a lower limit is kept")
+    func keepsSlowerCameras() {
+        #expect(plausible([camera(1, 30)], onRoadLimited: MPH(60)).count == 1)
+    }
+
+    @Test("A rounded or equal limit survives")
+    func keepsNearEqual() {
+        #expect(plausible([camera(1, 40)], onRoadLimited: MPH(30)).count == 1)
+        #expect(plausible([camera(2, 30)], onRoadLimited: MPH(30)).count == 1)
+    }
+
+    /// Most cameras carry no limit at all, and an unknown one says nothing about which road it is
+    /// on — so it is kept, since a missed camera is the expensive error.
+    @Test("A camera with no limit is kept")
+    func keepsUnknown() {
+        #expect(plausible([camera(1, nil)], onRoadLimited: MPH(30)).count == 1)
+    }
+
+    /// With no known road limit there is nothing to compare against.
+    @Test("With no road limit nothing is dropped")
+    func keepsAllWithoutRoadLimit() {
+        #expect(plausible([camera(1, 70)], onRoadLimited: nil).count == 1)
+    }
+
+    /// "Average speed check, 50" was heard on a 30 mph street for the same reason.
+    @Test("The same rule applies to average-speed zones")
+    func zonesToo() {
+        let zone = AverageZone(id: 1, limit: MPH(50), start: nil, end: nil)
+        #expect(plausible([zone], onRoadLimited: MPH(30)).isEmpty)
+        #expect(plausible([zone], onRoadLimited: MPH(50)).count == 1)
+    }
+}

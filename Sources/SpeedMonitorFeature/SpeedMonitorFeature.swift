@@ -398,7 +398,10 @@ public enum SpeedMonitorFeature {
                             // Same filter the cameras get, and for the same reason: a zone is
                             // entered when its start is within 250 m, which in a town reaches
                             // roads the rider is nowhere near.
-                            zones: onRoute(nearby(zones, of: newLocation), shape: routeShape),
+                            zones: plausible(
+                                onRoute(nearby(zones, of: newLocation), shape: routeShape),
+                                onRoadLimited: roadLimitFor(roadInfo)
+                            ),
                             cameras: cameras,
                             active: activeZone, wasOver: wasOver, env: ctx.environment
                         )
@@ -553,14 +556,20 @@ private func cameraEffects(
     // While following a route, only cameras actually *on* it count: the ±100° cone is deliberately
     // permissive, and at a roundabout that means every camera on every arm — six announced in
     // forty-three seconds on one ride, plus a 70 mph camera on a motorway crossing perpendicular.
-    let ahead = onRoute(
-        camerasAhead(
-            cameras,
-            at: (location.latitude, location.longitude),
-            course: location.course,
-            speed: speed
+    // The road's own limit, where it is known — a camera claiming to enforce a much higher speed
+    // is watching a different road.
+    let roadLimit = roadLimitFor(roadInfo)
+    let ahead = plausible(
+        onRoute(
+                camerasAhead(
+                cameras,
+                at: (location.latitude, location.longitude),
+                course: location.course,
+                speed: speed
+            ),
+            shape: routeShape
         ),
-        shape: routeShape
+        onRoadLimited: roadLimit
     )
     guard let next = ahead.first(where: { !announced.contains($0.id) }) else { return .empty }
 
@@ -742,6 +751,12 @@ private func nearby(_ zones: [AverageZone], of location: LocationUpdate) -> [Ave
             distanceMetres(from: here, to: $0.pair) < 3_000
         }
     }
+}
+
+/// The road's signed limit, where OSM has one.
+func roadLimitFor(_ roadInfo: RoadInfo?) -> MPH? {
+    if case let .value(mph) = roadInfo?.limit { return mph }
+    return nil
 }
 
 private func averageZoneEffects(

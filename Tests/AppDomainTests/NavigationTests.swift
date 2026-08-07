@@ -1248,6 +1248,60 @@ struct CompoundingAdvanceTests {
     }
 }
 
+@Suite("What may be announced at all")
+struct AnnouncementInvariantTests {
+    private func metres(_ m: Meters) -> String { "\(Int(m.rawValue)) m" }
+    private func at(_ latitude: Double) -> Coordinate {
+        Coordinate(latitude: Latitude(latitude), longitude: Longitude(-0.46))
+    }
+
+    /// Roads a kilometre apart, so nothing chains.
+    private var route: RouteOption {
+        RouteOption(
+            name: "A", distance: Meters(6_000), travelTime: 700,
+            hasTolls: false, hasMotorways: false,
+            steps: (1...5).map {
+                RouteStep(instructions: "onto Road \($0)", distance: Meters(1_100),
+                          notice: nil, start: at(52.0 + Double($0) / 100))
+            },
+            shape: (0..<70).map { at(52.0 + Double($0) / 1_000) }
+        )
+    }
+
+    /// The rule, in the rider's words: on road A you hear about B, or about B and then C when they
+    /// come together — but never about C on its own. Being told to turn onto a road two manoeuvres
+    /// away is the failure that made the app untrustworthy, and it is worth a test that fails
+    /// loudly rather than a comment saying it cannot happen.
+    @Test("Nothing beyond the next manoeuvre is ever announced alone")
+    func neverSkipsAhead() {
+        var state = GuidanceState()
+        for tick in 0..<200 {
+            let update = guidance(
+                route: route, at: at(52.0 + Double(tick) * 0.00025), speed: MPS(13),
+                state: state, formatDistance: metres
+            )
+            if let said = update.announcement {
+                let current = route.steps[safe: state.stepIndex]?.instructions
+                let next = route.steps[safe: state.stepIndex + 1]?.instructions
+                // Whatever was said must name the manoeuvre being approached. It may also name the
+                // one after, and nothing else.
+                #expect(
+                    current.map { said.contains($0) } ?? false,
+                    "said \"\(said)\" while approaching \(current ?? "nothing")"
+                )
+                for (index, step) in route.steps.enumerated()
+                where index != state.stepIndex && step.instructions != next {
+                    #expect(
+                        !said.contains(step.instructions),
+                        "said \"\(said)\" which names step \(index), not \(state.stepIndex)"
+                    )
+                }
+            }
+            state = update.state
+        }
+    }
+}
+
 // MARK: - Badges
 
 @Suite("Route labels")

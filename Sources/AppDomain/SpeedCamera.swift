@@ -382,6 +382,46 @@ public func onRoute(_ zones: [AverageZone], shape: [Coordinate]) -> [AverageZone
     }
 }
 
+/// How much faster than the road a camera may claim before it is judged to be watching a different
+/// one.
+///
+/// Ten, so a camera enforcing the same limit or a slightly rounded version of it survives.
+public let cameraLimitToleranceMPH: Double = 10
+
+/// Cameras plausibly about the road being ridden.
+///
+/// Proximity cannot settle this on its own. Six cameras were announced on a 30 mph stretch of the
+/// A1081 — all real, all in OSM, all tagged 50 — and every one of them sits five to eight metres
+/// from a `trunk_link`: the M1 slip roads running alongside. At a junction every road is within a
+/// few tens of metres of every other, so no distance threshold separates them.
+///
+/// The limit does. A camera **enforcing a higher speed than the road underneath** is watching a
+/// faster road; that is what a slip road beside a 30 is.
+///
+/// Deliberately one-directional. A camera claiming a *lower* limit than the road is exactly what
+/// roadworks look like, and those are ours — so they are kept. Suppressing a real camera costs a
+/// fine, which is why this only ever discards the case that cannot be ours.
+public func plausible(_ cameras: [SpeedCamera], onRoadLimited roadLimit: MPH?) -> [SpeedCamera] {
+    guard let roadLimit else { return cameras }
+    return cameras.filter { camera in
+        guard let limit = camera.limit else { return true }
+        return limit.rawValue <= roadLimit.rawValue + cameraLimitToleranceMPH
+    }
+}
+
+/// Zones plausibly about the road being ridden.
+///
+/// Same argument as ``plausible(_:onRoadLimited:)`` and the same asymmetry: an average-speed check
+/// claiming 50 while the road underneath is signed 30 is watching the dual carriageway alongside,
+/// not this street. A zone claiming *less* than the road is roadworks, and that is ours.
+public func plausible(_ zones: [AverageZone], onRoadLimited roadLimit: MPH?) -> [AverageZone] {
+    guard let roadLimit else { return zones }
+    return zones.filter { zone in
+        guard let limit = zone.limit else { return true }
+        return limit.rawValue <= roadLimit.rawValue + cameraLimitToleranceMPH
+    }
+}
+
 // MARK: - Announcement
 
 /// What to say about a camera.
