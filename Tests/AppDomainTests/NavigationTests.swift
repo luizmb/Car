@@ -939,10 +939,12 @@ struct SkippedStepTests {
     @Test("A junction that was never reached does not strand guidance for ever")
     func skippedStepAdvances() {
         // Well past the first turn and closer to the second, having never gone near the first.
+        // Progress is seeded to match, because a rider arrives there by riding — a fresh state
+        // means "at the start of the route", which is now taken literally.
         let update = guidance(
             route: route,
             at: Coordinate(latitude: Latitude(52.018), longitude: Longitude(-0.46)),
-            speed: MPS(13), state: GuidanceState(), formatDistance: metres
+            speed: MPS(13), state: GuidanceState(progress: 2_000), formatDistance: metres
         )
         #expect(update.state.stepIndex == 1)
     }

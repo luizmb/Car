@@ -285,7 +285,10 @@ public func distanceAlongRoute(
     ///
     /// `nil` means no progress is known yet — the first fix — and the whole route is fair game.
     near: Double? = nil,
-    window: Double = 600
+    // 250 m is twenty seconds at 30 mph — far more than a fix ever advances — and small enough
+    // that it cannot reach round a roundabout to the far side and match the wrong lap. A wide
+    // window defeats the point of having one.
+    window: Double = 250
 ) -> Double? {
     guard shape.count > 1 else { return nil }
     var travelled = 0.0
@@ -465,7 +468,7 @@ public struct GuidanceState: Sendable, Equatable {
         stage: GuidanceStage = .none,
         closest: Double = .greatestFiniteMagnitude,
         nextAlreadyAnnounced: Bool = false,
-        progress: Double? = nil,
+        progress: Double? = 0,
         arrived: Bool = false
     ) {
         self.stepIndex = stepIndex
