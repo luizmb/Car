@@ -87,12 +87,24 @@ public struct RouteStep: Sendable, Equatable {
     /// This is what makes guidance possible at all: an instruction without a position can be
     /// listed but never spoken at the right moment.
     public let start: Coordinate?
+    /// The step's own stretch of road, exactly as MapKit segments it.
+    ///
+    /// **This is the structure the first guidance engine threw away.** A step's polyline begins at
+    /// the manoeuvre its instruction names and ends at the next one — "Turn right onto Tennyson
+    /// Road" with a 65 m polyline *is* the 65 m of Tennyson Road you ride after turning. Which
+    /// means MapKit already answers the question every distance heuristic kept getting wrong:
+    /// an instruction is completed exactly when the rider's position lies on this path.
+    public let path: [Coordinate]
 
-    public init(instructions: String, distance: Meters, notice: String?, start: Coordinate? = nil) {
+    public init(
+        instructions: String, distance: Meters, notice: String?,
+        start: Coordinate? = nil, path: [Coordinate] = []
+    ) {
         self.instructions = instructions
         self.distance = distance
         self.notice = notice
         self.start = start
+        self.path = path
     }
 }
 
@@ -308,7 +320,9 @@ public func distanceAlongRoute(
             // nearer the point is to the segment's end than its start. Good to a few metres, which
             // is far below the thresholds this feeds.
             let toStart = distanceMetres(from: point.pair, to: a.pair)
-            let into = max(0, min(segment, (toStart * toStart - offset * offset).squareRoot()))
+            // Same NaN guard as `pathFix`: the difference goes fractionally negative at a
+            // perpendicular, and a NaN through `min` reads as the whole segment.
+            let into = min(segment, max(0, toStart * toStart - offset * offset).squareRoot())
             best = (offset, travelled + into)
         }
         travelled += segment
@@ -416,7 +430,7 @@ public func guidanceDistances(speed: MPS) -> (early: Meters, imminent: Meters) {
     return (Meters(early), Meters(imminent))
 }
 
-/// What has been said about the step being approached.
+/// What has been said about the manoeuvre being approached.
 ///
 /// Tracked so each call happens once. Without it every fix inside the window would repeat the
 /// instruction, which at one fix a second is unusable in a helmet.
@@ -428,73 +442,54 @@ public enum GuidanceStage: Int, Sendable, Equatable, Comparable {
     public static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
 }
 
-/// Where the rider is along a route, and what remains to be said.
+/// Where the rider is along a route, as the *step machine* sees it.
+///
+/// Small on purpose. The previous state carried a closest-approach, a spoken-ahead flag and a
+/// scalar progress along a flattened shape, and the interactions between them produced every
+/// off-by-one this feature has shipped. What replaced them is MapKit's own structure: each step's
+/// polyline is the road ridden while executing that instruction, so "which instruction is next"
+/// reduces to "whose polyline am I on".
 public struct GuidanceState: Sendable, Equatable {
-    /// The step being approached. Steps are followed in order rather than by proximity: a route that
-    /// doubles back passes close to a later manoeuvre long before it is due, and picking the nearest
-    /// would announce it then.
+    /// The step whose instruction is the next to complete. Everything spoken is about this step —
+    /// possibly with the one after attached when they come at once — and never about anything
+    /// beyond it. That is the rider's rule, and here it holds by construction.
     public var stepIndex: Int
     public var stage: GuidanceStage
-    /// The closest this step's junction has been so far.
-    ///
-    /// A step is finished by *receding*, not by being reached — which is the difference between
-    /// "you are near the turn" and "you have taken it". Being near it was the rule at first and it
-    /// was wrong in the most visible way possible: MapKit's first manoeuvre is often a few dozen
-    /// metres from where the bike is parked, so pressing GO consumed it on the spot and the very
-    /// first instruction shown was the *second* turn of the route.
-    public var closest: Double
-    /// Whether the announcement just made already covered the *next* manoeuvre too.
-    ///
-    /// Chaining says two things at once — "turn right onto Markyate St Lane, then in 40 metres keep
-    /// left" — and the second one then arrived again seconds later on its own, because passing the
-    /// first leaves the rider already inside the second's window. That is what makes the whole
-    /// sequence run ahead: each pair spends two announcements to cover two manoeuvres but only one
-    /// junction's worth of road, so by the second junction the *third* instruction is current.
-    ///
-    /// Carried so the covered step can be entered already-announced rather than said twice.
-    public var nextAlreadyAnnounced: Bool
-    /// How far along the route the rider has got, in metres from its start.
-    ///
-    /// Carried between fixes rather than searched fresh each time. A route passes near itself
-    /// constantly — most of all at a roundabout — so a global search for the nearest segment can
-    /// match the wrong lap and leap the progress forward, which skips manoeuvres. Knowing roughly
-    /// where the rider was a second ago is what makes the next answer continuous.
-    public var progress: Double?
     /// Set once the last step has been passed, so arrival is announced exactly once.
     public var arrived: Bool
 
-    public init(
-        stepIndex: Int = 0,
-        stage: GuidanceStage = .none,
-        closest: Double = .greatestFiniteMagnitude,
-        nextAlreadyAnnounced: Bool = false,
-        progress: Double? = 0,
-        arrived: Bool = false
-    ) {
+    public init(stepIndex: Int = 0, stage: GuidanceStage = .none, arrived: Bool = false) {
         self.stepIndex = stepIndex
         self.stage = stage
-        self.closest = closest
-        self.nextAlreadyAnnounced = nextAlreadyAnnounced
-        self.progress = progress
         self.arrived = arrived
     }
 }
 
-/// How far past the closest approach counts as having taken the turn.
+/// How far from a step's path still counts as being on it.
 ///
-/// Generous enough not to trip on GPS noise while stopped at the junction — a fix wandering by ten
-/// metres must not read as having gone through it — and small enough that the next instruction
-/// arrives promptly once actually moving.
-let passedByMetres: Double = 30
+/// Roughly a carriageway plus GPS error. Wider would match the parallel road; narrower would lose
+/// the rider to a bad fix mid-turn.
+public let stepMatchCorridorMetres: Double = 35
 
-/// How far beyond a junction, measured along the route, counts as having missed it.
+/// How far *into* a step's path the rider must be before its instruction counts as done.
 ///
-/// Much wider than ``passedByMetres``. That one confirms a turn was taken by watching it recede;
-/// this one writes one off as never taken, which is the more destructive conclusion — it advances
-/// with nothing said — so it waits until there is no doubt.
-let missedByMetres: Double = 150
+/// The path begins at the junction itself, where every road at the junction is within a few metres
+/// of every other — so matching near the start says only "at the junction", not "took the turn".
+/// Twenty metres in says the turn was taken.
+public let stepEntryMetres: Double = 20
 
-/// How short a run between two manoeuvres counts as "and then immediately".
+/// A step short enough to be jumped entirely between two one-second fixes.
+public let shortStepSkipMetres: Double = 60
+
+/// How far off a path's local direction the travel vector may point and still count as riding it.
+///
+/// Generous, because junctions bend sharply mid-turn. What it must exclude is the *opposite*
+/// vector: a route that goes out and comes back — a U-turn at a roundabout onto the same road —
+/// crosses its own geography exactly, and only the direction of travel tells the legs apart. A
+/// rider crossing a future step's road the wrong way must not mark it visited.
+public let stepDirectionToleranceDegrees: Double = 100
+
+/// How short a run between two manoeuvres counts as "and then".
 ///
 /// At 30 mph, 150 m is about eleven seconds — not enough to hear one instruction, act on it, and
 /// then be told the next in time to get into the right lane for it. Below that the two are really
@@ -514,20 +509,11 @@ func formatGap(_ distance: Meters) -> String {
 
 /// The instruction for a step, with the one after it attached when they come too close together.
 ///
-/// "Turn left onto Tennyson Road, then immediately turn right onto London Road" — because being
-/// told only the first, in a junction where both happen within a few seconds, puts a rider in the
+/// "Turn left onto Tennyson Road, then in 60 metres turn right onto West Hill Road" — because
+/// being told only the first, in a junction where both happen within seconds, puts a rider in the
 /// wrong lane. Only ever two: a third would be a paragraph, and by then the first is done and the
-/// next call is due anyway.
-///
-/// **Spoken only.** The banner deliberately keeps showing the immediate next manoeuvre alone, since
-/// a glance has to answer one question, and the chained pair is twice the text for the half of it
-/// that matters right now.
-/// Whether the instruction at `index` carries the next one with it.
-public func chains(_ steps: [RouteStep], from index: Int, within: Double = chainWithinMetres) -> Bool {
-    guard let step = steps[safe: index] else { return false }
-    return step.distance.rawValue <= within && steps[safe: index + 1] != nil
-}
-
+/// next call is due anyway. The banner deliberately keeps showing the immediate next manoeuvre
+/// alone, since a glance has to answer one question.
 public func chainedInstruction(
     _ steps: [RouteStep], from index: Int, within: Double = chainWithinMetres
 ) -> String {
@@ -539,10 +525,6 @@ public func chainedInstruction(
         step.distance.rawValue <= within,
         let following = steps[safe: index + 1]
     else { return instruction }
-    // The gap, spoken. "Then immediately turn left" is a claim about *which* left, and on a
-    // residential street with side roads every thirty metres it is the wrong one — a rider who
-    // takes the next left is on the wrong road. The distance says the same thing without asserting
-    // anything false.
     let gap = formatGap(step.distance)
     return "\(instruction), then in \(gap) \(lowercasedFirst(following.instructions))"
 }
@@ -561,8 +543,8 @@ public struct GuidanceUpdate: Sendable, Equatable {
 /// The next manoeuvre, as something to keep on screen.
 ///
 /// Distinct from the spoken calls, which happen twice and then stop: a banner is *always* showing
-/// the current answer to "what am I doing next", counting down as the junction approaches. On a bike
-/// that is what replaces glancing at a phone.
+/// the current answer to "what am I doing next", counting down as the junction approaches. On a
+/// bike that is what replaces glancing at a phone.
 public struct GuidanceBanner: Sendable, Equatable {
     public let instruction: String
     /// Already formatted. The root view deliberately holds no `World` — it knows a view store and a
@@ -580,129 +562,180 @@ public struct GuidanceBanner: Sendable, Equatable {
     }
 }
 
+// MARK: - Riding a step's path
+
+/// Where a position falls on a path: how far off it, how far along it, and whether the travel
+/// vector agrees with the path's local direction there.
+struct PathFix: Equatable {
+    let offset: Double
+    let along: Double
+    let aligned: Bool
+}
+
+/// The nearest point of `path` to `position`, measured perpendicular to its segments.
+func pathFix(_ path: [Coordinate], at position: Coordinate, heading: Course?) -> PathFix? {
+    guard path.count > 1 else { return nil }
+    var travelled = 0.0
+    var best: PathFix?
+    for index in 0..<(path.count - 1) {
+        guard let a = path[safe: index], let b = path[safe: index + 1] else { continue }
+        let segment = distanceMetres(from: a.pair, to: b.pair)
+        let offset = distanceToSegment(position, a, b)
+        if best.map({ offset < $0.offset }) ?? true {
+            let toStart = distanceMetres(from: position.pair, to: a.pair)
+            // `max(0, …)` *before* the square root. At a perpendicular the difference is zero in
+            // exact arithmetic and fractionally negative in floating point, and the NaN that falls
+            // out of the root defeats `min` — which turned "30 m before the junction" into "a full
+            // segment past it" and advanced steps that were never reached.
+            let into = min(segment, max(0, toStart * toStart - offset * offset).squareRoot())
+            let aligned: Bool
+            if let heading, segment > 1 {
+                var apart = abs(bearing(from: a.pair, to: b.pair) - heading.rawValue)
+                    .truncatingRemainder(dividingBy: 360)
+                if apart > 180 { apart = 360 - apart }
+                aligned = apart <= stepDirectionToleranceDegrees
+            } else {
+                // No usable travel vector — stopped, or a degenerate segment. Alignment cannot be
+                // judged, and refusing to match would strand a rider who pauses mid-turn.
+                aligned = true
+            }
+            best = PathFix(offset: offset, along: travelled + into, aligned: aligned)
+        }
+        travelled += segment
+    }
+    return best
+}
+
+/// Whether the rider is riding this step's road — on its path, past the junction mouth, going its
+/// way. This is the *visited* test: deterministic, local to one step, immune to how close any
+/// other part of the route happens to pass.
+func riding(_ step: RouteStep, at position: Coordinate, heading: Course?) -> Bool {
+    guard let fix = pathFix(step.path, at: position, heading: heading) else { return false }
+    return fix.offset <= stepMatchCorridorMetres && fix.aligned && fix.along >= stepEntryMetres
+}
+
+/// Metres still to ride before the manoeuvre at `steps[index]`.
+///
+/// Measured along the *previous* step's path where possible — the road the rider is on ends at the
+/// junction, so its remaining length is the honest distance, immune to bends. Falls back to the
+/// straight line for the first step or when the rider cannot be placed on the path.
+func distanceToManoeuvre(
+    _ steps: [RouteStep], index: Int, at position: Coordinate, heading: Course?
+) -> Double? {
+    guard let step = steps[safe: index] else { return nil }
+    if
+        let previous = steps[safe: index - 1],
+        previous.path.count > 1,
+        let fix = pathFix(previous.path, at: position, heading: heading),
+        fix.offset <= stepMatchCorridorMetres {
+        var length = 0.0
+        for i in 0..<(previous.path.count - 1) {
+            guard let a = previous.path[safe: i], let b = previous.path[safe: i + 1] else { continue }
+            length += distanceMetres(from: a.pair, to: b.pair)
+        }
+        return max(0, length - fix.along)
+    }
+    guard let start = step.start else { return nil }
+    return distanceMetres(from: position.pair, to: start.pair)
+}
+
 /// What to display for a fix, independent of what has been said about it.
 public func guidanceBanner(
     route: RouteOption, at position: Coordinate, state: GuidanceState,
     formatDistance: (Meters) -> String
 ) -> GuidanceBanner? {
-    guard !state.arrived else { return nil }
-    let steps = route.steps.filter { $0.start != nil }
-    guard let step = steps[safe: state.stepIndex], let start = step.start else { return nil }
-    let remaining = Meters(distanceMetres(from: position.pair, to: start.pair))
+    guard !state.arrived, let step = route.steps[safe: state.stepIndex] else { return nil }
+    guard let remaining = distanceToManoeuvre(
+        route.steps, index: state.stepIndex, at: position, heading: nil
+    ) else { return nil }
+    let metres = Meters(remaining)
     return GuidanceBanner(
         instruction: step.instructions,
-        distanceText: formatDistance(remaining),
-        distance: remaining
+        distanceText: formatDistance(metres),
+        distance: metres
     )
-}
-
-/// Move on to the next manoeuvre.
-///
-/// Carries one thing over: whether that manoeuvre has already been spoken as the tail of a chained
-/// announcement. It enters at `.imminent` if so — nothing left to say about it — which is what stops
-/// a close pair from spending two announcements and pulling everything after it forward.
-private func advanced(_ state: GuidanceState) -> GuidanceState {
-    var next = state
-    next.stepIndex += 1
-    next.stage = .none
-    next.closest = .greatestFiniteMagnitude
-    next.nextAlreadyAnnounced = false
-    return next
 }
 
 /// Advances guidance for one position fix.
 ///
-/// Pure, and the whole of the turn-by-turn logic — which is what makes it testable without a bike, a
-/// route server, or a moving map.
-///
-/// The rules, in order:
-/// - past the last step, announce arrival once
-/// - within the imminent window, give the instruction and move to the next step
-/// - within the early window, give it as a warning
-/// - otherwise say nothing
+/// Pure, and the whole of the turn-by-turn logic. One rule moves the machine forward, and it is
+/// the rider's own: an instruction is **visited** only when the rider is demonstrably riding the
+/// road it named — on that step's polyline, past the junction mouth, in its direction. Passing in
+/// front of a junction without entering it visits nothing. Crossing a future step's road on the
+/// other leg of a roundabout visits nothing, because the vector disagrees. And nothing is ever
+/// skipped: a manoeuvre that stops matching anything is the reroute machinery's problem, not an
+/// index to quietly advance past.
 public func guidance(
     route: RouteOption,
     at position: Coordinate,
     speed: MPS,
+    heading: Course? = nil,
     state: GuidanceState,
     formatDistance: (Meters) -> String
 ) -> GuidanceUpdate {
     guard !state.arrived else { return GuidanceUpdate(announcement: nil, state: state) }
 
-    let steps = route.steps.filter { $0.start != nil }
+    let steps = route.steps
     guard state.stepIndex < steps.count else {
-        // Nothing left to turn at. Arrival is judged against the end of the line rather than the
-        // last instruction, because the last instruction is usually "arrive" at the same place.
+        // Past the last instruction. Arrival is judged against the end of the line, because the
+        // last instruction is usually "arrive" at the same place.
         guard let destination = route.shape.last else {
             return GuidanceUpdate(announcement: nil, state: state)
         }
-        let remaining = distanceMetres(from: position.pair, to: destination.pair)
-        guard remaining <= 60 else { return GuidanceUpdate(announcement: nil, state: state) }
+        guard distanceMetres(from: position.pair, to: destination.pair) <= 60 else {
+            return GuidanceUpdate(announcement: nil, state: state)
+        }
         var next = state
         next.arrived = true
         return GuidanceUpdate(announcement: "You have arrived.", state: next)
     }
 
-    guard let step = steps[safe: state.stepIndex], let start = step.start else {
+    guard let step = steps[safe: state.stepIndex] else {
         return GuidanceUpdate(announcement: nil, state: state)
     }
 
-    let distance = Meters(distanceMetres(from: position.pair, to: start.pair))
-    let windows = guidanceDistances(speed: speed)
     var next = state
-    next.closest = min(state.closest, distance.rawValue)
-    // Continuous with the last fix rather than searched afresh, so a route that doubles back on
-    // itself cannot leap the rider forward past manoeuvres they have not reached.
-    next.progress = distanceAlongRoute(route.shape, to: position, near: state.progress)
-        ?? state.progress
 
-    // Taken the turn: it was reached, and is now receding.
-    if state.stage == .imminent, distance.rawValue > next.closest + passedByMetres {
-        return GuidanceUpdate(announcement: nil, state: advanced(next))
+    // Visited: the rider is riding the road this instruction named.
+    if riding(step, at: position, heading: heading) {
+        next.stepIndex += 1
+        next.stage = .none
+        return GuidanceUpdate(announcement: nil, state: next)
     }
 
-    if distance.rawValue <= windows.imminent.rawValue, state.stage < .imminent {
+    // A step short enough to be jumped between two fixes: if the rider is already riding the road
+    // *after* it, both were completed — and both were announced together as a chain, so nothing
+    // was skipped unheard. Bounded to one step, and only a short one; anything more is the reroute
+    // machinery's business.
+    if
+        step.distance.rawValue <= shortStepSkipMetres,
+        let following = steps[safe: state.stepIndex + 1],
+        riding(following, at: position, heading: heading) {
+        next.stepIndex += 2
+        next.stage = .none
+        return GuidanceUpdate(announcement: nil, state: next)
+    }
+
+    // Not visited — so the only thing speakable is this instruction (with its successor attached
+    // when they come at once). The rider's rule holds structurally: nothing beyond the next
+    // unvisited manoeuvre is ever announced on its own.
+    guard let remaining = distanceToManoeuvre(
+        steps, index: state.stepIndex, at: position, heading: heading
+    ) else { return GuidanceUpdate(announcement: nil, state: next) }
+
+    let windows = guidanceDistances(speed: speed)
+
+    if remaining <= windows.imminent.rawValue, state.stage < .imminent {
         next.stage = .imminent
         return GuidanceUpdate(
             announcement: chainedInstruction(steps, from: state.stepIndex), state: next
         )
     }
 
-    // **Or missed it entirely.** A junction never come within the "now" window never reaches
-    // `.imminent`, so the rule above can never fire and guidance sticks on it for the rest of the
-    // ride — sixteen minutes still saying "turn right onto High Street" while riding elsewhere.
-    //
-    // Measured **along the route**, not straight line. "Is a later manoeuvre nearer than this one"
-    // was tried and is badly wrong: roads curve, so a turn three kilometres ahead is routinely
-    // closer as the crow flies than the one before it, and replaying a real ride through that rule
-    // skipped three manoeuvres in single seconds without announcing any of them.
-    //
-    // Checked *after* the announcements and with a wide margin, so a junction being passed normally
-    // is announced first and only a genuinely missed one is written off.
-    if
-        // **Only a junction never reached.** Two rules can advance the step — this one and
-        // "reached and now receding" — and nothing stopped both from firing for the same
-        // manoeuvre: the receding rule advances at the junction, and on the very next fix this one
-        // sees the *new* step already behind and advances again. One extra advance per junction is
-        // an offset that grows, which is exactly what the rider described: off by one, then two,
-        // then three.
-        //
-        // A missed junction is one that was never come near. If it was, the receding rule owns it.
-        next.closest > windows.imminent.rawValue,
-        let travelled = next.progress,
-        // The junction is looked for near the rider's own progress for the same reason — a
-        // manoeuvre on a road the route uses twice would otherwise resolve to the wrong lap — but
-        // with a far wider window, because a junction that was *missed* is by definition behind,
-        // and a tight window around current progress would simply fail to find it.
-        let junction = distanceAlongRoute(route.shape, to: start, near: travelled, window: 4_000),
-        travelled > junction + missedByMetres {
-        return GuidanceUpdate(announcement: nil, state: advanced(next))
-    }
-
-    if distance.rawValue <= windows.early.rawValue, state.stage < .early {
+    if remaining <= windows.early.rawValue, state.stage < .early {
         next.stage = .early
         return GuidanceUpdate(
-            announcement: "In \(formatDistance(distance)), "
+            announcement: "In \(formatDistance(Meters(remaining))), "
                 + lowercasedFirst(chainedInstruction(steps, from: state.stepIndex)),
             state: next
         )
@@ -792,17 +825,27 @@ public struct RerouteState: Sendable, Equatable {
     /// Counted in fixes rather than seconds because the domain has no clock, and a fix a second is
     /// the only tick it needs.
     public var reroutingFixes: Int
+    /// Fixes to wait after a reroute completes before another may start.
+    ///
+    /// Without it, a rider still off the *new* route — stopped at a light beside it, say — triggers
+    /// a fresh reroute every three fixes, each resetting guidance and re-announcing its first
+    /// instruction. A real ride produced exactly that: "In 60 m, turn left onto West Hill Road"
+    /// five times in fifteen seconds, alternating destinations as near-equal rejoin candidates
+    /// flip-flopped. Two minutes of turn-A-turn-B in the rider's helmet.
+    public var cooldownFixes: Int
 
     public init(
         offRouteFixCount: Int = 0,
         deviations: Int = 0,
         isRerouting: Bool = false,
-        reroutingFixes: Int = 0
+        reroutingFixes: Int = 0,
+        cooldownFixes: Int = 0
     ) {
         self.offRouteFixCount = offRouteFixCount
         self.deviations = deviations
         self.isRerouting = isRerouting
         self.reroutingFixes = reroutingFixes
+        self.cooldownFixes = cooldownFixes
     }
 }
 
@@ -820,10 +863,14 @@ public enum RerouteDecision: Sendable, Equatable {
     case replan
 }
 
+/// How long after one reroute before the next may fire. About fifteen seconds at a fix a second —
+/// enough to speak the new route's first instruction and for the rider to act on it.
+public let rerouteCooldownFixes: Int = 15
+
 public func rerouteDecision(
     distanceOff: Double, state: RerouteState, afterDeviations threshold: Int = 3
 ) -> RerouteDecision {
-    guard !state.isRerouting else { return .carryOn }
+    guard !state.isRerouting, state.cooldownFixes == 0 else { return .carryOn }
     guard state.offRouteFixCount >= offRouteFixes else { return .carryOn }
     return state.deviations >= threshold ? .replan : .rejoin
 }
@@ -838,6 +885,7 @@ public let reroutePatienceFixes: Int = 30
 public func trackingRoute(_ state: RerouteState, distanceOff: Double) -> RerouteState {
     var next = state
     next.offRouteFixCount = distanceOff > offRouteMetres ? state.offRouteFixCount + 1 : 0
+    next.cooldownFixes = max(0, state.cooldownFixes - 1)
     guard state.isRerouting else { return next }
     next.reroutingFixes = state.reroutingFixes + 1
     if next.reroutingFixes > reroutePatienceFixes {

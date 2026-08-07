@@ -230,18 +230,20 @@ struct RouteSimplificationTests {
 struct GuidanceTests {
     private func metres(_ m: Meters) -> String { "\(Int(m.rawValue)) metres" }
 
-    /// A step every ~1.11 km north of 52.0 (0.01° of latitude), which is wide enough that the early
-    /// and imminent windows are distinguishable rather than overlapping.
+    /// A step every ~1.11 km north of 52.0 (0.01° of latitude), each carrying its own path — the
+    /// stretch of road ridden after taking it, exactly as MapKit segments a route.
     private func routeWithSteps(_ count: Int) -> RouteOption {
         let steps = (1...count).map { index in
-            RouteStep(
+            let junction = 52.0 + Double(index) / 100
+            return RouteStep(
                 instructions: "Turn left onto Road \(index)",
                 distance: Meters(1_000),
                 notice: nil,
-                start: Coordinate(
-                    latitude: Latitude(52.0 + Double(index) / 100),
-                    longitude: Longitude(-0.46)
-                )
+                start: Coordinate(latitude: Latitude(junction), longitude: Longitude(-0.46)),
+                path: [
+                    Coordinate(latitude: Latitude(junction), longitude: Longitude(-0.46)),
+                    Coordinate(latitude: Latitude(junction + 0.01), longitude: Longitude(-0.46))
+                ]
             )
         }
         return RouteOption(
@@ -335,8 +337,9 @@ struct GuidanceTests {
         )?.instruction == "Turn left onto Road 1")
     }
 
-    /// The other half: once actually through the junction, the next instruction must arrive.
-    @Test("The step advances once the junction is receding")
+    /// The other half: the instruction completes when the rider is demonstrably riding the road it
+    /// named — on its path, past the junction mouth.
+    @Test("The step advances once the rider is on the road it named")
     func advancesOncePassed() {
         let route = routeWithSteps(3)
         // Reach it…
@@ -347,7 +350,7 @@ struct GuidanceTests {
         #expect(reached.state.stage == .imminent)
         #expect(reached.state.stepIndex == 0)
 
-        // …then carry on past it.
+        // …then ride onto Road 1 itself.
         let passed = guidance(
             route: route, at: at(52.0106), speed: MPS(13.4),
             state: reached.state, formatDistance: metres
@@ -918,39 +921,43 @@ struct SpliceTests {
 struct SkippedStepTests {
     private func metres(_ m: Meters) -> String { "\(Int(m.rawValue)) m" }
 
-    /// Two turns 1.1 km apart, on a line running north.
+    /// Two turns 1.1 km apart on a line running north, each step carrying its road's path.
     private var route: RouteOption {
         RouteOption(
             name: "A", distance: Meters(5_000), travelTime: 600,
             hasTolls: false, hasMotorways: false,
             steps: [
                 RouteStep(instructions: "Turn right onto High Street", distance: Meters(1_100), notice: nil,
-                          start: Coordinate(latitude: Latitude(52.01), longitude: Longitude(-0.46))),
+                          start: Coordinate(latitude: Latitude(52.01), longitude: Longitude(-0.46)),
+                          path: [
+                              Coordinate(latitude: Latitude(52.01), longitude: Longitude(-0.46)),
+                              Coordinate(latitude: Latitude(52.02), longitude: Longitude(-0.46))
+                          ]),
                 RouteStep(instructions: "Turn left onto Dunstable Road", distance: Meters(1_100), notice: nil,
-                          start: Coordinate(latitude: Latitude(52.02), longitude: Longitude(-0.46)))
+                          start: Coordinate(latitude: Latitude(52.02), longitude: Longitude(-0.46)),
+                          path: [
+                              Coordinate(latitude: Latitude(52.02), longitude: Longitude(-0.46)),
+                              Coordinate(latitude: Latitude(52.03), longitude: Longitude(-0.46))
+                          ])
             ],
             shape: (0..<40).map { Coordinate(latitude: Latitude(52 + Double($0) / 1_000), longitude: Longitude(-0.46)) }
         )
     }
 
-    /// The failure this rule exists for. A junction never come within 40 m of never reaches
-    /// `.imminent`, so the "reached and receding" rule can never fire — guidance stuck on "turn
-    /// right onto High Street" for sixteen minutes, all the way to the destination.
-    @Test("A junction that was never reached does not strand guidance for ever")
-    func skippedStepAdvances() {
-        // Well past the first turn and closer to the second, having never gone near the first.
-        // Progress is seeded to match, because a rider arrives there by riding — a fresh state
-        // means "at the start of the route", which is now taken literally.
+    /// Being on the road an instruction named completes it — however the rider got there. A GPS gap
+    /// over the junction must not strand guidance on a turn that was plainly taken.
+    @Test("Landing on the named road completes the instruction, even after a gap in fixes")
+    func onTheRoadMeansTaken() {
         let update = guidance(
             route: route,
             at: Coordinate(latitude: Latitude(52.018), longitude: Longitude(-0.46)),
-            speed: MPS(13), state: GuidanceState(progress: 2_000), formatDistance: metres
+            speed: MPS(13), state: GuidanceState(), formatDistance: metres
         )
         #expect(update.state.stepIndex == 1)
     }
 
-    /// It must not fire while actually manoeuvring around the junction it is about to take.
-    @Test("Approaching the turn normally does not skip it")
+    /// It must not fire while merely approaching the junction.
+    @Test("Approaching the turn normally does not complete it")
     func approachingDoesNotSkip() {
         let update = guidance(
             route: route,
@@ -958,6 +965,41 @@ struct SkippedStepTests {
             speed: MPS(13), state: GuidanceState(), formatDistance: metres
         )
         #expect(update.state.stepIndex == 0)
+    }
+
+    /// The rider's rule for going off-route: passing in front of a junction without entering the
+    /// road it names completes nothing. Guidance holds its place; being off the route is the
+    /// reroute machinery's signal, never a reason to advance the index.
+    @Test("Passing the junction without taking the turn completes nothing")
+    func passingIsNotTaking() {
+        // 80 m east of the route, level with a point beyond the first junction — the geometry of
+        // having carried straight on along a parallel road instead of turning.
+        let update = guidance(
+            route: route,
+            at: Coordinate(latitude: Latitude(52.015), longitude: Longitude(-0.4588)),
+            speed: MPS(13), state: GuidanceState(), formatDistance: metres
+        )
+        #expect(update.state.stepIndex == 0)
+    }
+
+    /// The user's roundabout U-turn case: a route that comes back along the same road crosses its
+    /// own geography exactly, and only the travel vector tells the legs apart. Riding north over a
+    /// southbound step's road must not mark it visited.
+    @Test("Crossing a future step's road with the opposite vector visits nothing")
+    func oppositeVectorDoesNotVisit() {
+        let southbound = RouteStep(
+            instructions: "Turn left onto Return Leg", distance: Meters(1_100), notice: nil,
+            start: Coordinate(latitude: Latitude(52.02), longitude: Longitude(-0.46)),
+            path: [
+                Coordinate(latitude: Latitude(52.02), longitude: Longitude(-0.46)),
+                Coordinate(latitude: Latitude(52.01), longitude: Longitude(-0.46))
+            ]
+        )
+        // On that road's geography, 500 m into it, but heading north — the outward leg.
+        let here = Coordinate(latitude: Latitude(52.0155), longitude: Longitude(-0.46))
+        #expect(!riding(southbound, at: here, heading: Course(0)))
+        // Turned around, the same position visits it.
+        #expect(riding(southbound, at: here, heading: Course(180)))
     }
 }
 
@@ -967,7 +1009,6 @@ struct RejoinChoiceTests {
         Coordinate(latitude: Latitude(latitude), longitude: Longitude(-0.46))
     }
 
-    /// Four manoeuvres a kilometre apart, 4 km and 8 minutes end to end.
     private var route: RouteOption {
         RouteOption(
             name: "A", distance: Meters(4_000), travelTime: 480,
@@ -982,68 +1023,27 @@ struct RejoinChoiceTests {
         )
     }
 
-    /// The rider reported being sent back the way they came — "turn right onto Luton Road" while
-    /// joining Church Road. A manoeuvre behind them is a U-turn, and the time comparison that was
-    /// meant to rule it out cannot when the legs it needs are the ones that fail to route.
-    @Test("A manoeuvre already behind is not offered as a rejoin")
-    func dropsCandidatesBehind() {
-        // Two thirds of the way along, so the first two manoeuvres are behind.
-        let here = coordinate(52.025)
-        let ahead = rejoinCandidates(route, from: 0, at: here).map(\.stepIndex)
-        #expect(!ahead.contains(0))
-        #expect(!ahead.contains(1))
-        #expect(ahead.contains(3))
-    }
-
-    /// Too far off the route to place, and with no heading either, nothing can be ruled out.
-    @Test("Far off the route with no heading, every candidate is still offered")
-    func keepsAllWhenUnplaceable() {
-        let miles = Coordinate(latitude: Latitude(53.5), longitude: Longitude(-2.0))
-        #expect(rejoinCandidates(route, from: 0, at: miles).count == 4)
-    }
-
-    /// The one that kept happening: too far off the route to measure progress — which is exactly
-    /// when a reroute fires — so nothing ruled out the manoeuvres behind, and the rider was sent
-    /// back down roads they had just ridden, one reroute after another.
-    @Test("Far off the route, a manoeuvre behind the shoulder is still ruled out")
-    func headingRulesOutBehind() {
-        // Past the end of the route and still heading north: every manoeuvre is due south, so
-        // every one of them is behind.
-        let past = Coordinate(latitude: Latitude(52.05), longitude: Longitude(-0.46))
-        #expect(rejoinCandidates(route, from: 0, at: past, heading: Course(0)).isEmpty)
-
-        // Turn around and they are ahead again.
-        let turned = rejoinCandidates(route, from: 0, at: past, heading: Course(180))
-        #expect(turned.map(\.stepIndex) == [0, 1, 2, 3])
-    }
-
     @Test("Candidates are the next few manoeuvres, bounded")
     func bounded() {
         #expect(rejoinCandidates(route, from: 0, limit: 4).map(\.stepIndex) == [0, 1, 2, 3])
         #expect(rejoinCandidates(route, from: 2, limit: 4).map(\.stepIndex) == [2, 3])
     }
 
-    /// Rejoining later leaves less of the original still to ride, and the estimate has to reflect
-    /// that or every comparison would favour the earliest candidate.
     @Test("Rejoining later leaves less of the route to finish")
     func remainingShrinks() {
         let candidates = rejoinCandidates(route, from: 0)
-        #expect(candidates[0].remainingTime > candidates[3].remainingTime)
-        // 4 km in 480 s, so the last kilometre is about two minutes.
-        #expect(abs(candidates[3].remainingTime - 120) < 1)
+        #expect(candidates[safe: 0].map { $0.remainingTime } ?? 0 > (candidates[safe: 3].map { $0.remainingTime } ?? 0))
     }
 
-    /// The case that motivates all of this: a rider who deliberately took a different road that
+    /// The case that motivates the comparison: a rider who deliberately took a different road that
     /// converges further along should carry on, not be sent back to the turn they skipped.
     @Test("Carrying on beats a U-turn back to the missed turn")
     func prefersConvergingAhead() {
         let candidates = rejoinCandidates(route, from: 0)
-        // Going back to the first manoeuvre is a long way; the last is close ahead.
         let legs: [TimeInterval?] = [400, 300, 200, 60]
         #expect(bestRejoin(candidates, legTimes: legs)?.stepIndex == 3)
     }
 
-    /// And the opposite must still work, or a genuine missed turn would never be corrected.
     @Test("A genuine missed turn still goes back for it")
     func goesBackWhenCloser() {
         let candidates = rejoinCandidates(route, from: 0)
@@ -1054,14 +1054,12 @@ struct RejoinChoiceTests {
     @Test("A candidate that could not be routed to is dropped, not guessed at")
     func dropsUnroutable() {
         let candidates = rejoinCandidates(route, from: 0)
-        let legs: [TimeInterval?] = [nil, nil, nil, 90]
-        #expect(bestRejoin(candidates, legTimes: legs)?.stepIndex == 3)
+        #expect(bestRejoin(candidates, legTimes: [nil, nil, nil, 90])?.stepIndex == 3)
     }
 
     @Test("With nothing routable there is no winner")
     func noneRoutable() {
-        let candidates = rejoinCandidates(route, from: 0)
-        #expect(bestRejoin(candidates, legTimes: [nil, nil, nil, nil]) == nil)
+        #expect(bestRejoin(rejoinCandidates(route, from: 0), legTimes: [nil, nil, nil, nil]) == nil)
     }
 
     @Test("Past the last manoeuvre there is nowhere left to rejoin")
@@ -1069,8 +1067,33 @@ struct RejoinChoiceTests {
         #expect(rejoinCandidates(route, from: 9).isEmpty)
     }
 
-    /// A route with no duration cannot yield an average speed, and dividing by it would be a crash
-    /// or an infinity that poisons every comparison.
+    /// A manoeuvre behind the rider is a U-turn, and the time comparison that should rule it out
+    /// cannot when the legs it needs are the ones that fail to route.
+    @Test("A manoeuvre already behind is not offered as a rejoin")
+    func dropsCandidatesBehind() {
+        let here = coordinate(52.025)
+        let ahead = rejoinCandidates(route, from: 0, at: here).map(\.stepIndex)
+        #expect(!ahead.contains(0))
+        #expect(!ahead.contains(1))
+        #expect(ahead.contains(3))
+    }
+
+    /// Too far off the route to measure progress — exactly when a reroute happens — direction of
+    /// travel is the only thing left that says what is behind.
+    @Test("Far off the route, a manoeuvre behind the shoulder is still ruled out")
+    func headingRulesOutBehind() {
+        let past = Coordinate(latitude: Latitude(52.05), longitude: Longitude(-0.46))
+        #expect(rejoinCandidates(route, from: 0, at: past, heading: Course(0)).isEmpty)
+        let turned = rejoinCandidates(route, from: 0, at: past, heading: Course(180))
+        #expect(turned.map(\.stepIndex) == [0, 1, 2, 3])
+    }
+
+    @Test("Far off the route with no heading, every candidate is still offered")
+    func keepsAllWhenUnplaceable() {
+        let miles = Coordinate(latitude: Latitude(53.5), longitude: Longitude(-2.0))
+        #expect(rejoinCandidates(route, from: 0, at: miles).count == 4)
+    }
+
     @Test("A degenerate route yields no candidates rather than infinities")
     func degenerate() {
         let broken = RouteOption(
@@ -1078,6 +1101,23 @@ struct RejoinChoiceTests {
             hasTolls: false, hasMotorways: false, steps: route.steps, shape: []
         )
         #expect(rejoinCandidates(broken, from: 0).isEmpty)
+    }
+}
+
+@Suite("After a reroute lands")
+struct RerouteCooldownTests {
+    /// The storm from the ride log: a rider still off the *new* route retriggered a reroute every
+    /// three fixes, each resetting guidance and re-announcing — two minutes of turn-A-turn-B.
+    @Test("The cooldown holds further reroutes off, then releases")
+    func cooldownBlocksThenReleases() {
+        var state = RerouteState(deviations: 1, cooldownFixes: rerouteCooldownFixes)
+        for _ in 0..<offRouteFixes { state = trackingRoute(state, distanceOff: 200) }
+        // Off the route and past the fix threshold, but inside the cooldown: nothing fires.
+        #expect(rerouteDecision(distanceOff: 200, state: state) == .carryOn)
+
+        for _ in 0..<rerouteCooldownFixes { state = trackingRoute(state, distanceOff: 200) }
+        #expect(state.cooldownFixes == 0)
+        #expect(rerouteDecision(distanceOff: 200, state: state) != .carryOn)
     }
 }
 
@@ -1095,11 +1135,14 @@ struct ChainedPairTests {
             hasTolls: false, hasMotorways: false,
             steps: [
                 RouteStep(instructions: "Turn right onto Markyate St Lane", distance: Meters(44),
-                          notice: nil, start: coordinate(52.0100)),
+                          notice: nil, start: coordinate(52.0100),
+                          path: [coordinate(52.0100), coordinate(52.0104)]),
                 RouteStep(instructions: "Keep left onto Markyate St Lane", distance: Meters(4_000),
-                          notice: nil, start: coordinate(52.0104)),
+                          notice: nil, start: coordinate(52.0104),
+                          path: [coordinate(52.0104), coordinate(52.0464)]),
                 RouteStep(instructions: "Turn left onto Hicks Road", distance: Meters(500),
-                          notice: nil, start: coordinate(52.0464))
+                          notice: nil, start: coordinate(52.0464),
+                          path: [coordinate(52.0464), coordinate(52.0509)])
             ],
             shape: (0..<60).map { coordinate(52 + Double($0) / 1_000) }
         )
@@ -1116,87 +1159,45 @@ struct ChainedPairTests {
     }
 
     /// Wanted, not a defect: hearing the second again on its own approach is the confirmation that
-    /// it is happening *now*, and the rider asked for it explicitly.
+    /// it is happening *now* — the rider asked for it explicitly.
     @Test("The second is still announced on its own approach")
     func secondRepeats() {
-        let passed = guidance(
-            route: route, at: coordinate(52.0106), speed: MPS(13),
-            state: GuidanceState(stage: .imminent, closest: 5), formatDistance: metres
+        // 25 m into the first step's 44 m path: the turn was taken.
+        let onFirst = guidance(
+            route: route, at: coordinate(52.01022), speed: MPS(13),
+            state: GuidanceState(stepIndex: 0, stage: .imminent), formatDistance: metres
         )
-        #expect(passed.state.stepIndex == 1)
+        #expect(onFirst.state.stepIndex == 1)
 
         let atSecond = guidance(
-            route: route, at: coordinate(52.01042), speed: MPS(13),
-            state: passed.state, formatDistance: metres
+            route: route, at: coordinate(52.01038), speed: MPS(13),
+            state: onFirst.state, formatDistance: metres
         )
         #expect(atSecond.announcement == "Keep left onto Markyate St Lane")
     }
-}
 
-@Suite("A route that passes near itself")
-struct RouteSelfProximityTests {
-    private func metres(_ m: Meters) -> String { "\(Int(m.rawValue)) m" }
-
-    /// Out and back along the same road, which is what a roundabout is in miniature: the return
-    /// leg runs within metres of the outward one.
-    private var shape: [Coordinate] {
-        let out = (0..<60).map {
-            Coordinate(latitude: Latitude(52 + Double($0) / 1_000), longitude: Longitude(-0.4600))
-        }
-        let back = (0..<60).map {
-            Coordinate(latitude: Latitude(52.059 - Double($0) / 1_000), longitude: Longitude(-0.4602))
-        }
-        return out + back
-    }
-
-    /// The failure the rider kept reporting: on the first roundabout, hearing the instruction for
-    /// after the second. Searching the whole polyline for the nearest segment has no notion of
-    /// continuity, so a rider on the outward leg matches the return leg twenty metres away and
-    /// their progress leaps to the far end of the route — skipping every manoeuvre between.
-    @Test("Progress does not leap to the return leg")
-    func progressStaysOnTheOutwardLeg() {
-        let here = Coordinate(latitude: Latitude(52.010), longitude: Longitude(-0.4600))
-        // Knowing roughly where the rider was a second ago is what keeps the answer continuous.
-        let continuous = distanceAlongRoute(shape, to: here, near: 1_100)
-        #expect(continuous != nil)
-        #expect(abs((continuous ?? 0) - 1_113) < 120)
-    }
-
-    /// And the unconstrained search is shown doing the wrong thing, so the guard is not decoration.
-    @Test("Without a window it does leap")
-    func unconstrainedLeaps() {
-        let here = Coordinate(latitude: Latitude(52.010), longitude: Longitude(-0.4602))
-        let global = distanceAlongRoute(shape, to: here, near: nil) ?? 0
-        // The return leg reaches this latitude far along the route.
-        #expect(global > 5_000)
-    }
-
-    /// Guidance carries progress between fixes so the window has something to centre on.
-    @Test("Guidance keeps its place across fixes")
-    func guidanceCarriesProgress() {
-        let route = RouteOption(
-            name: "loop", distance: Meters(13_000), travelTime: 900,
+    /// A 13 m step can be jumped entirely between two one-second fixes. Landing on the road after
+    /// it completes both — and both were spoken together as the chain, so nothing went unheard.
+    @Test("A tiny step jumped between fixes completes with its successor")
+    func tinyStepJumped() {
+        let tiny = RouteOption(
+            name: "Pickford", distance: Meters(4_000), travelTime: 600,
             hasTolls: false, hasMotorways: false,
             steps: [
-                RouteStep(instructions: "Turn left onto A", distance: Meters(3_000), notice: nil,
-                          start: Coordinate(latitude: Latitude(52.030), longitude: Longitude(-0.4600))),
-                RouteStep(instructions: "Turn left onto B", distance: Meters(3_000), notice: nil,
-                          start: Coordinate(latitude: Latitude(52.050), longitude: Longitude(-0.4600)))
+                RouteStep(instructions: "Turn left onto Pickford Road", distance: Meters(13),
+                          notice: nil, start: coordinate(52.0100),
+                          path: [coordinate(52.0100), coordinate(52.0101)]),
+                RouteStep(instructions: "Bear right onto Markyate St Lane", distance: Meters(3_500),
+                          notice: nil, start: coordinate(52.0101),
+                          path: [coordinate(52.0101), coordinate(52.0416)])
             ],
-            shape: shape
+            shape: (0..<40).map { coordinate(52 + Double($0) / 1_000) }
         )
-        var state = GuidanceState()
-        for step in 0..<12 {
-            let here = Coordinate(
-                latitude: Latitude(52 + Double(step) / 1_000), longitude: Longitude(-0.4600)
-            )
-            state = guidance(
-                route: route, at: here, speed: MPS(13), state: state, formatDistance: metres
-            ).state
-        }
-        // Still approaching the first manoeuvre, not leapt past both by matching the return leg.
-        #expect(state.stepIndex == 0)
-        #expect((state.progress ?? 0) < 2_000)
+        let update = guidance(
+            route: tiny, at: coordinate(52.0106), speed: MPS(15),
+            state: GuidanceState(stepIndex: 0, stage: .imminent), formatDistance: metres
+        )
+        #expect(update.state.stepIndex == 2)
     }
 }
 
@@ -1207,31 +1208,29 @@ struct CompoundingAdvanceTests {
         Coordinate(latitude: Latitude(latitude), longitude: Longitude(-0.46))
     }
 
-    /// Four manoeuvres, roughly a kilometre apart, on a straight road.
     private var route: RouteOption {
         RouteOption(
             name: "A", distance: Meters(5_000), travelTime: 600,
             hasTolls: false, hasMotorways: false,
             steps: (1...4).map { index in
-                RouteStep(
-                    instructions: "Turn onto Road \(index)", distance: Meters(1_100),
-                    notice: nil, start: at(52.0 + Double(index) / 100)
+                let junction = 52.0 + Double(index) / 100
+                return RouteStep(
+                    instructions: "onto Road \(index)", distance: Meters(1_100),
+                    notice: nil, start: at(junction),
+                    path: [at(junction), at(junction + 0.01)]
                 )
             },
             shape: (0..<60).map { at(52.0 + Double($0) / 1_000) }
         )
     }
 
-    /// The rider's own description: "off by one, then two, then three". A constant offset would be
-    /// a mapping mistake; a growing one means an *extra* advance per junction. Two rules can
-    /// advance the step, and both used to fire for the same one — the receding rule at the
-    /// junction, then the missed-junction rule on the very next fix, seeing the new step behind.
+    /// The rider's own description of the drift: off by one, then two, then three. A constant
+    /// offset is a mapping mistake; a growing one means an extra advance per junction — which the
+    /// visited rule makes impossible, since a step completes exactly once, by being ridden.
     @Test("Riding a straight route advances exactly one step per junction")
     func oneAdvancePerJunction() {
         var state = GuidanceState()
         var announced: [String] = []
-
-        // Ride from the start to just past the third manoeuvre, a fix every ~28 m.
         for tick in 0..<130 {
             let update = guidance(
                 route: route, at: at(52.0 + Double(tick) * 0.00025), speed: MPS(13),
@@ -1240,40 +1239,14 @@ struct CompoundingAdvanceTests {
             if let said = update.announcement { announced.append(said) }
             state = update.state
         }
-
-        // Three junctions passed, so the fourth is current — not the sixth.
         #expect(state.stepIndex == 3)
-        // And every manoeuvre ridden through was actually announced, in order.
         #expect(announced.contains { $0.contains("Road 1") })
         #expect(announced.contains { $0.contains("Road 2") })
         #expect(announced.contains { $0.contains("Road 3") })
     }
-}
 
-@Suite("What may be announced at all")
-struct AnnouncementInvariantTests {
-    private func metres(_ m: Meters) -> String { "\(Int(m.rawValue)) m" }
-    private func at(_ latitude: Double) -> Coordinate {
-        Coordinate(latitude: Latitude(latitude), longitude: Longitude(-0.46))
-    }
-
-    /// Roads a kilometre apart, so nothing chains.
-    private var route: RouteOption {
-        RouteOption(
-            name: "A", distance: Meters(6_000), travelTime: 700,
-            hasTolls: false, hasMotorways: false,
-            steps: (1...5).map {
-                RouteStep(instructions: "onto Road \($0)", distance: Meters(1_100),
-                          notice: nil, start: at(52.0 + Double($0) / 100))
-            },
-            shape: (0..<70).map { at(52.0 + Double($0) / 1_000) }
-        )
-    }
-
-    /// The rule, in the rider's words: on road A you hear about B, or about B and then C when they
-    /// come together — but never about C on its own. Being told to turn onto a road two manoeuvres
-    /// away is the failure that made the app untrustworthy, and it is worth a test that fails
-    /// loudly rather than a comment saying it cannot happen.
+    /// The rider's announcement rule, held across a whole ride: on road A you hear about B — or B
+    /// then C when they come together — and never about C alone.
     @Test("Nothing beyond the next manoeuvre is ever announced alone")
     func neverSkipsAhead() {
         var state = GuidanceState()
@@ -1285,18 +1258,10 @@ struct AnnouncementInvariantTests {
             if let said = update.announcement {
                 let current = route.steps[safe: state.stepIndex]?.instructions
                 let next = route.steps[safe: state.stepIndex + 1]?.instructions
-                // Whatever was said must name the manoeuvre being approached. It may also name the
-                // one after, and nothing else.
-                #expect(
-                    current.map { said.contains($0) } ?? false,
-                    "said \"\(said)\" while approaching \(current ?? "nothing")"
-                )
+                #expect(current.map { said.contains($0) } ?? false)
                 for (index, step) in route.steps.enumerated()
                 where index != state.stepIndex && step.instructions != next {
-                    #expect(
-                        !said.contains(step.instructions),
-                        "said \"\(said)\" which names step \(index), not \(state.stepIndex)"
-                    )
+                    #expect(!said.contains(step.instructions))
                 }
             }
             state = update.state

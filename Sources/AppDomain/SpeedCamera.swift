@@ -385,8 +385,12 @@ public func onRoute(_ zones: [AverageZone], shape: [Coordinate]) -> [AverageZone
 /// How much faster than the road a camera may claim before it is judged to be watching a different
 /// one.
 ///
-/// Ten, so a camera enforcing the same limit or a slightly rounded version of it survives.
-public let cameraLimitToleranceMPH: Double = 10
+/// Four — enough for rounding, and no more. It was ten, and UK limits step by ten: the tolerance
+/// admitted exactly the neighbouring tier, so "speed camera ahead, 50" fired three times on a
+/// 40 mph stretch of Newlands Road from the A1081 cameras alongside. Roadworks cameras claim
+/// *lower* limits than the road and are kept by the other branch, so nothing legitimate needs
+/// the headroom.
+public let cameraLimitToleranceMPH: Double = 4
 
 /// Cameras plausibly about the road being ridden.
 ///

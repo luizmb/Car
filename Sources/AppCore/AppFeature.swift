@@ -432,7 +432,7 @@ public enum AppFeature {
             let current = state.guidance
             return .produce { ctx in
                 let advanced = guidance(
-                    route: route, at: position, speed: speed,
+                    route: route, at: position, speed: speed, heading: update.course,
                     state: current, formatDistance: ctx.environment.formatDistance
                 )
                 let banner = guidanceBanner(
@@ -481,7 +481,13 @@ public enum AppFeature {
             let position = Coordinate(latitude: update.latitude, longitude: update.longitude)
             let distanceOff = distanceToRoute(shape: route.shape, from: position)
             let tracked = trackingRoute(state.reroute, distanceOff: distanceOff)
-            let decision = rerouteDecision(distanceOff: distanceOff, state: tracked)
+            // No rerouting while stationary. A stopped rider cannot act on a new route, and a
+            // stopped rider *off* the route — at a light beside it — otherwise triggers one every
+            // three fixes for as long as they wait: the observed two-minute announcement loop.
+            let moving = (update.speed?.rawValue ?? 0) > 2.5
+            let decision = moving
+                ? rerouteDecision(distanceOff: distanceOff, state: tracked)
+                : .carryOn
 
             guard decision != .carryOn else {
                 guard tracked != state.reroute else { return .doNothing }
@@ -500,7 +506,10 @@ public enum AppFeature {
                 offRouteFixCount: 0,
                 deviations: tracked.deviations + 1,
                 isRerouting: false,
-                reroutingFixes: 0
+                reroutingFixes: 0,
+                // The storm guard: no new reroute for ~15 s after this one lands, however far off
+                // the new route the rider still is.
+                cooldownFixes: rerouteCooldownFixes
             )
 
             let stepIndex = state.guidance.stepIndex

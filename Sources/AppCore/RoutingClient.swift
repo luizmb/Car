@@ -201,15 +201,17 @@ private func option(_ route: MKRoute) -> RouteOption {
             // MapKit's first step is always a zero-distance "Proceed to …", which is not a turn and
             // reads as noise at the top of the list.
             .filter { !$0.instructions.isEmpty }
-            .map {
-                RouteStep(
-                    instructions: $0.instructions,
-                    distance: Meters($0.distance),
-                    notice: $0.notice,
-                    // Where the manoeuvre is. Without it an instruction can be listed but never
-                    // spoken at the right moment, which is the difference between a route and
-                    // navigation.
-                    start: $0.polyline.coordinates.first
+            .map { step -> RouteStep in
+                // The step's own polyline, kept whole. It begins at the manoeuvre the instruction
+                // names and ends at the next one — the structure that makes "has this instruction
+                // been completed" answerable at all: the rider is on this path, or they are not.
+                let path = simplified(step.polyline.coordinates, maxPoints: 150)
+                return RouteStep(
+                    instructions: step.instructions,
+                    distance: Meters(step.distance),
+                    notice: step.notice,
+                    start: path.first,
+                    path: path
                 )
             },
         shape: route.polyline.coordinates

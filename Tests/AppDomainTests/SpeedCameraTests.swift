@@ -343,10 +343,14 @@ struct CameraPlausibilityTests {
         #expect(plausible([camera(1, 30)], onRoadLimited: MPH(60)).count == 1)
     }
 
-    @Test("A rounded or equal limit survives")
+    /// The tolerance is for rounding only. It was ten, and UK limits step by ten — so it admitted
+    /// exactly the neighbouring tier, and "speed camera ahead, 50" fired three times on a 40 mph
+    /// stretch from the A1081 cameras alongside.
+    @Test("An equal limit survives; the next tier up does not")
     func keepsNearEqual() {
-        #expect(plausible([camera(1, 40)], onRoadLimited: MPH(30)).count == 1)
+        #expect(plausible([camera(1, 40)], onRoadLimited: MPH(30)).isEmpty)
         #expect(plausible([camera(2, 30)], onRoadLimited: MPH(30)).count == 1)
+        #expect(plausible([camera(3, 50)], onRoadLimited: MPH(40)).isEmpty)
     }
 
     /// Most cameras carry no limit at all, and an unknown one says nothing about which road it is
