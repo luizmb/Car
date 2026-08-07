@@ -770,6 +770,30 @@ struct RerouteDecisionTests {
         for _ in 0..<offRouteFixes { state = trackingRoute(state, distanceOff: 200) }
         #expect(rerouteDecision(distanceOff: 200, state: state) == .carryOn)
     }
+
+    /// The failure this deadline exists for, seen on a replayed ride: a request went out, never
+    /// answered, and `isRerouting` stayed set — so every later decision returned `carryOn` and not
+    /// one reroute was attempted for the rest of the journey, with the off-route counter climbing
+    /// past ninety.
+    @Test("A request that never answers is written off, and another can be made")
+    func hungRequestDoesNotDisableRerouting() {
+        var state = RerouteState(deviations: 1, isRerouting: true)
+        for _ in 0..<(reroutePatienceFixes + 1) {
+            state = trackingRoute(state, distanceOff: 200)
+        }
+        #expect(!state.isRerouting)
+        #expect(rerouteDecision(distanceOff: 200, state: state) != .carryOn)
+    }
+
+    /// But not so impatient that a slow answer is abandoned mid-flight.
+    @Test("A request in flight is left alone until the deadline")
+    func patientUntilTheDeadline() {
+        var state = RerouteState(deviations: 1, isRerouting: true)
+        for _ in 0..<(reroutePatienceFixes - 1) {
+            state = trackingRoute(state, distanceOff: 200)
+        }
+        #expect(state.isRerouting)
+    }
 }
 
 @Suite("Giving up an exclusion")

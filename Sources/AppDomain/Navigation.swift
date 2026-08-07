@@ -734,11 +734,27 @@ public struct RerouteState: Sendable, Equatable {
     /// Set while a request is out, so a reroute is not asked for again on every fix while the first
     /// one is still in flight.
     public var isRerouting: Bool
+    /// Fixes counted since the request went out.
+    ///
+    /// A deadline, and not an optional nicety: a request that never answers leaves `isRerouting`
+    /// set for ever, and every later decision returns `carryOn` — so one hung call disables
+    /// rerouting for the whole journey. Observed doing exactly that, with the off-route counter
+    /// climbing past ninety and not a single reroute attempted after the first.
+    ///
+    /// Counted in fixes rather than seconds because the domain has no clock, and a fix a second is
+    /// the only tick it needs.
+    public var reroutingFixes: Int
 
-    public init(offRouteFixCount: Int = 0, deviations: Int = 0, isRerouting: Bool = false) {
+    public init(
+        offRouteFixCount: Int = 0,
+        deviations: Int = 0,
+        isRerouting: Bool = false,
+        reroutingFixes: Int = 0
+    ) {
         self.offRouteFixCount = offRouteFixCount
         self.deviations = deviations
         self.isRerouting = isRerouting
+        self.reroutingFixes = reroutingFixes
     }
 }
 
@@ -765,9 +781,22 @@ public func rerouteDecision(
 }
 
 /// Advances the off-route counter for one fix.
+/// How many fixes a reroute request gets before it is written off.
+///
+/// About half a minute at one fix a second. Long enough for four concurrent routing requests over a
+/// poor connection, short enough that a rider who has gone the wrong way is not abandoned.
+public let reroutePatienceFixes: Int = 30
+
 public func trackingRoute(_ state: RerouteState, distanceOff: Double) -> RerouteState {
     var next = state
     next.offRouteFixCount = distanceOff > offRouteMetres ? state.offRouteFixCount + 1 : 0
+    guard state.isRerouting else { return next }
+    next.reroutingFixes = state.reroutingFixes + 1
+    if next.reroutingFixes > reroutePatienceFixes {
+        // Written off. Whatever happened to that request, another one is better than none.
+        next.isRerouting = false
+        next.reroutingFixes = 0
+    }
     return next
 }
 

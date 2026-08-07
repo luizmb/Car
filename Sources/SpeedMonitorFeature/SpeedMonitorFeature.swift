@@ -241,7 +241,30 @@ public enum SpeedMonitorFeature {
                 cameraPitch    = 45
                 cameraHeading  = display.mapHeading
             } else {
-                let along = routeBearing(shape: routeShape, from: here) ?? display.mapHeading
+                // Along the route — but only while actually on it.
+                //
+                // `routeBearing` takes the nearest vertex and looks ahead from there, which is the
+                // right answer on the line and a meaningless one off it: the nearest vertex to a
+                // rider who has left the route can be behind them, or on a different leg entirely,
+                // and the map then points confidently the wrong way. Seen on a replayed ride that
+                // spent most of its length off-route — the rotation was simply wrong.
+                //
+                // Off the line, the direction of travel is the only thing that is true.
+                let onRoute = distanceToRoute(shape: routeShape, from: here) <= offRouteMetres
+                let along = (onRoute ? routeBearing(shape: routeShape, from: here) : nil)
+                    .flatMap { bearing -> Double? in
+                        // And discard it if it points backwards. A route that goes out and comes
+                        // home runs along the same roads twice, so the nearest vertex can belong to
+                        // the *other* leg and the map then faces the way the rider has come. Beyond
+                        // a right angle and a half from the direction of travel, the match is
+                        // wrong rather than the rider turning.
+                        guard display.speedValue > 3 else { return bearing }
+                        var apart = abs(bearing - display.mapHeading)
+                            .truncatingRemainder(dividingBy: 360)
+                        if apart > 180 { apart = 360 - apart }
+                        return apart <= 135 ? bearing : nil
+                    }
+                    ?? display.mapHeading
                 cameraDistance = navigationCameraDistance(
                     speed: MPS(display.speedValue * 0.44704), nextTurn: nextTurn
                 )

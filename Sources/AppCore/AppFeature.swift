@@ -493,12 +493,14 @@ public enum AppFeature {
             let starting = RerouteState(
                 offRouteFixCount: 0,
                 deviations: tracked.deviations + 1,
-                isRerouting: true
+                isRerouting: true,
+                reroutingFixes: 0
             )
             let finished = RerouteState(
                 offRouteFixCount: 0,
                 deviations: tracked.deviations + 1,
-                isRerouting: false
+                isRerouting: false,
+                reroutingFixes: 0
             )
 
             let stepIndex = state.guidance.stepIndex
