@@ -29,7 +29,7 @@ func rejoinRequest(
     finished: RerouteState,
     world: World
 ) -> Publisher<AppAction, Never> {
-    let candidates = rejoinCandidates(original, from: stepIndex)
+    let candidates = rejoinCandidates(original, from: stepIndex, at: position)
     guard !candidates.isEmpty else {
         // Nothing left to rejoin at — past the last manoeuvre, so the destination is the only
         // target and a plain replan is the honest answer.

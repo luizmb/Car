@@ -821,7 +821,11 @@ public struct RejoinCandidate: Sendable, Equatable {
 /// Bounded because each candidate costs a routing request. Four covers the realistic cases — a
 /// missed turn, a deliberate detour of a junction or two — and Apple throttles well before ten.
 public func rejoinCandidates(
-    _ route: RouteOption, from stepIndex: Int, limit: Int = 4
+    _ route: RouteOption,
+    from stepIndex: Int,
+    /// Where the rider is, so candidates already behind them can be dropped.
+    at position: Coordinate? = nil,
+    limit: Int = 4
 ) -> [RejoinCandidate] {
     let steps = route.steps.filter { $0.start != nil }
     // `stepIndex` can be past the end — guidance runs off the last manoeuvre on the approach to the
@@ -832,8 +836,23 @@ public func rejoinCandidates(
     else { return [] }
     let metresPerSecond = route.distance.rawValue / route.travelTime
 
+    // How far along the route the rider has got. A manoeuvre behind that is behind *them*, and
+    // rejoining at it means turning round — which is what the rider saw: "turn right onto Luton
+    // Road" while joining Church Road, sending them back the way they came. The time comparison was
+    // supposed to make a U-turn lose, and cannot when the legs it needs are the ones that fail.
+    //
+    // `nil` when too far off the route to place, in which case nothing can be ruled out and every
+    // candidate stands.
+    let progress = position.flatMap { distanceAlongRoute(route.shape, to: $0) }
+
     return (stepIndex..<min(stepIndex + limit, steps.count)).compactMap { index in
         guard let point = steps[safe: index]?.start else { return nil }
+        if
+            let progress,
+            let junction = distanceAlongRoute(route.shape, to: point),
+            junction < progress {
+            return nil
+        }
         // Everything still to drive once back on the route at this manoeuvre.
         let remaining = steps.dropFirst(index).reduce(0.0) { $0 + $1.distance.rawValue }
         return RejoinCandidate(
@@ -878,6 +897,15 @@ public func splice(
     rejoin: RouteOption, onto original: RouteOption, fromStep index: Int
 ) -> RouteOption {
     let remainingSteps = Array(original.steps.dropFirst(index))
+    // **Drop the way-back's last step.** Every route MapKit returns ends by announcing arrival, and
+    // the way back was routed to a *rejoin point* — so splicing it whole puts "arrive at the
+    // destination" in the middle of the journey. Heard on a replayed ride: "turn left onto Tennyson
+    // Road, then in 10 metres arrive at the destination", ten miles from anywhere.
+    //
+    // Dropping the last one is exact rather than a guess at the wording: the leg's final step is
+    // always the arrival at the join, and the join is where the original route's own step takes
+    // over.
+    let wayBack = rejoin.steps.dropLast()
     // The tail of the original's geometry, from the manoeuvre being rejoined at. Falls back to the
     // whole of it when that manoeuvre has no position, which is the same fallback guidance uses.
     let joinPoint = remainingSteps.first?.start
@@ -891,7 +919,7 @@ public func splice(
         travelTime: rejoin.travelTime + original.travelTime,
         hasTolls: rejoin.hasTolls || original.hasTolls,
         hasMotorways: rejoin.hasMotorways || original.hasMotorways,
-        steps: rejoin.steps + remainingSteps,
+        steps: Array(wayBack) + remainingSteps,
         shape: rejoin.shape + tail
     )
 }

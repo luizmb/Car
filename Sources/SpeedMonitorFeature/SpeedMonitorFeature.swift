@@ -394,7 +394,12 @@ public enum SpeedMonitorFeature {
                             roadInfo: roadInfo, routeShape: routeShape, env: ctx.environment
                         )
                         <> averageZoneEffects(
-                            at: newLocation, zones: zones, cameras: cameras,
+                            at: newLocation,
+                            // Same filter the cameras get, and for the same reason: a zone is
+                            // entered when its start is within 250 m, which in a town reaches
+                            // roads the rider is nowhere near.
+                            zones: onRoute(nearby(zones, of: newLocation), shape: routeShape),
+                            cameras: cameras,
                             active: activeZone, wasOver: wasOver, env: ctx.environment
                         )
                 }
@@ -540,17 +545,22 @@ private func cameraEffects(
     guard !cameras.isEmpty else { return .empty }
 
     let speed = location.speed ?? MPS(0)
-    let ahead = camerasAhead(
-        // While following a route, only cameras actually **on** it count.
-        //
-        // The ±100° cone is deliberately permissive, and at a roundabout that means every camera on
-        // every arm: six were announced in forty-three seconds on one ride, none of them on the road
-        // being ridden, plus a 70 mph camera on a motorway crossing perpendicular. A route is a far
-        // better filter than a bearing, and while navigating there is one to hand.
-        onRoute(cameras, shape: routeShape),
-        at: (location.latitude, location.longitude),
-        course: location.course,
-        speed: speed
+    // **Cheap filter first.** `onRoute` measures every camera against every segment of the route,
+    // so running it over the whole set was 264 cameras times 20,000 points — five million distance
+    // calculations a second, which froze the app outright. `camerasAhead` is a bounded cone and a
+    // lookahead, and cuts the set to a handful before the expensive test runs.
+    //
+    // While following a route, only cameras actually *on* it count: the ±100° cone is deliberately
+    // permissive, and at a roundabout that means every camera on every arm — six announced in
+    // forty-three seconds on one ride, plus a 70 mph camera on a motorway crossing perpendicular.
+    let ahead = onRoute(
+        camerasAhead(
+            cameras,
+            at: (location.latitude, location.longitude),
+            course: location.course,
+            speed: speed
+        ),
+        shape: routeShape
     )
     guard let next = ahead.first(where: { !announced.contains($0.id) }) else { return .empty }
 
@@ -721,6 +731,19 @@ private func buildDisplay(
 /// one is the reason a point warning is not enough: inside a zone a moment above the limit is not the
 /// offence — the mean between the gantries is. So the reminder fires on the *crossing*, not on every
 /// fix, and says what is actually being measured.
+/// Zones whose ends are anywhere near the rider, by straight line.
+///
+/// A cheap sieve before the expensive one. `onRoute` walks the whole route polyline per zone, so it
+/// must not be handed the national set — the same mistake that froze the app on cameras.
+private func nearby(_ zones: [AverageZone], of location: LocationUpdate) -> [AverageZone] {
+    let here = (location.latitude, location.longitude)
+    return zones.filter { zone in
+        [zone.start, zone.end].compactMap { $0 }.contains {
+            distanceMetres(from: here, to: $0.pair) < 3_000
+        }
+    }
+}
+
 private func averageZoneEffects(
     at location: LocationUpdate,
     zones: [AverageZone],

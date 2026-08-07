@@ -156,7 +156,7 @@ public struct Coordinate: Sendable, Equatable {
         self.longitude = longitude
     }
 
-    var pair: (Latitude, Longitude) { (latitude, longitude) }
+    public var pair: (Latitude, Longitude) { (latitude, longitude) }
 }
 
 // MARK: - Average-speed zones
@@ -361,6 +361,24 @@ public func onRoute(_ cameras: [SpeedCamera], shape: [Coordinate]) -> [SpeedCame
             shape: shape,
             from: Coordinate(latitude: $0.latitude, longitude: $0.longitude)
         ) <= cameraOnRouteMetres
+    }
+}
+
+/// The zones that belong to the route being ridden.
+///
+/// Zones needed this as much as cameras did and did not have it: an average-speed check is entered
+/// when its start is within 250 m, and 250 m in a town reaches several other roads. Heard on a
+/// replayed ride as "average speed check, 50" while on a 30 mph street — the zone was real, and on
+/// a road the rider was not on.
+///
+/// A zone counts if **either end** is on the route: entering one is the start, and a zone entered
+/// before the route was joined still has its exit ahead.
+public func onRoute(_ zones: [AverageZone], shape: [Coordinate]) -> [AverageZone] {
+    guard shape.count > 1 else { return zones }
+    return zones.filter { zone in
+        [zone.start, zone.end].compactMap { $0 }.contains {
+            distanceToRoute(shape: shape, from: $0) <= cameraOnRouteMetres
+        }
     }
 }
 

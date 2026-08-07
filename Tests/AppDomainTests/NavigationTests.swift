@@ -871,8 +871,26 @@ struct SpliceTests {
     @Test("The remaining original steps follow the way back")
     func keepsTheRest() {
         let spliced = splice(rejoin: rejoin, onto: original, fromStep: 1)
-        #expect(spliced.steps.map(\.instructions)
-            == ["Turn around", "Turn right onto B", "Arrive"])
+        #expect(spliced.steps.map(\.instructions) == ["Turn right onto B", "Arrive"])
+    }
+
+    /// Every MapKit route ends by announcing arrival, and the way back was routed to a *rejoin
+    /// point* — so splicing it whole put "arrive at the destination" in the middle of the journey.
+    /// Heard on a replayed ride, ten miles from anywhere.
+    @Test("The way back does not announce arriving at the join")
+    func dropsTheLegsArrival() {
+        let leg = RouteOption(
+            name: "detour", distance: Meters(400), travelTime: 90,
+            hasTolls: false, hasMotorways: false,
+            steps: [
+                RouteStep(instructions: "Turn around", distance: Meters(300), notice: nil, start: coordinate(51.99)),
+                RouteStep(instructions: "Arrive at the destination", distance: Meters(0), notice: nil, start: coordinate(52.005))
+            ],
+            shape: [coordinate(51.99), coordinate(52.005)]
+        )
+        let spliced = splice(rejoin: leg, onto: original, fromStep: 1)
+        #expect(!spliced.steps.map(\.instructions).contains("Arrive at the destination"))
+        #expect(spliced.steps.map(\.instructions) == ["Turn around", "Turn right onto B", "Arrive"])
     }
 
     @Test("Distance and time add up")
@@ -889,10 +907,10 @@ struct SpliceTests {
         #expect(splice(rejoin: rejoin, onto: original, fromStep: 1).hasMotorways)
     }
 
-    @Test("Splicing past the last step keeps just the way back")
+    @Test("Splicing past the last step keeps just the way back, minus its arrival")
     func pastTheEnd() {
         let spliced = splice(rejoin: rejoin, onto: original, fromStep: 9)
-        #expect(spliced.steps.map(\.instructions) == ["Turn around"])
+        #expect(spliced.steps.isEmpty)
     }
 }
 
@@ -960,6 +978,27 @@ struct RejoinChoiceTests {
             ],
             shape: (0..<40).map { coordinate(52 + Double($0) / 1_000) }
         )
+    }
+
+    /// The rider reported being sent back the way they came — "turn right onto Luton Road" while
+    /// joining Church Road. A manoeuvre behind them is a U-turn, and the time comparison that was
+    /// meant to rule it out cannot when the legs it needs are the ones that fail to route.
+    @Test("A manoeuvre already behind is not offered as a rejoin")
+    func dropsCandidatesBehind() {
+        // Two thirds of the way along, so the first two manoeuvres are behind.
+        let here = coordinate(52.025)
+        let ahead = rejoinCandidates(route, from: 0, at: here).map(\.stepIndex)
+        #expect(!ahead.contains(0))
+        #expect(!ahead.contains(1))
+        #expect(ahead.contains(3))
+    }
+
+    /// Too far off the route to place, and nothing can be ruled out — every candidate stands rather
+    /// than the rider being left with none.
+    @Test("Far off the route, every candidate is still offered")
+    func keepsAllWhenUnplaceable() {
+        let miles = Coordinate(latitude: Latitude(53.5), longitude: Longitude(-2.0))
+        #expect(rejoinCandidates(route, from: 0, at: miles).count == 4)
     }
 
     @Test("Candidates are the next few manoeuvres, bounded")
