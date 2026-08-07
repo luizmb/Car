@@ -46,6 +46,8 @@ public extension World {
             // directly, so there is no parse to fail.
             newID: { UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)) },
             logAction: { _ in .empty() },
+            loadJourneyRecords: { .just([]) },
+            writeShareFile: { _, _ in .just(nil) },
             logJourney: { _ in .empty() },
             speak: { _ in .empty() },
             speakQueued: { _ in .empty() },

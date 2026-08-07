@@ -67,6 +67,8 @@ public struct AppRouter {
         case .fuel: AppScopes.fuel.pushedView(of: FuelFeature.self, from: store, world: world)
         case .navigate:
             AppScopes.navigate.pushedView(of: NavigationFeature.self, from: store, world: world)
+        case .rides:
+            AppScopes.rides.pushedView(of: RideReviewFeature.self, from: store, world: world)
         }
     }
 }

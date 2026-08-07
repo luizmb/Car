@@ -122,6 +122,7 @@ public enum AppFeature {
         case trip(TripFeature.Action)
         case fuel(FuelFeature.Action)
         case navigate(NavigationFeature.Action)
+        case rides(RideReviewFeature.Action)
         /// Speak the briefing on demand, at either verbosity.
         case speakFlightPlan(FlightPlanVerbosity)
         /// A journey began or ended. Carries the phase rather than recomputing it, so the reduction
@@ -344,6 +345,8 @@ public enum AppFeature {
         <> AppScopes.fuel.behavior(of: FuelFeature.self)
 
         <> AppScopes.navigate.behavior(of: NavigationFeature.self)
+
+        <> AppScopes.rides.behavior(of: RideReviewFeature.self)
 
         // Seed the planner with where the bike already is.
         //
@@ -818,6 +821,16 @@ public enum AppScopes: Rig {
     ///
     /// `speakQueued` rather than `speak`: nothing the planner says is time-critical, and cutting off
     /// a speed announcement to report a route would be the wrong trade in a helmet.
+    /// The review screen — affine like the other pushed screens, and read-only against the World:
+    /// it can load the journey log and write a share file, and nothing else.
+    public static let rides = ScopeOf<AppScopes>
+        .action(\.rides)
+        .state(preview: topmost(StackEntry.prism.rides), set: replacing(StackEntry.prism.rides))
+        .environment(fanout(
+            \.loadJourneyRecords, \.writeShareFile,
+            \.formatDistance, \.formatDuration, \.formatTime, \.formatSpeed
+        ) >>> RideReviewFeature.Environment.init)
+
     public static let navigate = ScopeOf<AppScopes>
         .action(\.navigate)
         .state(preview: topmost(StackEntry.prism.navigate), set: replacing(StackEntry.prism.navigate))

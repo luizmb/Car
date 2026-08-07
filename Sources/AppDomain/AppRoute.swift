@@ -17,6 +17,7 @@ import FPMacros
 public enum AppRoute: Hashable, Sendable {
     case fuel
     case navigate
+    case rides
 }
 
 // MARK: - NavigationRequest
@@ -33,4 +34,6 @@ public enum NavigationRequest: Sendable, Equatable {
     case fuel
     /// Likewise — the route planner starts empty and takes its origin from the location stream.
     case navigate
+    /// And likewise again: the review screen reads the journey log itself.
+    case rides
 }

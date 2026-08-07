@@ -21,6 +21,7 @@ import FPMacros
 public enum StackEntry: Sendable, Equatable {
     case fuel(FuelFeature.State)
     case navigate(NavigationFeature.State)
+    case rides(RideReviewFeature.State)
 }
 
 public extension StackEntry {
@@ -30,6 +31,7 @@ public extension StackEntry {
         switch self {
         case .fuel: .fuel
         case .navigate: .navigate
+        case .rides: .rides
         }
     }
 }

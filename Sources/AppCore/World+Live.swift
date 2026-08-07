@@ -479,6 +479,36 @@ extension World {
             logAction: { line in
                 Publisher.future { rideLog.append(line) }
             },
+            loadJourneyRecords: {
+                Publisher.future {
+                    // Every journey file present, oldest first, each line a complete record. A
+                    // truncated last line — the app killed mid-write, which is the normal ending —
+                    // is dropped by the parser rather than failing the day.
+                    let files = ((try? FileManager.default.contentsOfDirectory(
+                        at: documents, includingPropertiesForKeys: nil
+                    )) ?? [])
+                        .filter { $0.lastPathComponent.hasPrefix("journey-")
+                            && $0.pathExtension == "jsonl" }
+                        .sorted { $0.lastPathComponent < $1.lastPathComponent }
+                    return files.flatMap { url -> [JourneyRecord] in
+                        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+                            return []
+                        }
+                        return JourneyLog.records(
+                            fromLines: text.split(separator: "\n").map(String.init)
+                        )
+                    }
+                }
+            },
+            writeShareFile: { name, contents in
+                Publisher.future {
+                    let url = FileManager.default.temporaryDirectory
+                        .appendingPathComponent(name)
+                    guard (try? contents.write(to: url, atomically: true, encoding: .utf8)) != nil
+                    else { return nil }
+                    return url
+                }
+            },
             logJourney: { event in
                 Publisher.future { journeyLog.append(event) }
             },

@@ -102,6 +102,13 @@ public struct World: Sendable {
     /// Appends a line to the ride log. Temporary raw capture until the journey recorder lands.
     /// The firehose: every action, on or off journey. Useful for a week, not for a year.
     public let logAction: @Sendable (String) -> Publisher<Void, Never>
+    /// Every record the journey log holds, across every day's file. The review feature's whole
+    /// input: rides are reassembled from these, never stored separately, so the screens cannot
+    /// disagree with the log.
+    public let loadJourneyRecords: @Sendable () -> Publisher<[JourneyRecord], Never>
+    /// Writes a shareable file and hands back its URL. Exists so exporting a GPX is a value
+    /// through a boundary rather than a view writing to disk.
+    public let writeShareFile: @Sendable (String, String) -> Publisher<URL?, Never>
     /// The record worth keeping: typed events, only while a journey is active.
     public let logJourney: @Sendable (any JourneyPayloadType) -> Publisher<Void, Never>
     // Audio

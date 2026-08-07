@@ -384,6 +384,8 @@ struct RefuelRecordingTests {
             now: world.now,
             newID: world.newID,
             logAction: world.logAction,
+            loadJourneyRecords: world.loadJourneyRecords,
+            writeShareFile: world.writeShareFile,
             logJourney: { payload in
                 Publisher.future { spy.record(payload) }
             },
