@@ -254,7 +254,10 @@ struct OverpassRequestTests {
             overpassCameraRequest(latitude: Latitude(51.75), longitude: Longitude(-0.475), radius: Meters(2_000)),
             overpassStationRequest(latitude: Latitude(51.75), longitude: Longitude(-0.475))
         ]
-        for request in requests {
+        // `compactMap` rather than a force unwrap, and the count asserted, so a builder that
+        // started returning nil would fail this test rather than silently checking fewer requests.
+        #expect(requests.compactMap { $0 }.count == 3)
+        for request in requests.compactMap({ $0 }) {
             let agent = request.value(forHTTPHeaderField: "User-Agent")
             #expect(agent?.contains("SpeedJarvis") == true)
             #expect(agent?.contains("github.com/luizmb/Car") == true)
@@ -265,6 +268,9 @@ struct OverpassRequestTests {
     func timeout() {
         // Sixty seconds is the default and useless here: a road name that late describes a road the
         // rider has already left, and the wait blocks the Apple fallback behind it.
-        #expect(overpassRequest(latitude: Latitude(51.75), longitude: Longitude(-0.475)).timeoutInterval == 6)
+        #expect(
+            overpassRequest(latitude: Latitude(51.75), longitude: Longitude(-0.475))?.timeoutInterval
+                == 6
+        )
     }
 }

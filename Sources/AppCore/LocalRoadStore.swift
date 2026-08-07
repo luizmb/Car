@@ -31,6 +31,8 @@ final class LocalRoadStore: @unchecked Sendable {
     /// `nil` for an extract built before the `meta` table existed. Reading that as "covers nothing"
     /// is the safe direction: roads still come from the file, and cameras go back to the network.
     private let bounds: (minLat: Double, maxLat: Double, minLon: Double, maxLon: Double)?
+    /// Whether this extract's cameras know which road they stand beside (v4 onwards).
+    private let camerasCarryRoads: Bool
 
     /// The extract, if one has been put in Documents. Absent is normal and not an error — the app
     /// simply falls through to Overpass, which is what it did before this existed.
@@ -59,6 +61,16 @@ final class LocalRoadStore: @unchecked Sendable {
         }
         handle = db
         bounds = Self.readBounds(db)
+        // Whether cameras carry their road — the v4 extract does, earlier ones do not, and asking
+        // an old file for columns it lacks is an SQL error rather than an empty answer. Detected
+        // once so every query afterwards knows which world it lives in.
+        var statement: OpaquePointer?
+        var hasRoads = false
+        if sqlite3_prepare_v2(db, "SELECT road_ref FROM camera LIMIT 1", -1, &statement, nil) == SQLITE_OK {
+            hasRoads = true
+        }
+        sqlite3_finalize(statement)
+        camerasCarryRoads = hasRoads
     }
 
     deinit { sqlite3_close(handle) }
@@ -121,6 +133,58 @@ final class LocalRoadStore: @unchecked Sendable {
         guard covers(latitude: latitude, longitude: longitude) else { return nil }
         let box = boundingBox(latitude: latitude, longitude: longitude, radius: radius)
         return CameraSet(cameras: cameras(in: box), zones: zones(in: box))
+    }
+
+    /// The cameras standing on one particular road, near a position.
+    ///
+    /// The rider's design, verbatim: *"we query the database for the road we just joined for its
+    /// cameras along the way"*. Which road a camera belongs to was settled at extract time by
+    /// geometry — so the runtime question is a string match, not a distance one, and the slip-road
+    /// cameras that share the rider's ref are excluded by the one thing that separates them: class.
+    ///
+    /// `nil` — not empty — when this extract predates road attachment or the position is outside
+    /// it, so the caller can fall back to the radius set rather than believing a silence.
+    func cameras(on key: RoadKey, near latitude: Latitude, longitude: Longitude) -> [SpeedCamera]? {
+        guard camerasCarryRoads, covers(latitude: latitude, longitude: longitude) else { return nil }
+        guard let classIndex = classNames.firstIndex(of: key.roadClass) else { return nil }
+        // A generous reach along the road, tiny against the 50 km radius set: a journey's worth of
+        // one road, refreshed every time the road changes.
+        let box = boundingBox(latitude: latitude, longitude: longitude, radius: Meters(20_000))
+        var found: [SpeedCamera] = []
+        query(
+            """
+            SELECT c.id, c.kind, c.mph, c.direction, c.lat, c.lon, c.road_ref, c.road_name
+            FROM camera_bbox b JOIN camera c ON c.id = b.id
+            WHERE b.maxlat >= ? AND b.minlat <= ? AND b.maxlon >= ? AND b.minlon <= ?
+              AND c.road_class = ?
+            """,
+            bind: box.rtree + [Double(classIndex)]
+        ) { statement in
+            // The string half of the match, done here rather than in SQL so ref-or-name fallback
+            // stays in one visible place: the ref identifies a road where it exists, and plenty of
+            // residential streets carry only a name.
+            let ref = text(statement, 6)
+            let name = text(statement, 7)
+            let sameRoad: Bool = if let keyRef = key.ref, let ref {
+                keyRef == ref
+            } else if let keyName = key.name, let name {
+                keyName == name
+            } else {
+                false
+            }
+            guard sameRoad else { return }
+            found.append(SpeedCamera(
+                id: Int(sqlite3_column_int64(statement, 0)),
+                kind: kind(from: text(statement, 1)),
+                latitude: Latitude(sqlite3_column_double(statement, 4)),
+                longitude: Longitude(sqlite3_column_double(statement, 5)),
+                limit: sqlite3_column_type(statement, 2) == SQLITE_NULL
+                    ? nil : MPH(Double(sqlite3_column_int(statement, 2))),
+                direction: sqlite3_column_type(statement, 3) == SQLITE_NULL
+                    ? nil : sqlite3_column_double(statement, 3)
+            ))
+        }
+        return found
     }
 
     /// The nearest petrol station within `radius` metres.

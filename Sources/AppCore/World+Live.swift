@@ -1,4 +1,5 @@
 import AVFoundation
+import AudioToolbox
 import UIKit
 import ReactiveConcurrency
 import Core
@@ -21,6 +22,25 @@ private final class LocationBox: @unchecked Sendable {
         return m
     }()
     nonisolated(unsafe) let delegate = LocationDelegate()
+}
+
+/// How good a voice is, as one number.
+///
+/// `quality` is the headline, but it does not separate the two worst tiers: both `compact` and
+/// `super-compact` report `.default`, and super-compact is markedly the more synthetic of the two.
+/// The identifier says which, so it breaks the tie.
+private func voiceRank(_ voice: AVSpeechSynthesisVoice) -> Int {
+    let identifier = voice.identifier.lowercased()
+    let tier: Int = if identifier.contains("premium") {
+        30
+    } else if identifier.contains("enhanced") {
+        20
+    } else if identifier.contains("super-compact") {
+        0
+    } else {
+        10
+    }
+    return voice.quality.rawValue * 100 + tier
 }
 
 private final class SpeechBox: @unchecked Sendable {
@@ -78,10 +98,37 @@ private final class SpeechBox: @unchecked Sendable {
 
     private func utterance(_ text: String) -> AVSpeechUtterance {
         let u = AVSpeechUtterance(string: text)
-        u.voice = AVSpeechSynthesisVoice(language: "en-GB")
-        u.rate  = 0.65
+        u.voice = SpeechBox.voice
+        // 0.65 was too fast for the old compact voice and 0.52 too slow for the premium one: a
+        // neural voice keeps its consonants at pace, so it can carry speed that a compact voice
+        // could not. Apple's default is 0.5.
+        u.rate  = 0.57
         return u
     }
+
+    /// The best British voice actually installed, rather than whatever the language defaults to.
+    ///
+    /// `AVSpeechSynthesisVoice(language: "en-GB")` returns the system default, which on a phone
+    /// nobody has configured is `com.apple.voice.super-compact.en-GB.Daniel` — the smallest and
+    /// most synthetic tier Apple ships, and the reason the app sounded like a 1990s answering
+    /// machine. Enumerating and ranking costs nothing and picks a premium or enhanced voice the
+    /// moment one exists.
+    ///
+    /// The good ones are **downloads**, not code: Settings → Accessibility → Spoken Content →
+    /// Voices → English (UK). Until one is installed there is genuinely nothing better on the
+    /// device, so this degrades to the same voice as before rather than pretending otherwise.
+    nonisolated(unsafe) static let voice: AVSpeechSynthesisVoice? = {
+        let candidates = AVSpeechSynthesisVoice.speechVoices().filter {
+            // British first. The novelty voices (Zarvox, Bells, Bad News) are `en-US` and live
+            // under a different identifier prefix — excluded explicitly, because a ranking that
+            // ever picked one would be a very bad surprise at 60 mph.
+            $0.language.hasPrefix("en-GB")
+                && !$0.identifier.hasPrefix("com.apple.speech.synthesis.voice.")
+                && !$0.identifier.lowercased().contains("eloquence")
+        }
+        return candidates.max { voiceRank($0) < voiceRank($1) }
+            ?? AVSpeechSynthesisVoice(language: "en-GB")
+    }()
 
     /// Speaks a sequence with a pause between each item.
     ///
@@ -116,8 +163,8 @@ private final class SpeechBox: @unchecked Sendable {
     private func enqueue(_ texts: [String], gap: TimeInterval) {
         for text in texts {
             let u = AVSpeechUtterance(string: text)
-            u.voice = AVSpeechSynthesisVoice(language: "en-GB")
-            u.rate  = 0.65
+            u.voice = SpeechBox.voice
+            u.rate  = 0.57
             u.postUtteranceDelay = gap
             synth.speak(u)
         }
@@ -140,6 +187,36 @@ private let milkyWayBands: [TyrePosition: TyreThresholds] = [
     .front: TyreThresholds(minimum: PSI(29), recommended: PSI(31), maximum: PSI(39)),
     .rear:  TyreThresholds(minimum: PSI(33), recommended: PSI(36), maximum: PSI(45))
 ]
+
+// MARK: - Simulator rig
+//
+// A simulator has no bike. There is no CHIGEE to say the ignition is on, no Indimate to report the
+// indicators, and the audio route is always "Speaker", so the app decides the helmet intercom is
+// absent — and the cues that matter most are the ones gated on all three.
+//
+// Faked at the `World` boundary rather than by dispatching actions into the store, which was tried
+// and does not work: the real streams emit on subscribe and on every supervision pass, so a
+// pretended state is overwritten within the second. Replacing the stream is the only level at which
+// the lie holds.
+//
+// Compiled out entirely on device.
+
+#if targetEnvironment(simulator)
+/// Emits its values and then parks.
+///
+/// Parking matters: supervision re-subscribes a channel whose stream has finished, so a factory
+/// that emitted and returned would re-emit for ever in a tight loop.
+private func fakeStream<A: Sendable>(_ values: [A]) -> Publisher<A, Never> {
+    Publisher { continuation in
+        for value in values { continuation.yield(value) }
+        try? await Task.sleep(for: .seconds(86_400))
+    }
+}
+
+private let simulatedBluetoothRoute = AudioRoute(outputs: [
+    AudioOutput(portType: "BluetoothA2DPOutput", portName: "PT EDGE (simulated)", uid: "sim-cardo")
+])
+#endif
 
 // MARK: - Live world
 
@@ -176,6 +253,24 @@ extension World {
         // Absent is normal: without the extract the app behaves exactly as it did before, which is
         // the point of it being a cache rather than a replacement.
         let localRoads = LocalRoadStore()
+
+        // Which voice actually got picked, once, at startup. Without it there is no way to tell a
+        // phone with premium voices installed from one still on super-compact — they sound
+        // different and nothing else reports which is in use.
+        rideLog.append(
+            "voice-chosen \(SpeechBox.voice?.identifier ?? "none") "
+                + "quality=\(SpeechBox.voice?.quality.rawValue ?? 0)"
+        )
+        // Every British voice on the device, not just the winner. Ranking cannot improve on a list
+        // of one, so the only question that matters is whether a better one is installed at all —
+        // and that is a fact about this phone, which no amount of code can report from here.
+        for installed in AVSpeechSynthesisVoice.speechVoices()
+            where installed.language.hasPrefix("en") {
+            rideLog.append(
+                "voice-available \(installed.language) q=\(installed.quality.rawValue) "
+                    + "\(installed.identifier)"
+            )
+        }
 
         // Locale captured once — all formatters below are pure closures over this snapshot
         let locale     = Locale.current
@@ -258,6 +353,9 @@ extension World {
             localRoad: { latitude, longitude, course in
                 localRoads?.road(at: latitude, longitude: longitude, course: course)
             },
+            camerasOnRoad: { key, latitude, longitude in
+                .just(localRoads?.cameras(on: key, near: latitude, longitude: longitude) ?? nil)
+            },
             subscribeToCameras: {
                 makeCameraStream(
                     box: cameraLoc,
@@ -280,11 +378,18 @@ extension World {
             },
             bluetoothAuthorization: { CBManager.authorization.domain },
             indimateEvents: {
-                makeIndimateStream(
+                #if targetEnvironment(simulator)
+                return fakeStream([
+                    IndimateEvent.availability(.ready),
+                    IndimateEvent.connected
+                ])
+                #else
+                return makeIndimateStream(
                     central: indimate,
                     knownIdentifier: IndimatePeripheralStore.load,
                     onLearn: IndimatePeripheralStore.save
                 )
+                #endif
             },
             playIndicatorLoop: { side in
                 Publisher.future { DispatchQueue.main.async { ticks.play(side) } }
@@ -299,15 +404,27 @@ extension World {
             formatPressure: { numFmt1dp.format($0.rawValue) + " psi" },
             formatTemperature: { numFmt0dp.format($0.rawValue) + "°C" },
             chigeeEvents: {
-                makeChigeeStream(
+                #if targetEnvironment(simulator)
+                return fakeStream([ChigeeEvent.present])
+                #else
+                return makeChigeeStream(
                     central: chigee,
                     knownIdentifier: ChigeePeripheralStore.load,
                     log: rideLog.append,
                     onLearn: ChigeePeripheralStore.save
                 )
+                #endif
             },
             cardoEvents: { makeCardoStream(central: cardo, log: rideLog.append) },
-            audioRouteChanges: { makeAudioRouteStream() },
+            audioRouteChanges: {
+                #if targetEnvironment(simulator)
+                // The Cardo is judged present by the audio route, so a simulated Bluetooth output
+                // is all it takes for every intercom-gated cue to fire.
+                return fakeStream([simulatedBluetoothRoute])
+                #else
+                return makeAudioRouteStream()
+                #endif
+            },
             barometer: { makeBarometerStream(box: motionBox) },
             motion: { makeMotionStream(box: motionBox) },
             motionActivity: { makeActivityStream(box: motionBox) },
@@ -330,7 +447,12 @@ extension World {
                 }
                 // A miss falls through rather than being trusted — abroad, or a forecourt that
                 // opened after the extract was built, and this request is made once while stopped.
-                return httpClient(overpassStationRequest(latitude: latitude, longitude: longitude))
+                // A fill with no station is worth far more than no fill, so a request that will
+                // not build is simply no station.
+                guard let request = overpassStationRequest(
+                    latitude: latitude, longitude: longitude
+                ) else { return .just(nil) }
+                return httpClient(request)
                     .validateStatusCode()
                     .decode(using: stationDecoder)
                     .map { nearestStation($0, to: (latitude, longitude)) }
@@ -357,14 +479,51 @@ extension World {
             logAction: { line in
                 Publisher.future { rideLog.append(line) }
             },
+            loadJourneyRecords: {
+                Publisher.future {
+                    // Every journey file present, oldest first, each line a complete record. A
+                    // truncated last line — the app killed mid-write, which is the normal ending —
+                    // is dropped by the parser rather than failing the day.
+                    let files = ((try? FileManager.default.contentsOfDirectory(
+                        at: documents, includingPropertiesForKeys: nil
+                    )) ?? [])
+                        .filter { $0.lastPathComponent.hasPrefix("journey-")
+                            && $0.pathExtension == "jsonl" }
+                        .sorted { $0.lastPathComponent < $1.lastPathComponent }
+                    return files.flatMap { url -> [JourneyRecord] in
+                        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+                            return []
+                        }
+                        return JourneyLog.records(
+                            fromLines: text.split(separator: "\n").map(String.init)
+                        )
+                    }
+                }
+            },
+            writeShareFile: { name, contents in
+                Publisher.future {
+                    let url = FileManager.default.temporaryDirectory
+                        .appendingPathComponent(name)
+                    guard (try? contents.write(to: url, atomically: true, encoding: .utf8)) != nil
+                    else { return nil }
+                    return url
+                }
+            },
             logJourney: { event in
                 Publisher.future { journeyLog.append(event) }
             },
             speak: { text in
-                Publisher.future { DispatchQueue.main.async { speech.speak(text) } }
+                // Every utterance, with the time it was handed over. Step transitions were already
+                // logged and were not enough: they show which manoeuvre is current, not what the
+                // rider actually heard or when. Told that an instruction arrived one junction
+                // early, there was no way to tell a wrong step from the right step at the wrong
+                // moment from something arriving late — three different bugs.
+                rideLog.append("say! \(text)")
+                return Publisher.future { DispatchQueue.main.async { speech.speak(text) } }
             },
             speakQueued: { text in
-                Publisher.future { DispatchQueue.main.async { speech.enqueue(text) } }
+                rideLog.append("say \(text)")
+                return Publisher.future { DispatchQueue.main.async { speech.enqueue(text) } }
             },
             speakSequence: { texts, gap in
                 Publisher.future { DispatchQueue.main.async { speech.speakSequence(texts, gap: gap) } }
@@ -375,6 +534,17 @@ extension World {
             announceUnderLimit: {
                 Publisher.future { DispatchQueue.main.async { speech.speak("back") } }
             },
+            playRerouteTone: {
+                // A system sound rather than an asset: it needs no file, ducks nothing, and cannot
+                // be cut off by speech the way an `AVAudioPlayer` competing for the session can.
+                // 1113 is the short double note iOS uses for "begin recording" — distinctive,
+                // unmistakably not an alert, and about a third of a second.
+                Publisher.future { AudioServicesPlaySystemSound(1113) }
+            },
+            completeAddress: RoutingClient.completeAddress,
+            resolveAddress: RoutingClient.resolve,
+            routes: RoutingClient.routes,
+            routesToEach: RoutingClient.routesToEach,
             thresholds: [110.0, 99, 88, 77, 66, 55, 44, 33, 22, 11].map { MPH($0) },
             formatSpeed: {
                 Measurement(value: $0.rawValue, unit: UnitSpeed.milesPerHour).formatted(speedFmt)
@@ -382,6 +552,27 @@ extension World {
             formatSpeedSpeech: { @Sendable mph in numFmt0dp.format(mph.rawValue) },
             formatAltitude: {
                 Measurement(value: $0.rawValue, unit: UnitLength.meters).formatted(altFmt)
+            },
+            formatDistance: { metres in
+                // `.road` usage, which is what makes this different from `formatAltitude` despite
+                // the shared unit: it picks the unit the locale signs roads in — miles here — and
+                // rounds the way a sign does rather than to a fixed number of places.
+                Measurement(value: metres.rawValue, unit: UnitLength.meters)
+                    .formatted(
+                        .measurement(width: .abbreviated, usage: .road)
+                            .locale(locale)
+                    )
+            },
+            formatDuration: { seconds in
+                // `.abbreviated` reads as "1 hr 24 min", which is what a rider scans. `.short`
+                // would give "1:24" and be read as a time of day at a glance.
+                Duration.seconds(seconds).formatted(
+                    .units(allowed: [.hours, .minutes], width: .abbreviated)
+                        .locale(locale)
+                )
+            },
+            formatTime: { date in
+                date.formatted(.dateTime.hour().minute().locale(locale))
             },
             formatBearing: { @Sendable course in numFmt1dp.format(course.rawValue) },
             formatCoordinate: { lat, lon in

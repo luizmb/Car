@@ -119,6 +119,181 @@ struct WiringTests {
         }
         #expect(state.litres == "12.5")
     }
+
+    @Test("the route planner's affine scope reaches state inside the path element")
+    func navigateScopeIsWired() {
+        let store = MainStore.app(world: .stub)
+        store.dispatch(.navigation(.push(.navigate)), source: .init(file: #file, function: #function, line: #line))
+        store.dispatch(.navigate(.setQuery("MK42")), source: .init(file: #file, function: #function, line: #line))
+
+        guard case let .navigate(state)? = store.state.path.first else {
+            Issue.record("route planner entry missing from the path")
+            return
+        }
+        #expect(state.query == "MK42")
+    }
+
+    /// Position reaches the planner by fan-out from the location stream, which is affine: a fix
+    /// arriving while the planner is not on the stack lands nowhere. Open it between fixes and it
+    /// has no origin — for ever, if the bike is stationary and Core Location has settled, which is
+    /// exactly when a rider plans a route. Seen in the simulator: four fixes all session, all
+    /// before the screen existed, and the planner sat on "waiting for a GPS fix".
+    @Test("opening the planner seeds it with the last known fix")
+    func plannerSeedsFromLastFix() async {
+        let store = MainStore.app(world: .stub)
+        store.dispatch(
+            .speedMonitor(.locationUpdate(LocationUpdate(
+                speed: MPS(0), speedAccuracy: MPS(1), course: nil,
+                latitude: Latitude(52.13), longitude: Longitude(-0.46),
+                altitude: Meters(30), timestamp: Date(timeIntervalSince1970: 0),
+                horizontalAccuracy: Meters(5)
+            ))),
+            source: .init(file: #file, function: #function, line: #line)
+        )
+        for _ in 0..<10 { await Task.yield() }
+
+        // Pushed *after* the only fix, exactly as it happens when a rider stops and opens it.
+        store.dispatch(.navigation(.push(.navigate)), source: .init(file: #file, function: #function, line: #line))
+        store.dispatch(.navigate(.appeared), source: .init(file: #file, function: #function, line: #line))
+        for _ in 0..<10 { await Task.yield() }
+
+        guard case let .navigate(state)? = store.state.path.first else {
+            Issue.record("route planner entry missing"); return
+        }
+        #expect(state.canRoute)
+        #expect(state.latitude == Latitude(52.13))
+    }
+
+    /// Routing needs an origin, and the only one that makes sense is the bike's own position. It
+    /// arrives by fan-out from the single feature that owns the location stream — a wiring line that
+    /// compiles perfectly well when deleted, which is what this whole suite exists for.
+    @Test("a location fix reaches the route planner")
+    func positionReachesPlanner() async {
+        let store = MainStore.app(world: .stub)
+        store.dispatch(.navigation(.push(.navigate)), source: .init(file: #file, function: #function, line: #line))
+        store.dispatch(
+            .speedMonitor(.locationUpdate(LocationUpdate(
+                speed: MPS(0), speedAccuracy: MPS(1), course: nil,
+                latitude: Latitude(52.13), longitude: Longitude(-0.46),
+                altitude: Meters(30), timestamp: Date(timeIntervalSince1970: 0),
+                horizontalAccuracy: Meters(5)
+            ))),
+            source: .init(file: #file, function: #function, line: #line)
+        )
+        // The fan-out is an effect, not a reduction — the fix arrives on the next turn of the loop.
+        for _ in 0..<10 { await Task.yield() }
+
+        guard case let .navigate(state)? = store.state.path.first else {
+            Issue.record("route planner entry missing from the path")
+            return
+        }
+        #expect(state.latitude == Latitude(52.13))
+        #expect(state.canRoute)
+    }
+
+    /// The planner is a pushed screen and the map is the root, so neither can see the other. The
+    /// app-level join is the only thing that draws the route — and it is exactly the kind of line
+    /// that compiles perfectly well when deleted.
+    @Test("choosing a route draws it on the root map")
+    func chosenRouteReachesTheMap() async {
+        let store = MainStore.app(world: .stub)
+        store.dispatch(.navigation(.push(.navigate)), source: .init(file: #file, function: #function, line: #line))
+        #expect(store.state.speedMonitor.routeShape.isEmpty)
+
+        let shape = (0..<10).map {
+            Coordinate(latitude: Latitude(52 + Double($0) / 1_000), longitude: Longitude(-0.46))
+        }
+        // `.select` only highlights; `.start` is the commitment, and it is what draws the route on
+        // the home map — the one carrying the speed, the limit sign and the status bubbles.
+        store.dispatch(
+            .navigate(.start(RouteOption(
+                name: "A421", distance: Meters(1_000), travelTime: 120,
+                hasTolls: false, hasMotorways: false, steps: [], shape: shape
+            ), "Bedford")),
+            source: .init(file: #file, function: #function, line: #line)
+        )
+        for _ in 0..<10 { await Task.yield() }
+
+        #expect(store.state.speedMonitor.routeShape == shape)
+        #expect(store.state.activeRoute != nil)
+        // And it puts the rider back on the home map rather than leaving them on a preview of a
+        // route they have already committed to.
+        #expect(store.state.path.isEmpty)
+    }
+
+    /// A destination chosen before the first fix cannot be routed — the screen says "waiting for a
+    /// GPS fix", and without a retry it says it for ever, because nothing else would ask again.
+    /// Equally, this action arrives once a second all journey: routing on each one would be a
+    /// request per second and would swap the route under a rider already following it.
+    @Test("a destination chosen before the first fix routes once the fix arrives, and only once")
+    func routesOnFirstFixOnly() async {
+        let store = MainStore.app(world: .stub)
+        store.dispatch(.navigation(.push(.navigate)), source: .init(file: #file, function: #function, line: #line))
+
+        let destination = AddressSuggestion(
+            title: "Ampthill Road", subtitle: "Bedford",
+            latitude: Latitude(52.12), longitude: Longitude(-0.46)
+        )
+
+        // `.choose` only kicks off resolution — a completion is text until it is placed, and the
+        // stub never resolves — so the resolved destination is supplied directly here.
+        store.dispatch(.navigate(.destinationResolved(destination)), source: .init(file: #file, function: #function, line: #line))
+        for _ in 0..<10 { await Task.yield() }
+
+        // No fix yet, so nothing could be asked.
+        guard case let .navigate(before)? = store.state.path.first else {
+            Issue.record("route planner entry missing"); return
+        }
+        #expect(before.outcome == nil)
+        #expect(!before.isRouting)
+
+        func fix(_ latitude: Double) -> AppFeature.Action {
+            .navigate(.setPosition(Latitude(latitude), Longitude(-0.46)))
+        }
+        store.dispatch(fix(52.13), source: .init(file: #file, function: #function, line: #line))
+        for _ in 0..<10 { await Task.yield() }
+
+        // The stub returns an empty publisher, so routing never resolves — `isRouting` staying true
+        // is exactly the evidence that the request was made.
+        guard case let .navigate(after)? = store.state.path.first else {
+            Issue.record("route planner entry missing"); return
+        }
+        #expect(after.isRouting)
+
+        // A second fix must not ask again: the guard is on the *first* one.
+        store.dispatch(fix(52.14), source: .init(file: #file, function: #function, line: #line))
+        for _ in 0..<10 { await Task.yield() }
+        guard case let .navigate(later)? = store.state.path.first else {
+            Issue.record("route planner entry missing"); return
+        }
+        #expect(later.latitude == Latitude(52.14))
+    }
+
+    /// Otherwise the planner forgets where you were going while the map carries on drawing the route
+    /// there, and the only way to be rid of it is to navigate somewhere else.
+    @Test("stopping rubs the route off the map")
+    func clearingRemovesTheRoute() async {
+        let store = MainStore.app(world: .stub)
+        store.dispatch(.navigation(.push(.navigate)), source: .init(file: #file, function: #function, line: #line))
+        store.dispatch(
+            .navigate(.start(RouteOption(
+                name: "A421", distance: Meters(1_000), travelTime: 120,
+                hasTolls: false, hasMotorways: false, steps: [],
+                shape: [
+                    Coordinate(latitude: Latitude(52), longitude: Longitude(-0.46)),
+                    Coordinate(latitude: Latitude(52.1), longitude: Longitude(-0.46))
+                ]
+            ), "Bedford")),
+            source: .init(file: #file, function: #function, line: #line)
+        )
+        for _ in 0..<10 { await Task.yield() }
+        #expect(!store.state.speedMonitor.routeShape.isEmpty)
+
+        store.dispatch(.stopNavigation, source: .init(file: #file, function: #function, line: #line))
+        for _ in 0..<10 { await Task.yield() }
+        #expect(store.state.speedMonitor.routeShape.isEmpty)
+        #expect(store.state.activeRoute == nil)
+    }
 }
 
 @Suite("Journey rule")
@@ -179,6 +354,7 @@ struct RefuelRecordingTests {
             locationUpdates: world.locationUpdates,
             subscribeToRoadSpeed: world.subscribeToRoadSpeed,
             localRoad: world.localRoad,
+            camerasOnRoad: world.camerasOnRoad,
             subscribeToCameras: world.subscribeToCameras,
             reverseGeocode: world.reverseGeocode,
             refreshRoadNow: world.refreshRoadNow,
@@ -208,6 +384,8 @@ struct RefuelRecordingTests {
             now: world.now,
             newID: world.newID,
             logAction: world.logAction,
+            loadJourneyRecords: world.loadJourneyRecords,
+            writeShareFile: world.writeShareFile,
             logJourney: { payload in
                 Publisher.future { spy.record(payload) }
             },
@@ -216,10 +394,18 @@ struct RefuelRecordingTests {
             speakSequence: world.speakSequence,
             announceOverLimit: world.announceOverLimit,
             announceUnderLimit: world.announceUnderLimit,
+            playRerouteTone: world.playRerouteTone,
+            completeAddress: world.completeAddress,
+            resolveAddress: world.resolveAddress,
+            routes: world.routes,
+            routesToEach: world.routesToEach,
             thresholds: world.thresholds,
             formatSpeed: world.formatSpeed,
             formatSpeedSpeech: world.formatSpeedSpeech,
             formatAltitude: world.formatAltitude,
+            formatDistance: world.formatDistance,
+            formatDuration: world.formatDuration,
+            formatTime: world.formatTime,
             formatBearing: world.formatBearing,
             formatCoordinate: world.formatCoordinate
         )

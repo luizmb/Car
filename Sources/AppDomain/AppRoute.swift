@@ -16,6 +16,8 @@ import FPMacros
 @Prisms
 public enum AppRoute: Hashable, Sendable {
     case fuel
+    case navigate
+    case rides
 }
 
 // MARK: - NavigationRequest
@@ -30,4 +32,8 @@ public enum AppRoute: Hashable, Sendable {
 public enum NavigationRequest: Sendable, Equatable {
     /// Carries no payload: the fuel screen builds itself from persisted state, not from the ask.
     case fuel
+    /// Likewise — the route planner starts empty and takes its origin from the location stream.
+    case navigate
+    /// And likewise again: the review screen reads the journey log itself.
+    case rides
 }

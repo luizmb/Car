@@ -191,9 +191,13 @@ private func fetchRoadInfo(
         }
 
         @Sendable func attempt(_ hostIndex: Int) -> Publisher<RoadInfo, Never> {
-            httpClient(overpassRequest(
+            // A request that will not build is a failed lookup, and a failed lookup drops the event
+            // rather than blanking a good limit — the same rule the `.catch` below follows.
+            guard let request = overpassRequest(
                 latitude: location.latitude, longitude: location.longitude, hostIndex: hostIndex
-            ))
+            ) else { return .empty() }
+
+            return httpClient(request)
             .validateStatusCode()
             .decode(using: decoder)
             // Position and course come from the fix that triggered this lookup — the road you were

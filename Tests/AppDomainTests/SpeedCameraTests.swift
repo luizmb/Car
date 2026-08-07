@@ -314,3 +314,100 @@ struct AverageZoneTests {
         #expect(averageZoneEndAnnouncement(z) == "Average speed check ends.")
     }
 }
+
+// MARK: - Cameras on the road beside
+
+@Suite("Cameras that belong to another road")
+struct CameraPlausibilityTests {
+    private func camera(_ id: Int, _ mph: Double?) -> SpeedCamera {
+        SpeedCamera(
+            id: id, kind: .fixed,
+            latitude: Latitude(51.86), longitude: Longitude(-0.417),
+            limit: mph.map { MPH($0) }, direction: nil
+        )
+    }
+
+    /// Six real cameras were announced on a 30 mph stretch of the A1081, every one of them five to
+    /// eight metres from a `trunk_link` — the M1 slip roads alongside. At a junction every road is
+    /// within a few tens of metres of every other, so distance cannot separate them; the limit can.
+    @Test("A camera claiming a much higher limit than the road is watching another road")
+    func dropsFasterCameras() {
+        let kept = plausible([camera(1, 50)], onRoadLimited: MPH(30))
+        #expect(kept.isEmpty)
+    }
+
+    /// Deliberately one-directional. A camera claiming *less* than the road is what roadworks look
+    /// like, and those are ours — suppressing a real camera costs a fine.
+    @Test("A camera claiming a lower limit is kept")
+    func keepsSlowerCameras() {
+        #expect(plausible([camera(1, 30)], onRoadLimited: MPH(60)).count == 1)
+    }
+
+    /// The tolerance is for rounding only. It was ten, and UK limits step by ten — so it admitted
+    /// exactly the neighbouring tier, and "speed camera ahead, 50" fired three times on a 40 mph
+    /// stretch from the A1081 cameras alongside.
+    @Test("An equal limit survives; the next tier up does not")
+    func keepsNearEqual() {
+        #expect(plausible([camera(1, 40)], onRoadLimited: MPH(30)).isEmpty)
+        #expect(plausible([camera(2, 30)], onRoadLimited: MPH(30)).count == 1)
+        #expect(plausible([camera(3, 50)], onRoadLimited: MPH(40)).isEmpty)
+    }
+
+    /// Most cameras carry no limit at all, and an unknown one says nothing about which road it is
+    /// on — so it is kept, since a missed camera is the expensive error.
+    @Test("A camera with no limit is kept")
+    func keepsUnknown() {
+        #expect(plausible([camera(1, nil)], onRoadLimited: MPH(30)).count == 1)
+    }
+
+    /// With no known road limit there is nothing to compare against.
+    @Test("With no road limit nothing is dropped")
+    func keepsAllWithoutRoadLimit() {
+        #expect(plausible([camera(1, 70)], onRoadLimited: nil).count == 1)
+    }
+
+    /// "Average speed check, 50" was heard on a 30 mph street for the same reason.
+    @Test("The same rule applies to average-speed zones")
+    func zonesToo() {
+        let zone = AverageZone(id: 1, limit: MPH(50), start: nil, end: nil)
+        #expect(plausible([zone], onRoadLimited: MPH(30)).isEmpty)
+        #expect(plausible([zone], onRoadLimited: MPH(50)).count == 1)
+    }
+}
+
+// MARK: - Which way a camera looks
+
+@Suite("Camera facing")
+struct CameraFacingTests {
+    private func camera(direction: Double?) -> SpeedCamera {
+        SpeedCamera(
+            id: 1, kind: .fixed,
+            latitude: Latitude(51.86), longitude: Longitude(-0.417),
+            limit: MPH(70), direction: direction
+        )
+    }
+
+    /// The 70 mph camera announced from the motorway passing *under* the rider's street: its axis
+    /// is square across the rider's course, which is what "on a crossing road" looks like.
+    @Test("A camera facing square across the course is watching a crossing road")
+    func perpendicularDropped() {
+        #expect(!facingCompatible(camera(direction: 90), course: Course(0)))
+        #expect(!facingCompatible(camera(direction: 270), course: Course(0)))
+    }
+
+    /// OSM's direction tag is ambiguous between "looks at the traffic" (Truvelo) and "looks away
+    /// from it" (rear-facing Gatso), so both senses of parallel must survive — treating the tag as
+    /// the enforced direction would wrongly drop half the country's real cameras.
+    @Test("Both senses of parallel survive")
+    func parallelKeptEitherWay() {
+        #expect(facingCompatible(camera(direction: 0), course: Course(0)))
+        #expect(facingCompatible(camera(direction: 180), course: Course(0)))
+        #expect(facingCompatible(camera(direction: 350), course: Course(10)))
+    }
+
+    @Test("Unknown facing or unknown course keeps the camera")
+    func unknownKept() {
+        #expect(facingCompatible(camera(direction: nil), course: Course(0)))
+        #expect(facingCompatible(camera(direction: 90), course: nil))
+    }
+}

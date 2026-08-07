@@ -59,6 +59,23 @@ public enum AppFeature {
         /// fuel — so the log has to be somewhere that outlives the screen.
         public var fuelLog: FuelLog = .empty
 
+        /// The route being followed, if any, and where it has got to.
+        ///
+        /// Held here rather than in the planner because a ride outlives the screen that started it.
+        /// The planner is a stack element: GO pops it, and anything owned by it would go with it —
+        /// which is exactly what made the first version do nothing at all when you pressed the
+        /// button.
+        public var activeRoute: RouteOption?
+        public var navigationDestination: String?
+        public var guidance: GuidanceState = GuidanceState()
+        /// What to show for the next manoeuvre. Distinct from the spoken calls, which happen twice
+        /// and stop: this is always answering "what am I doing next", counting down.
+        public var guidanceBanner: GuidanceBanner?
+        /// The exclusions the rider chose, kept for the whole ride. A reroute has to honour them,
+        /// and has to know which one it had to break when it cannot.
+        public var routePreferences: RoutePreferences = .none
+        public var reroute: RerouteState = RerouteState()
+
         /// Whether a journey is under way, by the two-signal rule. Not derived on demand: the rule
         /// is a *transition*, so the previous phase has to be remembered to know an edge happened.
         public var journey: JourneyPhase = .idle
@@ -104,6 +121,8 @@ public enum AppFeature {
         case weather(WeatherFeature.Action)
         case trip(TripFeature.Action)
         case fuel(FuelFeature.Action)
+        case navigate(NavigationFeature.Action)
+        case rides(RideReviewFeature.Action)
         /// Speak the briefing on demand, at either verbosity.
         case speakFlightPlan(FlightPlanVerbosity)
         /// A journey began or ended. Carries the phase rather than recomputing it, so the reduction
@@ -111,6 +130,15 @@ public enum AppFeature {
         case journeyChanged(JourneyPhase)
         /// The refuel history, read from disk at launch and after every save.
         case fuelLogLoaded(FuelLog)
+        /// Guidance advanced for a fix. Carries both, because working them out needs the distance
+        /// formatter and so happens inside an effect.
+        case guidanceUpdated(GuidanceState, GuidanceBanner?)
+        case stopNavigation
+        /// Off-route bookkeeping for a fix.
+        case rerouteTracked(RerouteState)
+        /// A replacement route arrived. `nil` means the attempt failed and the old one stands —
+        /// a stale route is still better than none, since it at least points at the destination.
+        case rerouted(RouteOption?, RerouteState)
     }
 
     // MARK: - Environment
@@ -316,6 +344,222 @@ public enum AppFeature {
 
         <> AppScopes.fuel.behavior(of: FuelFeature.self)
 
+        <> AppScopes.navigate.behavior(of: NavigationFeature.self)
+
+        <> AppScopes.rides.behavior(of: RideReviewFeature.self)
+
+        // Seed the planner with where the bike already is.
+        //
+        // Position reaches it by fan-out from the location stream, which is affine: a fix arriving
+        // while the planner is not on the stack lands nowhere. So a planner opened *between* fixes
+        // starts with no origin and shows "waiting for a GPS fix" until the next one — for ever if
+        // the bike is stationary and Core Location has settled, which is exactly when a rider plans
+        // a route. The app already knows the last fix; there is no reason to make the screen wait
+        // for another.
+        <> Behavior<AppAction, AppState, World>.handle { action, context in
+            guard
+                AppAction.prism.navigate.preview(action)
+                    .flatMap(NavigationFeature.Action.prism.appeared.preview) != nil,
+                let last = context.stateBefore?.speedMonitor.lastLocation
+            else { return .doNothing }
+            return .produce { _ in
+                Effect.just(.navigate(.setPosition(last.latitude, last.longitude)))
+            }
+        }
+
+        // The navigation session, owned here rather than by the planner.
+        //
+        // GO pops the planner, and the ride carries on against the *home* map — which is the one
+        // with the speed, the limit sign and the status bubbles on it. A second map on a pushed
+        // screen could show the route but none of the instrumentation, which is the wrong half of
+        // what a rider needs while actually riding.
+        <> Behavior<AppAction, AppState, World>.handle { action, context in
+            guard
+                let navigate = AppAction.prism.navigate.preview(action),
+                let (route, destination) = NavigationFeature.Action.prism.start.preview(navigate)
+            else { return .doNothing }
+            let preferences = context.stateBefore?.path
+                .compactMap(StackEntry.prism.navigate.preview).last?.preferences ?? .none
+            return .reduce {
+                $0.activeRoute = route
+                $0.navigationDestination = destination
+                $0.guidance = GuidanceState()
+                $0.guidanceBanner = nil
+                $0.routePreferences = preferences
+                $0.reroute = RerouteState()
+            }
+            .produce { ctx in
+                let spoken = destination.map { name in
+                    ctx.environment.speakQueued(routeChosenAnnouncement(
+                        route,
+                        to: name,
+                        formatDistance: ctx.environment.formatDistance,
+                        formatDuration: ctx.environment.formatDuration
+                    )) |> Effect<AppAction>.fireAndForget
+                } ?? .empty
+                // Straight back to the home map. Staying on the planner would leave the rider
+                // looking at a preview of a route they have already committed to.
+                return Effect.just(.speedMonitor(.setRoute(simplified(route.shape))))
+                    <> Effect.just(.navigation(.popToRoot))
+                    <> spoken
+            }
+        }
+
+        // Ending a ride, from either end: the Stop button, or clearing the destination.
+        <> Behavior<AppAction, AppState, World>.handle { action, _ in
+            let stopped = AppAction.prism.stopNavigation.preview(action) != nil
+            let cleared = AppAction.prism.navigate.preview(action)
+                .flatMap(NavigationFeature.Action.prism.clear.preview) != nil
+            guard stopped || cleared else { return .doNothing }
+            return .reduce {
+                $0.activeRoute = nil
+                $0.navigationDestination = nil
+                $0.guidance = GuidanceState()
+                $0.guidanceBanner = nil
+                $0.reroute = RerouteState()
+            }
+            .produce { _ in Effect.just(.speedMonitor(.setRoute([]))) }
+        }
+
+        // Turn-by-turn, per fix.
+        <> Behavior<AppAction, AppState, World>.handle { action, context in
+            guard
+                let monitorAction = AppAction.prism.speedMonitor.preview(action),
+                let update = SpeedMonitorFeature.Action.prism.locationUpdate.preview(monitorAction),
+                let state = context.stateBefore,
+                let route = state.activeRoute
+            else { return .doNothing }
+
+            let position = Coordinate(latitude: update.latitude, longitude: update.longitude)
+            let speed = update.speed ?? MPS(0)
+            let current = state.guidance
+            return .produce { ctx in
+                let advanced = guidance(
+                    route: route, at: position, speed: speed, heading: update.course,
+                    state: current, formatDistance: ctx.environment.formatDistance
+                )
+                let banner = guidanceBanner(
+                    route: route, at: position, state: advanced.state,
+                    formatDistance: ctx.environment.formatDistance
+                )
+                let spoken = advanced.announcement.map {
+                    ctx.environment.speakQueued($0) |> Effect<AppAction>.fireAndForget
+                } ?? .empty
+                return Effect.just(.guidanceUpdated(advanced.state, banner))
+                    <> Effect.just(.speedMonitor(.setNextTurn(banner?.distance)))
+                    <> spoken
+            }
+        }
+
+        <> Behavior<AppAction, AppState, World>.reduce { action, state in
+            guard let (guidanceState, banner) = AppAction.prism.guidanceUpdated.preview(action)
+            else { return }
+            state.guidance = guidanceState
+            state.guidanceBanner = banner
+        }
+
+        // Without this, off-route detection was dead code. The action was dispatched on every fix
+        // and nothing applied it, so the counter recomputed 0 + 1 = 1 for ever and never reached
+        // the three consecutive fixes it needs — 208 of them in one ride, every single one a 1.
+        <> Behavior<AppAction, AppState, World>.reduce { action, state in
+            guard let tracked = AppAction.prism.rerouteTracked.preview(action) else { return }
+            state.reroute = tracked
+        }
+
+        // Leaving the route, and getting back onto it.
+        //
+        // Two responses, and which one depends on how often it has happened. A missed turn is a
+        // missed turn: the answer is to rejoin the route the rider chose, because routing straight
+        // to the destination from a wrong road is how a single mistake turns into a completely
+        // different ride. A rider who keeps not taking the same turn is being *stopped* from taking
+        // it — roadworks, a closure — and then the route itself is the problem and is replanned.
+        <> Behavior<AppAction, AppState, World>.handle { action, context in
+            guard
+                let monitorAction = AppAction.prism.speedMonitor.preview(action),
+                let update = SpeedMonitorFeature.Action.prism.locationUpdate.preview(monitorAction),
+                let state = context.stateBefore,
+                let route = state.activeRoute
+            else { return .doNothing }
+
+            let position = Coordinate(latitude: update.latitude, longitude: update.longitude)
+            let distanceOff = distanceToRoute(shape: route.shape, from: position)
+            let tracked = trackingRoute(state.reroute, distanceOff: distanceOff)
+            // No rerouting while stationary. A stopped rider cannot act on a new route, and a
+            // stopped rider *off* the route — at a light beside it — otherwise triggers one every
+            // three fixes for as long as they wait: the observed two-minute announcement loop.
+            let moving = (update.speed?.rawValue ?? 0) > 2.5
+            let decision = moving
+                ? rerouteDecision(distanceOff: distanceOff, state: tracked)
+                : .carryOn
+
+            guard decision != .carryOn else {
+                guard tracked != state.reroute else { return .doNothing }
+                return .produce { _ in Effect.just(.rerouteTracked(tracked)) }
+            }
+
+            // `let`, not `var`: these are captured by an effect that runs concurrently, and a
+            // mutable capture is a data race the compiler is right to refuse.
+            let starting = RerouteState(
+                offRouteFixCount: 0,
+                deviations: tracked.deviations + 1,
+                isRerouting: true,
+                reroutingFixes: 0
+            )
+            let finished = RerouteState(
+                offRouteFixCount: 0,
+                deviations: tracked.deviations + 1,
+                isRerouting: false,
+                reroutingFixes: 0,
+                // The storm guard: no new reroute for ~15 s after this one lands, however far off
+                // the new route the rider still is.
+                cooldownFixes: rerouteCooldownFixes
+            )
+
+            let stepIndex = state.guidance.stepIndex
+            let preferences = state.routePreferences
+            let destination = route.shape.last
+            return .reduce { $0.reroute = starting }
+                .produce { ctx in
+                    // The tone, not a sentence. A reroute is routine and usually follows a turn the
+                    // rider knows they missed; being told about it in words is nagging.
+                    let tone = ctx.environment.playRerouteTone() |> Effect<AppAction>.fireAndForget
+                    let request = decision == .rejoin
+                        ? rejoinRequest(
+                            from: position, heading: update.course,
+                            original: route, fromStep: stepIndex,
+                            preferences: preferences, chosen: preferences,
+                            finished: finished, world: ctx.environment
+                        )
+                        : rerouteRequest(
+                            from: position, to: destination ?? position,
+                            preferences: preferences, chosen: preferences,
+                            original: route, decision: decision, fromStep: stepIndex,
+                            finished: finished, world: ctx.environment
+                        )
+                    return tone <> request.asEffect { $0 }
+                }
+        }
+
+        <> Behavior<AppAction, AppState, World>.handle { action, _ in
+            guard let (route, rerouteState) = AppAction.prism.rerouted.preview(action)
+            else { return .doNothing }
+            return .reduce {
+                $0.reroute = rerouteState
+                guard let route else { return }
+                $0.activeRoute = route
+                // Guidance restarts against the new line: the old step index means nothing on it.
+                $0.guidance = GuidanceState()
+            }
+            .produce { _ in
+                guard let route else { return .empty }
+                return Effect.just(.speedMonitor(.setRoute(simplified(route.shape))))
+            }
+        }
+            // Draw the chosen route on the root map. The planner is a pushed screen and the map is
+            // the root, so neither can see the other — this is the only place that can join them.
+            // Thinned here rather than in the view: a route is tens of thousands of points and the
+            // camera sits 500 m up, so the detail is invisible and would be re-diffed every fix.
+
         // Location fans out from the one feature that owns the stream. A second subscription would
         // clobber the delegate's single continuation slot — the failure that silently killed the
         // road-speed stream before it was made cold.
@@ -327,6 +571,10 @@ public enum AppFeature {
             return .produce { ctx in
                 Effect.just(.weather(.located(update.latitude, update.longitude, ctx.environment.now())))
                     <> Effect.just(.fuel(.setPosition(update.latitude, update.longitude)))
+                    // The planner needs an origin, and every fix is a new one. Sent unconditionally
+                    // rather than only while the screen is up: the scope is affine, so with no
+                    // planner on the stack this lands nowhere and costs nothing.
+                    <> Effect.just(.navigate(.setPosition(update.latitude, update.longitude)))
                     <> Effect.just(.trip(.located(update)))
             }
         }
@@ -518,7 +766,7 @@ public enum AppScopes: Rig {
         .action(\.speedMonitor).state(\.speedMonitor)
         .environment(fanout(
             keypaths: \.requestAuthorization, \.authorizationUpdates, \.locationUpdates, \.subscribeToRoadSpeed,
-                      \.subscribeToCameras, \.refreshRoadNow,
+                      \.subscribeToCameras, \.camerasOnRoad, \.refreshRoadNow,
                       \.speak, \.speakQueued, \.speakQueued, \.announceOverLimit, \.announceUnderLimit,
                       \.thresholds, \.formatSpeed,
                       \.formatSpeedSpeech, \.formatAltitude, \.formatBearing, \.formatCoordinate,
@@ -568,4 +816,26 @@ public enum AppScopes: Rig {
         .environment(fanout(
             \.loadFuelLog, \.saveFuelLog, \.now, \.newID, \.logJourney, \.parseNumber, \.fetchStation
         ) >>> FuelFeature.Environment.init)
+
+    /// The route planner — affine for the same reason the fuel screen is, and narrowed the same way.
+    ///
+    /// `speakQueued` rather than `speak`: nothing the planner says is time-critical, and cutting off
+    /// a speed announcement to report a route would be the wrong trade in a helmet.
+    /// The review screen — affine like the other pushed screens, and read-only against the World:
+    /// it can load the journey log and write a share file, and nothing else.
+    public static let rides = ScopeOf<AppScopes>
+        .action(\.rides)
+        .state(preview: topmost(StackEntry.prism.rides), set: replacing(StackEntry.prism.rides))
+        .environment(fanout(
+            \.loadJourneyRecords, \.writeShareFile,
+            \.formatDistance, \.formatDuration, \.formatTime, \.formatSpeed
+        ) >>> RideReviewFeature.Environment.init)
+
+    public static let navigate = ScopeOf<AppScopes>
+        .action(\.navigate)
+        .state(preview: topmost(StackEntry.prism.navigate), set: replacing(StackEntry.prism.navigate))
+        .environment(fanout(
+            \.completeAddress, \.resolveAddress, \.routes, \.speakQueued,
+            \.formatDistance, \.formatDuration, \.formatTime, \.now
+        ) >>> NavigationFeature.Environment.init)
 }

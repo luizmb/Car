@@ -17,6 +17,13 @@ public struct World: Sendable {
     /// Roads from the on-device extract, tried before Overpass. `nil` means the file is absent or
     /// has nothing here, and the network answers instead.
     public let localRoad: @Sendable (Latitude, Longitude, Course?) -> RoadInfo?
+    /// The cameras on one specific road — the road the rider just joined.
+    ///
+    /// `nil` when the extract cannot answer (predates road attachment, or the rider is outside
+    /// it), in which case the wide radius set below stays authoritative. Answering from the road
+    /// rather than from a circle is what finally separates a slip road's cameras from the
+    /// carriageway beside it.
+    public let camerasOnRoad: @Sendable (RoadKey, Latitude, Longitude) -> Publisher<[SpeedCamera]?, Never>
     /// Enforcement cameras over a wide radius, refreshed rarely. Held in state and filtered per fix —
     /// see `makeCameraStream` for why the cadence is the opposite of the road lookup's.
     public let subscribeToCameras: @Sendable () -> Publisher<CameraSet, Never>
@@ -95,6 +102,13 @@ public struct World: Sendable {
     /// Appends a line to the ride log. Temporary raw capture until the journey recorder lands.
     /// The firehose: every action, on or off journey. Useful for a week, not for a year.
     public let logAction: @Sendable (String) -> Publisher<Void, Never>
+    /// Every record the journey log holds, across every day's file. The review feature's whole
+    /// input: rides are reassembled from these, never stored separately, so the screens cannot
+    /// disagree with the log.
+    public let loadJourneyRecords: @Sendable () -> Publisher<[JourneyRecord], Never>
+    /// Writes a shareable file and hands back its URL. Exists so exporting a GPX is a value
+    /// through a boundary rather than a view writing to disk.
+    public let writeShareFile: @Sendable (String, String) -> Publisher<URL?, Never>
     /// The record worth keeping: typed events, only while a journey is active.
     public let logJourney: @Sendable (any JourneyPayloadType) -> Publisher<Void, Never>
     // Audio
@@ -107,12 +121,44 @@ public struct World: Sendable {
     public let speakSequence: @Sendable ([String], TimeInterval) -> Publisher<Void, Never>
     public let announceOverLimit: @Sendable () -> Publisher<Void, Never>
     public let announceUnderLimit: @Sendable () -> Publisher<Void, Never>
+    /// The reroute chime. A **sound, not words**: a reroute is routine and happens most often right
+    /// after a missed turn, when the rider already knows they got it wrong and does not need to be
+    /// told. Words are reserved for the case where the new route breaks one of their exclusions,
+    /// which is a change to the terms and does deserve saying.
+    public let playRerouteTone: @Sendable () -> Publisher<Void, Never>
+    // Navigation
+    /// Addresses and postcodes matching a query, biased toward a position. Addresses only — points
+    /// of interest are excluded at the source, because "Tesco" is a hundred places and picking one
+    /// from a list at a junction is the interaction this app exists to avoid.
+    public let completeAddress: @Sendable (String, Latitude?, Longitude?)
+        -> Publisher<[AddressSuggestion], Never>
+    /// A chosen completion turned into a position. Costs a request, so it runs once — for the one
+    /// the rider picked, not for every row as it was typed.
+    public let resolveAddress: @Sendable (AddressSuggestion) -> Publisher<AddressSuggestion?, Never>
+    /// Every route found between two points, **unfiltered** — the preferences are passed on to the
+    /// routing service as a hint, and the domain then checks the answers and drops what does not
+    /// honour them. `Result` rather than an empty list, so "no route" and "routing failed" stay
+    /// distinguishable all the way to the screen.
+    public let routes: @Sendable (Coordinate, Coordinate, RoutePreferences)
+        -> Publisher<Result<[RouteOption], RouteError>, Never>
+    /// The quickest route to each of several targets, asked for concurrently. Used when rejoining a
+    /// route, where the candidates have to be compared before one can be picked.
+    public let routesToEach: @Sendable (Coordinate, [Coordinate], RoutePreferences)
+        -> Publisher<[RouteOption?], Never>
     // Domain config
     public let thresholds: [MPH]
     // Locale-dependent formatters
     public let formatSpeed: @Sendable (MPH) -> String
     public let formatSpeedSpeech: @Sendable (MPH) -> String
     public let formatAltitude: @Sendable (Meters) -> String
+    /// A travelling distance, as a rider reads it. Distinct from ``formatAltitude`` despite sharing
+    /// a unit: an altitude is metres above sea level and a route is miles on a sign, and collapsing
+    /// them would make one of the two wrong.
+    public let formatDistance: @Sendable (Meters) -> String
+    public let formatDuration: @Sendable (TimeInterval) -> String
+    /// A time of day, for an arrival estimate. Locale-aware, so it follows the rider's 12/24-hour
+    /// setting rather than this app having an opinion about it.
+    public let formatTime: @Sendable (Date) -> String
     public let formatBearing: @Sendable (Course) -> String
     public let formatCoordinate: @Sendable (Latitude, Longitude) -> String
 }

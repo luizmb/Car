@@ -15,7 +15,12 @@ func makeWeatherFetch(
     decoder: DataDecoder<OpenMeteoResponse>
 ) -> @Sendable (Latitude, Longitude) -> Publisher<WeatherObservation, Never> {
     { latitude, longitude in
-        httpClient(openMeteoRequest(latitude: latitude, longitude: longitude))
+        // A request that will not build is the same as one that fails, and weather is already
+        // optional to this app: a gap rather than an error.
+        guard let request = openMeteoRequest(latitude: latitude, longitude: longitude) else {
+            return .empty()
+        }
+        return httpClient(request)
             .validateStatusCode()
             .decode(using: decoder)
             .retry(2)

@@ -72,7 +72,7 @@ public func overpassCameraRequest(
     latitude: Latitude, longitude: Longitude, radius: Meters,
     endpoint: OverpassEndpoint = .cameras,
     hostIndex: Int = 0
-) -> URLRequest {
+) -> URLRequest? {
     let r = Int(radius.rawValue)
     let around = "around:\(r),\(latitude.rawValue),\(longitude.rawValue)"
     let query = """
@@ -156,7 +156,7 @@ public struct Coordinate: Sendable, Equatable {
         self.longitude = longitude
     }
 
-    var pair: (Latitude, Longitude) { (latitude, longitude) }
+    public var pair: (Latitude, Longitude) { (latitude, longitude) }
 }
 
 // MARK: - Average-speed zones
@@ -277,7 +277,7 @@ func parseDirection(_ raw: String?) -> Double? {
 // MARK: - Geometry
 
 /// Initial bearing from one point to another, in compass degrees.
-func bearing(from origin: (Latitude, Longitude), to target: (Latitude, Longitude)) -> Double {
+public func bearing(from origin: (Latitude, Longitude), to target: (Latitude, Longitude)) -> Double {
     let point = project(target.0, target.1, origin: origin)
     var degrees = atan2(point.x, point.y) * 180 / .pi
     if degrees < 0 { degrees += 360 }
@@ -342,6 +342,107 @@ public func camerasAhead(
         }
         .sorted { $0.1 < $1.1 }
         .map(\.0)
+}
+
+/// How far off the route a camera can be and still be about the road being ridden.
+///
+/// A carriageway is a few metres wide and a mapped camera sits beside it, so 35 m keeps the ones
+/// that watch this road and drops the ones on the next arm of the roundabout.
+public let cameraOnRouteMetres: Double = 35
+
+/// The cameras that are on the route, when there is a route.
+///
+/// With no route this is everything — the bearing cone is all there is to go on, and being
+/// permissive is the right error when a missed camera costs a fine.
+public func onRoute(_ cameras: [SpeedCamera], shape: [Coordinate]) -> [SpeedCamera] {
+    guard shape.count > 1 else { return cameras }
+    return cameras.filter {
+        distanceToRoute(
+            shape: shape,
+            from: Coordinate(latitude: $0.latitude, longitude: $0.longitude)
+        ) <= cameraOnRouteMetres
+    }
+}
+
+/// The zones that belong to the route being ridden.
+///
+/// Zones needed this as much as cameras did and did not have it: an average-speed check is entered
+/// when its start is within 250 m, and 250 m in a town reaches several other roads. Heard on a
+/// replayed ride as "average speed check, 50" while on a 30 mph street — the zone was real, and on
+/// a road the rider was not on.
+///
+/// A zone counts if **either end** is on the route: entering one is the start, and a zone entered
+/// before the route was joined still has its exit ahead.
+public func onRoute(_ zones: [AverageZone], shape: [Coordinate]) -> [AverageZone] {
+    guard shape.count > 1 else { return zones }
+    return zones.filter { zone in
+        [zone.start, zone.end].compactMap { $0 }.contains {
+            distanceToRoute(shape: shape, from: $0) <= cameraOnRouteMetres
+        }
+    }
+}
+
+/// How much faster than the road a camera may claim before it is judged to be watching a different
+/// one.
+///
+/// Four — enough for rounding, and no more. It was ten, and UK limits step by ten: the tolerance
+/// admitted exactly the neighbouring tier, so "speed camera ahead, 50" fired three times on a
+/// 40 mph stretch of Newlands Road from the A1081 cameras alongside. Roadworks cameras claim
+/// *lower* limits than the road and are kept by the other branch, so nothing legitimate needs
+/// the headroom.
+public let cameraLimitToleranceMPH: Double = 4
+
+/// Cameras plausibly about the road being ridden.
+///
+/// Proximity cannot settle this on its own. Six cameras were announced on a 30 mph stretch of the
+/// A1081 — all real, all in OSM, all tagged 50 — and every one of them sits five to eight metres
+/// from a `trunk_link`: the M1 slip roads running alongside. At a junction every road is within a
+/// few tens of metres of every other, so no distance threshold separates them.
+///
+/// The limit does. A camera **enforcing a higher speed than the road underneath** is watching a
+/// faster road; that is what a slip road beside a 30 is.
+///
+/// Deliberately one-directional. A camera claiming a *lower* limit than the road is exactly what
+/// roadworks look like, and those are ours — so they are kept. Suppressing a real camera costs a
+/// fine, which is why this only ever discards the case that cannot be ours.
+public func plausible(_ cameras: [SpeedCamera], onRoadLimited roadLimit: MPH?) -> [SpeedCamera] {
+    guard let roadLimit else { return cameras }
+    return cameras.filter { camera in
+        guard let limit = camera.limit else { return true }
+        return limit.rawValue <= roadLimit.rawValue + cameraLimitToleranceMPH
+    }
+}
+
+/// Zones plausibly about the road being ridden.
+///
+/// Same argument as ``plausible(_:onRoadLimited:)`` and the same asymmetry: an average-speed check
+/// claiming 50 while the road underneath is signed 30 is watching the dual carriageway alongside,
+/// not this street. A zone claiming *less* than the road is roadworks, and that is ours.
+public func plausible(_ zones: [AverageZone], onRoadLimited roadLimit: MPH?) -> [AverageZone] {
+    guard let roadLimit else { return zones }
+    return zones.filter { zone in
+        guard let limit = zone.limit else { return true }
+        return limit.rawValue <= roadLimit.rawValue + cameraLimitToleranceMPH
+    }
+}
+
+/// Whether a camera's facing is compatible with the rider's direction of travel.
+///
+/// OSM's `direction` tag is ambiguous in practice: a forward-facing Truvelo looks *at* the traffic
+/// it enforces, a rear-facing Gatso looks *away* from it, and mappers tag both conventions. So
+/// treating the tag as "the enforced direction" would wrongly drop half the country's real
+/// cameras. What the tag can say unambiguously is the camera's **axis** — and a camera whose axis
+/// is roughly perpendicular to the rider's course is watching a crossing road: the 70 mph camera
+/// announced from the motorway passing under the rider's 30 mph street.
+///
+/// Kept when either side is unknown, since a missed camera costs a fine.
+public func facingCompatible(_ camera: SpeedCamera, course: Course?) -> Bool {
+    guard let direction = camera.direction, let course else { return true }
+    var apart = abs(direction - course.rawValue).truncatingRemainder(dividingBy: 360)
+    if apart > 180 { apart = 360 - apart }
+    // Fold onto the axis: 0° = parallel either way, 90° = square across the road.
+    let axis = min(apart, 180 - apart)
+    return axis <= 55
 }
 
 // MARK: - Announcement

@@ -65,14 +65,16 @@ private func fetchCameras(
         }
 
         @Sendable func attempt(_ hostIndex: Int) -> Publisher<CameraSet, Never> {
-            httpClient(
-                overpassCameraRequest(
-                    latitude: location.latitude,
-                    longitude: location.longitude,
-                    radius: radius,
-                    hostIndex: hostIndex
-                )
-            )
+            // A request that will not build is the same outcome as one that fails: hold the set
+            // already known rather than blanking it.
+            guard let request = overpassCameraRequest(
+                latitude: location.latitude,
+                longitude: location.longitude,
+                radius: radius,
+                hostIndex: hostIndex
+            ) else { return .empty() }
+
+            return httpClient(request)
             .validateStatusCode()
             .decode(using: decoder)
             .map(parseCameraSet)

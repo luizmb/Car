@@ -49,6 +49,13 @@ public enum SpeedMonitorFeature {
         /// Every enforcement camera within the last fetch radius, ahead or behind. Filtered per fix
         /// rather than per fetch, so a camera does not vanish because the network did.
         public var cameras: [SpeedCamera]
+        /// The cameras on the road being ridden, when the extract can answer that question.
+        ///
+        /// The rider's design: query by the road just joined, discard on the next road. `nil` means
+        /// the question could not be answered — old extract, abroad — and the radius set above
+        /// stays authoritative. An **empty** array is an answer: this road has no cameras, and
+        /// nothing from a slip road or a crossing street can leak in to say otherwise.
+        public var roadCameras: [SpeedCamera]?
         /// Cameras already spoken on this approach, so a warning is given once rather than once per
         /// GPS fix. Pruned when a camera leaves the fetched set — which means riding back the other
         /// way legitimately announces it again.
@@ -62,6 +69,15 @@ public enum SpeedMonitorFeature {
         /// crossing rather than on every fix while you sit above it.
         public var wasOverAverageLimit: Bool
         public var display: Display
+        /// The chosen route's shape, drawn under the rider.
+        ///
+        /// Held outside `Display` deliberately. `Display` is rebuilt from scratch on every fix, and
+        /// a route is thousands of points even after thinning — copying and `Equatable`-comparing
+        /// that once a second would become the most expensive thing the app does, to redraw a line
+        /// that has not changed.
+        public var routeShape: [Coordinate]
+        /// Distance to the next manoeuvre, when following a route.
+        public var nextTurn: Meters?
 
         public struct Display: Sendable, Equatable {
             public var mapLatitude: Double
@@ -98,6 +114,11 @@ public enum SpeedMonitorFeature {
         case readyToMonitor                              // dispatched when granted; parts respond
         // GPS data
         case locationUpdate(LocationUpdate)
+        /// The route to draw, already thinned. Empty clears it.
+        case setRoute([Coordinate])
+        /// How far to the next manoeuvre, or `nil` when not following one. Drives the camera only —
+        /// the instruction itself belongs to the banner.
+        case setNextTurn(Meters?)
         case locationReady(LocationUpdate, State.Display)
         // Road speed
         case roadSpeedChanged(RoadInfo)
@@ -107,6 +128,8 @@ public enum SpeedMonitorFeature {
         case roadMayHaveChanged
         // Cameras
         case camerasChanged(CameraSet)
+        /// The cameras on the road just joined, or `nil` when the extract cannot say.
+        case roadCamerasChanged([SpeedCamera]?)
         case camerasAnnounced(Set<Int>)
         /// Entering or leaving an average-speed zone. `nil` means left.
         case averageZoneChanged(AverageZone?)
@@ -122,6 +145,8 @@ public enum SpeedMonitorFeature {
         public let locationUpdates: @Sendable () -> Publisher<LocationUpdate, Never>
         public let subscribeToRoadSpeed: @Sendable () -> Publisher<RoadInfo, Never>
         public let subscribeToCameras: @Sendable () -> Publisher<CameraSet, Never>
+        /// The cameras on one road, from the extract. `nil` when it cannot answer.
+        public let camerasOnRoad: @Sendable (RoadKey, Latitude, Longitude) -> Publisher<[SpeedCamera]?, Never>
         public let refreshRoadNow: @Sendable (Latitude, Longitude) -> Publisher<Void, Never>
         public let speak: @Sendable (String) -> Publisher<Void, Never>
         /// Queues rather than interrupts. Road announcements are informational and must not cut a
@@ -145,6 +170,7 @@ public enum SpeedMonitorFeature {
             locationUpdates:      @escaping @Sendable () -> Publisher<LocationUpdate, Never>,
             subscribeToRoadSpeed: @escaping @Sendable () -> Publisher<RoadInfo, Never>,
             subscribeToCameras:   @escaping @Sendable () -> Publisher<CameraSet, Never>,
+            camerasOnRoad:        @escaping @Sendable (RoadKey, Latitude, Longitude) -> Publisher<[SpeedCamera]?, Never>,
             refreshRoadNow:       @escaping @Sendable (Latitude, Longitude) -> Publisher<Void, Never>,
             speak:                @escaping @Sendable (String) -> Publisher<Void, Never>,
             announceRoad:         @escaping @Sendable (String) -> Publisher<Void, Never>,
@@ -163,6 +189,7 @@ public enum SpeedMonitorFeature {
             self.locationUpdates      = locationUpdates
             self.subscribeToRoadSpeed = subscribeToRoadSpeed
             self.subscribeToCameras   = subscribeToCameras
+            self.camerasOnRoad        = camerasOnRoad
             self.refreshRoadNow       = refreshRoadNow
             self.speak                = speak
             self.announceRoad         = announceRoad
@@ -200,8 +227,66 @@ public enum SpeedMonitorFeature {
         public var roadLimitDisplay: RoadLimitDisplay
         public var roadRef: String?
         public var roadName: String?
+        /// Carried alongside `Display` rather than inside it, because it changes once per journey
+        /// while `Display` is rebuilt on every fix.
+        public var routeShape: [Coordinate]
+        /// Where the camera looks, how far back it sits and how far it leans.
+        ///
+        /// Two modes. Idle, it hovers over the rider — fine for "where am I". Following a route it
+        /// drops closer, leans over, and aims at a point ahead so the rider sits low on screen with
+        /// the road they are about to ride filling it, which is the only part that can still be
+        /// acted on.
+        public var cameraCentre: Coordinate
+        public var cameraDistance: Double
+        public var cameraPitch: Double
+        /// Which way is up. Following a route this is the route's own direction rather than the GPS
+        /// course, which is undefined when stopped and jitters at walking pace.
+        public var cameraHeading: Double
 
-        init(display: State.Display) {
+        init(display: State.Display, routeShape: [Coordinate], nextTurn: Meters?) {
+            self.routeShape     = routeShape
+            let here = Coordinate(
+                latitude: Latitude(display.mapLatitude), longitude: Longitude(display.mapLongitude)
+            )
+            if routeShape.isEmpty {
+                cameraCentre   = here
+                cameraDistance = display.mapDistance
+                cameraPitch    = 45
+                cameraHeading  = display.mapHeading
+            } else {
+                // Along the route — but only while actually on it.
+                //
+                // `routeBearing` takes the nearest vertex and looks ahead from there, which is the
+                // right answer on the line and a meaningless one off it: the nearest vertex to a
+                // rider who has left the route can be behind them, or on a different leg entirely,
+                // and the map then points confidently the wrong way. Seen on a replayed ride that
+                // spent most of its length off-route — the rotation was simply wrong.
+                //
+                // Off the line, the direction of travel is the only thing that is true.
+                let onRoute = distanceToRoute(shape: routeShape, from: here) <= offRouteMetres
+                let along = (onRoute ? routeBearing(shape: routeShape, from: here) : nil)
+                    .flatMap { bearing -> Double? in
+                        // And discard it if it points backwards. A route that goes out and comes
+                        // home runs along the same roads twice, so the nearest vertex can belong to
+                        // the *other* leg and the map then faces the way the rider has come. Beyond
+                        // a right angle and a half from the direction of travel, the match is
+                        // wrong rather than the rider turning.
+                        guard display.speedValue > 3 else { return bearing }
+                        var apart = abs(bearing - display.mapHeading)
+                            .truncatingRemainder(dividingBy: 360)
+                        if apart > 180 { apart = 360 - apart }
+                        return apart <= 135 ? bearing : nil
+                    }
+                    ?? display.mapHeading
+                cameraDistance = navigationCameraDistance(
+                    speed: MPS(display.speedValue * 0.44704), nextTurn: nextTurn
+                )
+                // The rider sits low on screen, and how far ahead the camera looks scales with how
+                // far it can see — a fixed offset puts them in the middle again when zoomed out.
+                cameraCentre   = coordinate(from: here, bearing: along, metres: cameraDistance * 0.26)
+                cameraPitch    = 68
+                cameraHeading  = along
+            }
             mapLatitude         = display.mapLatitude
             mapLongitude        = display.mapLongitude
             mapDistance         = display.mapDistance
@@ -226,7 +311,7 @@ public enum SpeedMonitorFeature {
     // MARK: - Mappings (env-aware Readers)
 
     public static let mapState = Reader<Environment, @MainActor @Sendable (State) -> ViewState> { _ in
-        { ViewState(display: $0.display) }
+        { ViewState(display: $0.display, routeShape: $0.routeShape, nextTurn: $0.nextTurn) }
     }
 
     public static let mapAction = Reader<Environment, @Sendable (ViewAction) -> Action> { _ in
@@ -241,11 +326,14 @@ public enum SpeedMonitorFeature {
             lastLocation: nil,
             currentRoadInfo: nil,
             cameras: [],
+            roadCameras: nil,
             announcedCameraIDs: [],
             averageZones: [],
             activeAverageZone: nil,
             wasOverAverageLimit: false,
-            display: .empty
+            display: .empty,
+            routeShape: [],
+            nextTurn: nil
         )
     }
 
@@ -290,6 +378,12 @@ public enum SpeedMonitorFeature {
             case .readyToMonitor:
                 return .reduce { $0.currentRoadInfo = .unknown }
 
+            case let .setRoute(shape):
+                return .reduce { $0.routeShape = shape }
+
+            case let .setNextTurn(distance):
+                return .reduce { $0.nextTurn = distance }
+
             case let .locationUpdate(newLocation):
                 let prevLocation = context.stateBefore?.lastLocation
                 let roadInfo     = context.stateBefore?.currentRoadInfo
@@ -298,19 +392,33 @@ public enum SpeedMonitorFeature {
                 let zones        = context.stateBefore?.averageZones ?? []
                 let activeZone   = context.stateBefore?.activeAverageZone
                 let wasOver      = context.stateBefore?.wasOverAverageLimit ?? false
+                let routeShape   = context.stateBefore?.routeShape ?? []
+                let roadCameras  = context.stateBefore?.roadCameras
                 return .produce { ctx in
-                    let display = buildDisplay(newLocation, roadInfo: roadInfo, env: ctx.environment)
+                    let display = buildDisplay(
+                        previous: prevLocation, to: newLocation,
+                        roadInfo: roadInfo, env: ctx.environment
+                    )
                     return Effect.just(.locationReady(newLocation, display))
                         <> audioEffects(
                             prev: prevLocation, new: newLocation,
                             roadInfo: roadInfo, env: ctx.environment
                         )
                         <> cameraEffects(
-                            at: newLocation, cameras: cameras,
-                            announced: announced, roadInfo: roadInfo, env: ctx.environment
+                            at: newLocation, cameras: cameras, roadCameras: roadCameras,
+                            announced: announced, roadInfo: roadInfo, routeShape: routeShape,
+                            env: ctx.environment
                         )
                         <> averageZoneEffects(
-                            at: newLocation, zones: zones, cameras: cameras,
+                            at: newLocation,
+                            // Same filter the cameras get, and for the same reason: a zone is
+                            // entered when its start is within 250 m, which in a town reaches
+                            // roads the rider is nowhere near.
+                            zones: plausible(
+                                onRoute(nearby(zones, of: newLocation), shape: routeShape),
+                                onRoadLimited: roadLimitFor(roadInfo)
+                            ),
+                            cameras: cameras,
                             active: activeZone, wasOver: wasOver, env: ctx.environment
                         )
                 }
@@ -332,11 +440,39 @@ public enum SpeedMonitorFeature {
                         let refresh = lastLocation.map { loc in
                             Effect<SpeedMonitorFeature.Action>.just(.locationReady(
                                 loc,
-                                buildDisplay(loc, roadInfo: info, env: ctx.environment)
+                                buildDisplay(
+                                    // The same fix, rebuilt because the road changed rather than
+                                    // because the bike moved — so there is no delta, and
+                                    // `travelHeading` keeps whatever the fix already knows.
+                                    previous: loc, to: loc,
+                                    roadInfo: info, env: ctx.environment
+                                )
                             ))
                         } ?? .empty
-                        return announce <> refresh
+                        // The road changed hands — ask the extract which cameras stand on the new
+                        // one, and discard the old road's set either way. Asked only on an actual
+                        // change of identity: road detection re-fires constantly for the same
+                        // road, and the answer cannot differ.
+                        let roadCameras: Effect<SpeedMonitorFeature.Action>
+                        if info.key != prevInfo?.key {
+                            if let key = info.key, let loc = lastLocation {
+                                roadCameras = ctx.environment
+                                    .camerasOnRoad(key, loc.latitude, loc.longitude)
+                                    .asEffect(Action.roadCamerasChanged)
+                            } else {
+                                // No identity — geocoder fallback, or an unnamed way. The radius
+                                // set is all there is, and saying so beats holding the previous
+                                // road's cameras against a road they are not on.
+                                roadCameras = .just(.roadCamerasChanged(nil))
+                            }
+                        } else {
+                            roadCameras = .empty
+                        }
+                        return announce <> refresh <> roadCameras
                     }
+
+            case let .roadCamerasChanged(cameras):
+                return .reduce { $0.roadCameras = cameras }
 
             case let .camerasChanged(set):
                 return .reduce {
@@ -442,19 +578,54 @@ private func announceRoadInfo(
 private func cameraEffects(
     at location: LocationUpdate,
     cameras: [SpeedCamera],
+    roadCameras: [SpeedCamera]?,
     announced: Set<Int>,
     roadInfo: RoadInfo?,
+    routeShape: [Coordinate],
     env: SpeedMonitorFeature.Environment
 ) -> Effect<SpeedMonitorFeature.Action> {
-    guard !cameras.isEmpty else { return .empty }
+    guard !(roadCameras ?? cameras).isEmpty else { return .empty }
 
     let speed = location.speed ?? MPS(0)
-    let ahead = camerasAhead(
-        cameras,
-        at: (location.latitude, location.longitude),
-        course: location.course,
-        speed: speed
-    )
+    // **Cheap filter first.** `onRoute` measures every camera against every segment of the route,
+    // so running it over the whole set was 264 cameras times 20,000 points — five million distance
+    // calculations a second, which froze the app outright. `camerasAhead` is a bounded cone and a
+    // lookahead, and cuts the set to a handful before the expensive test runs.
+    //
+    // While following a route, only cameras actually *on* it count: the ±100° cone is deliberately
+    // permissive, and at a roundabout that means every camera on every arm — six announced in
+    // forty-three seconds on one ride, plus a 70 mph camera on a motorway crossing perpendicular.
+    // The road's own limit, where it is known — a camera claiming to enforce a much higher speed
+    // is watching a different road.
+    // The road-matched set when the extract answered; the radius set plus heuristics otherwise.
+    // The heuristics — route corridor, limit plausibility — exist to compensate for the radius set
+    // not knowing which road anything is on. A road-matched camera answered that at extract time,
+    // by geometry, and heuristics on top would only reintroduce the false negatives they trade in:
+    // the same-limit slip-road camera is excluded here by class, not guessed at by limit.
+    let ahead: [SpeedCamera]
+    if let roadCameras {
+        ahead = camerasAhead(
+            roadCameras,
+            at: (location.latitude, location.longitude),
+            course: location.course,
+            speed: speed
+        )
+        .filter { facingCompatible($0, course: location.course) }
+    } else {
+        ahead = plausible(
+            onRoute(
+                camerasAhead(
+                    cameras,
+                    at: (location.latitude, location.longitude),
+                    course: location.course,
+                    speed: speed
+                ),
+                shape: routeShape
+            ),
+            onRoadLimited: roadLimitFor(roadInfo)
+        )
+        .filter { facingCompatible($0, course: location.course) }
+    }
     guard let next = ahead.first(where: { !announced.contains($0.id) }) else { return .empty }
 
     let spoken = cameraAnnouncement(
@@ -491,7 +662,11 @@ private func ttsUp(
     env: SpeedMonitorFeature.Environment
 ) -> Effect<SpeedMonitorFeature.Action> {
     thresholds.first { prevMph < $0 && newMph >= $0 }
-        .map { $0 |> (env.formatSpeedSpeech >>> env.speak >>> Effect.fireAndForget) }
+        // Queued, not interrupting. `speak` stops whatever is playing, and crossing a threshold on
+        // the way out of a junction is exactly when a road announcement is mid-sentence: "forty
+        // z—" cut off by "eleven" was heard on a real ride. A number half a second late is worth
+        // far more than a limit the rider never hears.
+        .map { $0 |> (env.formatSpeedSpeech >>> env.announceRoad >>> Effect.fireAndForget) }
     ?? .empty
 }
 
@@ -534,8 +709,30 @@ private func beeps(
 
 // MARK: - Display builder
 
+/// Which way the bike is actually going.
+///
+/// `CLLocation.course` first, since that is what the receiver computed — but it is `nil` far more
+/// often than expected: eighteen fixes out of a replayed ride reported none, and the old fallback
+/// was zero, which is north. A map that snaps north every few seconds while riding south is worse
+/// than one that lags.
+///
+/// So the fallback is the bearing between the last two positions, which is what course over ground
+/// *is*. Below three metres of movement it keeps the previous answer rather than amplifying the
+/// noise in a stationary fix into a spinning map.
+func travelHeading(from previous: LocationUpdate?, to current: LocationUpdate) -> Double {
+    if let course = current.course { return course.rawValue }
+    guard let previous else { return 0 }
+    let from = (previous.latitude, previous.longitude)
+    let to = (current.latitude, current.longitude)
+    guard distanceMetres(from: from, to: to) >= 3 else {
+        return previous.course?.rawValue ?? 0
+    }
+    return bearing(from: from, to: to)
+}
+
 private func buildDisplay(
-    _ loc: LocationUpdate,
+    previous: LocationUpdate?,
+    to loc: LocationUpdate,
     roadInfo: RoadInfo?,
     env: SpeedMonitorFeature.Environment
 ) -> SpeedMonitorFeature.State.Display {
@@ -577,12 +774,12 @@ private func buildDisplay(
         mapLatitude:        loc.latitude.rawValue,
         mapLongitude:       loc.longitude.rawValue,
         mapDistance:        speedMph.map { max(200, min(1250, $0.rawValue * 50)) } ?? 500,
-        mapHeading:         loc.course?.rawValue ?? 0,
+        mapHeading:         travelHeading(from: previous, to: loc),
         speedText:          speedMph.map(env.formatSpeedSpeech) ?? "0",
         speedValue:         speedMph?.rawValue ?? 0,
         speedAccuracyText:  loc.speedAccuracy.map(toMph >>> env.formatSpeedSpeech).map("±".appending) ?? "",
         directionText:      dirText,
-        courseAngleDegrees: 360 - (loc.course?.rawValue ?? 0),
+        courseAngleDegrees: 360 - travelHeading(from: previous, to: loc),
         coordinatesText:    env.formatCoordinate(loc.latitude, loc.longitude),
         altitudeText:       env.formatAltitude(loc.altitude),
         roadLimitDisplay:   roadLimitDisplay,
@@ -598,6 +795,25 @@ private func buildDisplay(
 /// one is the reason a point warning is not enough: inside a zone a moment above the limit is not the
 /// offence — the mean between the gantries is. So the reminder fires on the *crossing*, not on every
 /// fix, and says what is actually being measured.
+/// Zones whose ends are anywhere near the rider, by straight line.
+///
+/// A cheap sieve before the expensive one. `onRoute` walks the whole route polyline per zone, so it
+/// must not be handed the national set — the same mistake that froze the app on cameras.
+private func nearby(_ zones: [AverageZone], of location: LocationUpdate) -> [AverageZone] {
+    let here = (location.latitude, location.longitude)
+    return zones.filter { zone in
+        [zone.start, zone.end].compactMap { $0 }.contains {
+            distanceMetres(from: here, to: $0.pair) < 3_000
+        }
+    }
+}
+
+/// The road's signed limit, where OSM has one.
+func roadLimitFor(_ roadInfo: RoadInfo?) -> MPH? {
+    if case let .value(mph) = roadInfo?.limit { return mph }
+    return nil
+}
+
 private func averageZoneEffects(
     at location: LocationUpdate,
     zones: [AverageZone],

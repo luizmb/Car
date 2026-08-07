@@ -73,8 +73,10 @@ public extension WeatherObservation {
 /// Builds the request. Open-Meteo needs no API key and no account, which is why it was chosen over
 /// WeatherKit — and, more importantly, it has a historical archive, so weather can be backfilled
 /// onto rides recorded before this existed.
-public func openMeteoRequest(latitude: Latitude, longitude: Longitude) -> URLRequest {
-    var components = URLComponents(string: "https://api.open-meteo.com/v1/forecast")!
+public func openMeteoRequest(latitude: Latitude, longitude: Longitude) -> URLRequest? {
+    guard var components = URLComponents(string: "https://api.open-meteo.com/v1/forecast") else {
+        return nil
+    }
     components.queryItems = [
         .init(name: "latitude", value: String(latitude.rawValue)),
         .init(name: "longitude", value: String(longitude.rawValue)),
@@ -82,8 +84,8 @@ public func openMeteoRequest(latitude: Latitude, longitude: Longitude) -> URLReq
         // Metres per second rather than the default km/h, so it composes with MPS directly.
         .init(name: "wind_speed_unit", value: "ms")
     ]
-    // Fixed template over numeric values — cannot fail to parse.
-    return URLRequest(url: components.url!)
+    // Fixed template over numeric values, so this cannot fail — which is not a reason to assert it.
+    return components.url.map { URLRequest(url: $0) }
 }
 
 public struct OpenMeteoResponse: Decodable, Sendable {

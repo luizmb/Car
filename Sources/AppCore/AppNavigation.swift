@@ -61,6 +61,8 @@ private extension AppState {
     func entry(for request: NavigationRequest) -> StackEntry {
         switch request {
         case .fuel: .fuel(FuelFeature.initialState(with: ()))
+        case .navigate: .navigate(NavigationFeature.initialState(with: ()))
+        case .rides: .rides(RideReviewFeature.initialState(with: ()))
         }
     }
 }
