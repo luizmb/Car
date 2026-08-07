@@ -30,13 +30,16 @@ public struct FlightPlanInputs: Sendable, Equatable {
     /// sets off in the dark about it *every single time*. Being told is the normal case, not the
     /// exception — it is the reason the fuel feature exists at all.
     public var fuel: String?
+    /// Maintenance lines with something to say — already report-by-exception at the source, so a
+    /// healthy schedule contributes nothing here rather than a reassurance nobody asked for.
+    public var maintenance: [String]
 
     public init(
         ignitionOn: Bool? = nil, indimateConnected: Bool = false, cardoConnected: Bool = false,
         tyres: [TyrePosition: TyreReading] = [:], weather: WeatherObservation? = nil,
         road: String? = nil, speedLimit: String? = nil, bikeMillivolts: Int? = nil,
         phoneBattery: Double? = nil, lowPowerMode: Bool = false, gpsAccuracy: Double? = nil,
-        fuel: String? = nil
+        fuel: String? = nil, maintenance: [String] = []
     ) {
         self.ignitionOn = ignitionOn
         self.indimateConnected = indimateConnected
@@ -50,6 +53,7 @@ public struct FlightPlanInputs: Sendable, Equatable {
         self.lowPowerMode = lowPowerMode
         self.fuel = fuel
         self.gpsAccuracy = gpsAccuracy
+        self.maintenance = maintenance
     }
 }
 
@@ -126,6 +130,9 @@ private func exceptionReport(_ inputs: FlightPlanInputs) -> [String] {
     if let millivolts = inputs.bikeMillivolts, millivolts < 12_000 {
         problems.append("Bike battery \(volts(millivolts)) volts")
     }
+    // After the ride-enders, before the facts: a chain that needs oil ends no ride today, but it
+    // is the kind of thing a rider fixes only if told while still in the garage.
+    problems.append(contentsOf: inputs.maintenance)
 
     // ---- Facts, only the ones worth hearing ----
 
@@ -219,6 +226,14 @@ private func fullReport(_ inputs: FlightPlanInputs) -> [String] {
         segments.append("GPS accurate to \(Int(accuracy)) metres.")
     } else {
         segments.append("No GPS accuracy reading.")
+    }
+
+    // The diagnostic promise: every source says something, so a silently broken provider names
+    // itself by its absence.
+    if inputs.maintenance.isEmpty {
+        segments.append("No maintenance due.")
+    } else {
+        segments.append(contentsOf: inputs.maintenance.map { $0 + "." })
     }
 
     if let battery = inputs.phoneBattery {

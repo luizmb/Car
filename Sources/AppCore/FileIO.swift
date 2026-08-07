@@ -79,6 +79,11 @@ public enum TripStore {
     public static let filename = "trip-distance.json"
 }
 
+public enum MaintenanceStore {
+    /// Beside the fuel log, for the same reasons it is plain JSON there.
+    public static let filename = "maintenance-log.json"
+}
+
 public enum FuelStore {
     /// Plain JSON in Documents, visible in the Files app — so the record can be inspected, backed
     /// up, or corrected by hand without needing the app at all.

@@ -69,6 +69,8 @@ public struct AppRouter {
             AppScopes.navigate.pushedView(of: NavigationFeature.self, from: store, world: world)
         case .rides:
             AppScopes.rides.pushedView(of: RideReviewFeature.self, from: store, world: world)
+        case .maintenance:
+            AppScopes.maintenance.pushedView(of: MaintenanceFeature.self, from: store, world: world)
         }
     }
 }

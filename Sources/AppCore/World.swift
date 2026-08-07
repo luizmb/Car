@@ -80,6 +80,10 @@ public struct World: Sendable {
     /// Persisted fuel log. Plain JSON in Documents, so it can be inspected or corrected by hand.
     public let loadFuelLog: @Sendable () -> Publisher<Result<FuelLog, FileError>, Never>
     public let saveFuelLog: @Sendable (FuelLog) -> Publisher<Result<Void, FileError>, Never>
+    /// Persisted maintenance schedule and history — same shape, same reasons: one JSON document
+    /// in Documents, inspectable and correctable by hand.
+    public let loadMaintenanceLog: @Sendable () -> Publisher<Result<MaintenanceLog, FileError>, Never>
+    public let saveMaintenanceLog: @Sendable (MaintenanceLog) -> Publisher<Result<Void, FileError>, Never>
     /// The phone is the instrument cluster, so its battery is a pre-ride check. Low Power Mode
     /// matters more than the percentage: it throttles the background work location and Bluetooth
     /// depend on, and can silently disable most of the app mid-ride.

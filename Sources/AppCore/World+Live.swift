@@ -433,6 +433,8 @@ extension World {
             saveTripDistance: { makeFileWriter($0, filename: TripStore.filename) },
             loadFuelLog: { makeFileReader(FuelLog.self, filename: FuelStore.filename) },
             saveFuelLog: { makeFileWriter($0, filename: FuelStore.filename) },
+            loadMaintenanceLog: { makeFileReader(MaintenanceLog.self, filename: MaintenanceStore.filename) },
+            saveMaintenanceLog: { makeFileWriter($0, filename: MaintenanceStore.filename) },
             phoneBattery: { device.batteryLevel },
             isLowPowerMode: { ProcessInfo.processInfo.isLowPowerModeEnabled },
             fetchStation: { latitude, longitude in

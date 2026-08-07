@@ -474,6 +474,8 @@ struct RefuelRecordingTests {
             saveTripDistance: world.saveTripDistance,
             loadFuelLog: world.loadFuelLog,
             saveFuelLog: world.saveFuelLog,
+            loadMaintenanceLog: world.loadMaintenanceLog,
+            saveMaintenanceLog: world.saveMaintenanceLog,
             phoneBattery: world.phoneBattery,
             isLowPowerMode: world.isLowPowerMode,
             fetchStation: world.fetchStation,
@@ -542,5 +544,85 @@ struct RefuelRecordingTests {
         await settle()
 
         #expect(spy.types.contains(.reserve))
+    }
+}
+
+@Suite("Maintenance wiring")
+@MainActor
+struct MaintenanceWiringTests {
+
+    /// The badge chain: a loaded log moves the app's copy, and the status effect — which needs the
+    /// clock a reducer does not have — recolours the wrench from post-reduction state.
+    @Test("a loaded log recolours the home wrench")
+    func statusFollowsTheLog() async {
+        let store = MainStore.app(world: .stub)
+        #expect(store.state.maintenanceStatus == .ok)
+        // The launch-time load answers empty from the stub; let it land first so it cannot
+        // overwrite the log this test is about.
+        for _ in 0..<10 { await Task.yield() }
+
+        // Due a day before the stub's epoch clock: red the moment it lands.
+        let overdue = MaintenanceItem(
+            id: UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1)),
+            title: "Valve clearances",
+            due: .onDate(Date(timeIntervalSince1970: -86_400))
+        )
+        store.dispatch(
+            .maintenanceLogLoaded(MaintenanceLog(items: [overdue])),
+            source: .init(file: #file, function: #function, line: #line)
+        )
+        for _ in 0..<10 { await Task.yield() }
+
+        #expect(store.state.maintenanceLog.items.count == 1)
+        #expect(store.state.maintenanceStatus == .due)
+    }
+
+    /// The screen cannot see the fuel log or the trip counter; the app answers its `appeared`
+    /// with the reconstructed odometer. Deleting this join would compile — and every km deadline
+    /// would silently stop counting.
+    @Test("opening the screen hands it the reconstructed odometer")
+    func screenReceivesOdometer() async {
+        let store = MainStore.app(world: .stub)
+        store.dispatch(
+            .fuelLogLoaded(FuelLog(refuels: [RefuelRecord(
+                id: UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2)),
+                date: Date(timeIntervalSince1970: 0), litres: Litres(9), pricePerLitre: 1.5,
+                grade: .e5, filledToBrim: true, odometer: Kilometres(19_000),
+                latitude: nil, longitude: nil
+            )])),
+            source: .init(file: #file, function: #function, line: #line)
+        )
+        store.dispatch(.navigation(.push(.maintenance)), source: .init(file: #file, function: #function, line: #line))
+        store.dispatch(.maintenance(.appeared), source: .init(file: #file, function: #function, line: #line))
+        for _ in 0..<10 { await Task.yield() }
+
+        guard case let .maintenance(screen)? = store.state.path.first else {
+            Issue.record("maintenance entry missing from the path")
+            return
+        }
+        #expect(screen.currentOdometer == Kilometres(19_000))
+        #expect(screen.today != nil)
+    }
+
+    /// The pre-ride voice: a due item must reach the briefing's problem list.
+    @Test("a due item is spoken by the flight plan")
+    func briefingSpeaksMaintenance() async {
+        let store = MainStore.app(world: .stub)
+        // Same launch-load race as above: the stub's empty answer must land before the real log.
+        for _ in 0..<10 { await Task.yield() }
+        store.dispatch(
+            .maintenanceLogLoaded(MaintenanceLog(items: [MaintenanceItem(
+                id: UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3)),
+                title: "Chain oil",
+                due: .onDate(Date(timeIntervalSince1970: -86_400))
+            )])),
+            source: .init(file: #file, function: #function, line: #line)
+        )
+        for _ in 0..<10 { await Task.yield() }
+
+        let lines = composeFlightPlan(
+            store.state.flightPlanInputs(.stub), verbosity: .exceptions
+        )
+        #expect(lines.contains { $0.contains("Chain oil is due") })
     }
 }
