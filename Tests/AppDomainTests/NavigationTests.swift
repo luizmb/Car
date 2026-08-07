@@ -1131,6 +1131,123 @@ struct ChainedPairTests {
     }
 }
 
+@Suite("A route that passes near itself")
+struct RouteSelfProximityTests {
+    private func metres(_ m: Meters) -> String { "\(Int(m.rawValue)) m" }
+
+    /// Out and back along the same road, which is what a roundabout is in miniature: the return
+    /// leg runs within metres of the outward one.
+    private var shape: [Coordinate] {
+        let out = (0..<60).map {
+            Coordinate(latitude: Latitude(52 + Double($0) / 1_000), longitude: Longitude(-0.4600))
+        }
+        let back = (0..<60).map {
+            Coordinate(latitude: Latitude(52.059 - Double($0) / 1_000), longitude: Longitude(-0.4602))
+        }
+        return out + back
+    }
+
+    /// The failure the rider kept reporting: on the first roundabout, hearing the instruction for
+    /// after the second. Searching the whole polyline for the nearest segment has no notion of
+    /// continuity, so a rider on the outward leg matches the return leg twenty metres away and
+    /// their progress leaps to the far end of the route — skipping every manoeuvre between.
+    @Test("Progress does not leap to the return leg")
+    func progressStaysOnTheOutwardLeg() {
+        let here = Coordinate(latitude: Latitude(52.010), longitude: Longitude(-0.4600))
+        // Knowing roughly where the rider was a second ago is what keeps the answer continuous.
+        let continuous = distanceAlongRoute(shape, to: here, near: 1_100)
+        #expect(continuous != nil)
+        #expect(abs((continuous ?? 0) - 1_113) < 120)
+    }
+
+    /// And the unconstrained search is shown doing the wrong thing, so the guard is not decoration.
+    @Test("Without a window it does leap")
+    func unconstrainedLeaps() {
+        let here = Coordinate(latitude: Latitude(52.010), longitude: Longitude(-0.4602))
+        let global = distanceAlongRoute(shape, to: here, near: nil) ?? 0
+        // The return leg reaches this latitude far along the route.
+        #expect(global > 5_000)
+    }
+
+    /// Guidance carries progress between fixes so the window has something to centre on.
+    @Test("Guidance keeps its place across fixes")
+    func guidanceCarriesProgress() {
+        let route = RouteOption(
+            name: "loop", distance: Meters(13_000), travelTime: 900,
+            hasTolls: false, hasMotorways: false,
+            steps: [
+                RouteStep(instructions: "Turn left onto A", distance: Meters(3_000), notice: nil,
+                          start: Coordinate(latitude: Latitude(52.030), longitude: Longitude(-0.4600))),
+                RouteStep(instructions: "Turn left onto B", distance: Meters(3_000), notice: nil,
+                          start: Coordinate(latitude: Latitude(52.050), longitude: Longitude(-0.4600)))
+            ],
+            shape: shape
+        )
+        var state = GuidanceState()
+        for step in 0..<12 {
+            let here = Coordinate(
+                latitude: Latitude(52 + Double(step) / 1_000), longitude: Longitude(-0.4600)
+            )
+            state = guidance(
+                route: route, at: here, speed: MPS(13), state: state, formatDistance: metres
+            ).state
+        }
+        // Still approaching the first manoeuvre, not leapt past both by matching the return leg.
+        #expect(state.stepIndex == 0)
+        #expect((state.progress ?? 0) < 2_000)
+    }
+}
+
+@Suite("The offset that grew")
+struct CompoundingAdvanceTests {
+    private func metres(_ m: Meters) -> String { "\(Int(m.rawValue)) m" }
+    private func at(_ latitude: Double) -> Coordinate {
+        Coordinate(latitude: Latitude(latitude), longitude: Longitude(-0.46))
+    }
+
+    /// Four manoeuvres, roughly a kilometre apart, on a straight road.
+    private var route: RouteOption {
+        RouteOption(
+            name: "A", distance: Meters(5_000), travelTime: 600,
+            hasTolls: false, hasMotorways: false,
+            steps: (1...4).map { index in
+                RouteStep(
+                    instructions: "Turn onto Road \(index)", distance: Meters(1_100),
+                    notice: nil, start: at(52.0 + Double(index) / 100)
+                )
+            },
+            shape: (0..<60).map { at(52.0 + Double($0) / 1_000) }
+        )
+    }
+
+    /// The rider's own description: "off by one, then two, then three". A constant offset would be
+    /// a mapping mistake; a growing one means an *extra* advance per junction. Two rules can
+    /// advance the step, and both used to fire for the same one — the receding rule at the
+    /// junction, then the missed-junction rule on the very next fix, seeing the new step behind.
+    @Test("Riding a straight route advances exactly one step per junction")
+    func oneAdvancePerJunction() {
+        var state = GuidanceState()
+        var announced: [String] = []
+
+        // Ride from the start to just past the third manoeuvre, a fix every ~28 m.
+        for tick in 0..<130 {
+            let update = guidance(
+                route: route, at: at(52.0 + Double(tick) * 0.00025), speed: MPS(13),
+                state: state, formatDistance: metres
+            )
+            if let said = update.announcement { announced.append(said) }
+            state = update.state
+        }
+
+        // Three junctions passed, so the fourth is current — not the sixth.
+        #expect(state.stepIndex == 3)
+        // And every manoeuvre ridden through was actually announced, in order.
+        #expect(announced.contains { $0.contains("Road 1") })
+        #expect(announced.contains { $0.contains("Road 2") })
+        #expect(announced.contains { $0.contains("Road 3") })
+    }
+}
+
 // MARK: - Badges
 
 @Suite("Route labels")

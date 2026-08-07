@@ -271,7 +271,21 @@ public func badgeAnchor(_ route: RouteOption, index: Int, of count: Int) -> Coor
 /// `nil` when the point is nowhere near the route — being off it is a different question, answered
 /// by ``distanceToRoute(shape:from:)``.
 public func distanceAlongRoute(
-    _ shape: [Coordinate], to point: Coordinate, within: Double = 200
+    _ shape: [Coordinate],
+    to point: Coordinate,
+    within: Double = 200,
+    /// Progress already made, and how far either side of it to look.
+    ///
+    /// **The reason the whole sequence ran ahead.** Searching the entire polyline for the nearest
+    /// segment has no notion of continuity, and a route passes near itself constantly — most of all
+    /// at a roundabout, where it comes within metres. Match the wrong lap and progress leaps
+    /// forward, which skips manoeuvres: a rider on Newlands Road was shown "turn left onto
+    /// Dunstable Road" because Dunstable's junction was 938 m away in a straight line while the
+    /// Church Road turn actually next was 1,883 m.
+    ///
+    /// `nil` means no progress is known yet — the first fix — and the whole route is fair game.
+    near: Double? = nil,
+    window: Double = 600
 ) -> Double? {
     guard shape.count > 1 else { return nil }
     var travelled = 0.0
@@ -279,8 +293,13 @@ public func distanceAlongRoute(
 
     for index in 0..<(shape.count - 1) {
         guard let a = shape[safe: index], let b = shape[safe: index + 1] else { continue }
-        let offset = distanceToSegment(point, a, b)
         let segment = distanceMetres(from: a.pair, to: b.pair)
+        // Outside the window, so it belongs to another part of the route however near it looks.
+        if let near, abs(travelled - near) > window {
+            travelled += segment
+            continue
+        }
+        let offset = distanceToSegment(point, a, b)
         if best.map({ offset < $0.distance }) ?? true {
             // Along the segment as far as the foot of the perpendicular, approximated by how much
             // nearer the point is to the segment's end than its start. Good to a few metres, which
@@ -431,6 +450,13 @@ public struct GuidanceState: Sendable, Equatable {
     ///
     /// Carried so the covered step can be entered already-announced rather than said twice.
     public var nextAlreadyAnnounced: Bool
+    /// How far along the route the rider has got, in metres from its start.
+    ///
+    /// Carried between fixes rather than searched fresh each time. A route passes near itself
+    /// constantly — most of all at a roundabout — so a global search for the nearest segment can
+    /// match the wrong lap and leap the progress forward, which skips manoeuvres. Knowing roughly
+    /// where the rider was a second ago is what makes the next answer continuous.
+    public var progress: Double?
     /// Set once the last step has been passed, so arrival is announced exactly once.
     public var arrived: Bool
 
@@ -439,12 +465,14 @@ public struct GuidanceState: Sendable, Equatable {
         stage: GuidanceStage = .none,
         closest: Double = .greatestFiniteMagnitude,
         nextAlreadyAnnounced: Bool = false,
+        progress: Double? = nil,
         arrived: Bool = false
     ) {
         self.stepIndex = stepIndex
         self.stage = stage
         self.closest = closest
         self.nextAlreadyAnnounced = nextAlreadyAnnounced
+        self.progress = progress
         self.arrived = arrived
     }
 }
@@ -620,6 +648,10 @@ public func guidance(
     let windows = guidanceDistances(speed: speed)
     var next = state
     next.closest = min(state.closest, distance.rawValue)
+    // Continuous with the last fix rather than searched afresh, so a route that doubles back on
+    // itself cannot leap the rider forward past manoeuvres they have not reached.
+    next.progress = distanceAlongRoute(route.shape, to: position, near: state.progress)
+        ?? state.progress
 
     // Taken the turn: it was reached, and is now receding.
     if state.stage == .imminent, distance.rawValue > next.closest + passedByMetres {
@@ -645,8 +677,21 @@ public func guidance(
     // Checked *after* the announcements and with a wide margin, so a junction being passed normally
     // is announced first and only a genuinely missed one is written off.
     if
-        let travelled = distanceAlongRoute(route.shape, to: position),
-        let junction = distanceAlongRoute(route.shape, to: start),
+        // **Only a junction never reached.** Two rules can advance the step — this one and
+        // "reached and now receding" — and nothing stopped both from firing for the same
+        // manoeuvre: the receding rule advances at the junction, and on the very next fix this one
+        // sees the *new* step already behind and advances again. One extra advance per junction is
+        // an offset that grows, which is exactly what the rider described: off by one, then two,
+        // then three.
+        //
+        // A missed junction is one that was never come near. If it was, the receding rule owns it.
+        next.closest > windows.imminent.rawValue,
+        let travelled = next.progress,
+        // The junction is looked for near the rider's own progress for the same reason — a
+        // manoeuvre on a road the route uses twice would otherwise resolve to the wrong lap — but
+        // with a far wider window, because a junction that was *missed* is by definition behind,
+        // and a tight window around current progress would simply fail to find it.
+        let junction = distanceAlongRoute(route.shape, to: start, near: travelled, window: 4_000),
         travelled > junction + missedByMetres {
         return GuidanceUpdate(announcement: nil, state: advanced(next))
     }
