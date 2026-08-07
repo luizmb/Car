@@ -29,6 +29,8 @@ struct JourneyLogTests {
             BarometerPayload(kpa: 99.783, relativeAltitude: 4.2),
             ActivityPayload(activity: "automotive", confidence: 2),
             DevicePayload(device: "ignition", connected: true),
+            DestinationPayload(name: "Gadebridge Park, Queensway", lat: 51.7597, lon: -0.4795),
+            DestinationPayload(name: nil, lat: 51.7597, lon: -0.4795),
             RefuelPayload(litres: 12.5, price: 1.49, odometer: 26_031, brim: true),
             ReservePayload(km: 184.2, odometer: 26_215)
         ]

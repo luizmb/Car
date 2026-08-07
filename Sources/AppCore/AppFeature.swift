@@ -389,6 +389,14 @@ public enum AppFeature {
                 $0.reroute = RerouteState()
             }
             .produce { ctx in
+                // The destination goes into the journey log at GO — bypassing the journey gate the
+                // same way refuels do, because GO happens while parked, often before the ignition
+                // opens the journey, and it is the record the recent-destinations list is built on.
+                let remembered = route.shape.last.map { end in
+                    ctx.environment.logJourney(DestinationPayload(
+                        name: destination, lat: end.latitude.rawValue, lon: end.longitude.rawValue
+                    )) |> Effect<AppAction>.fireAndForget
+                } ?? .empty
                 let spoken = destination.map { name in
                     ctx.environment.speakQueued(routeChosenAnnouncement(
                         route,
@@ -399,7 +407,8 @@ public enum AppFeature {
                 } ?? .empty
                 // Straight back to the home map. Staying on the planner would leave the rider
                 // looking at a preview of a route they have already committed to.
-                return Effect.just(.speedMonitor(.setRoute(simplified(route.shape))))
+                return remembered
+                    <> Effect.just(.speedMonitor(.setRoute(simplified(route.shape))))
                     <> Effect.just(.navigation(.popToRoot))
                     <> spoken
             }
@@ -464,6 +473,29 @@ public enum AppFeature {
         <> Behavior<AppAction, AppState, World>.reduce { action, state in
             guard let tracked = AppAction.prism.rerouteTracked.preview(action) else { return }
             state.reroute = tracked
+        }
+
+        // "Ride there again", from a past ride's record to a fresh route.
+        //
+        // The destination was logged with the coordinates it resolved to at the time, so this
+        // skips search, completion and geocoding entirely: close the review, open the planner, and
+        // hand it a destination that is already resolved — routing starts the moment a fix exists.
+        <> Behavior<AppAction, AppState, World>.handle { action, _ in
+            guard
+                let rides = AppAction.prism.rides.preview(action),
+                let destination = RideReviewFeature.Action.prism.navigateAgain.preview(rides)
+            else { return .doNothing }
+            return .produce { _ in
+                Effect.just(.rides(.select(nil)))
+                    <> Effect.just(.navigation(.pop))
+                    <> Effect.just(.navigation(.push(.navigate)))
+                    <> Effect.just(.navigate(.destinationResolved(AddressSuggestion(
+                        title: destination.name ?? "Last destination",
+                        subtitle: "",
+                        latitude: Latitude(destination.lat),
+                        longitude: Longitude(destination.lon)
+                    ))))
+            }
         }
 
         // Leaving the route, and getting back onto it.
@@ -835,7 +867,7 @@ public enum AppScopes: Rig {
         .action(\.navigate)
         .state(preview: topmost(StackEntry.prism.navigate), set: replacing(StackEntry.prism.navigate))
         .environment(fanout(
-            \.completeAddress, \.resolveAddress, \.routes, \.speakQueued,
+            \.completeAddress, \.loadJourneyRecords, \.resolveAddress, \.routes, \.speakQueued,
             \.formatDistance, \.formatDuration, \.formatTime, \.now
         ) >>> NavigationFeature.Environment.init)
 }

@@ -24,12 +24,12 @@ public struct SpeedMonitorContent: View {
     public let roadName: String?
     /// The chosen route, already thinned. Empty when nothing is being navigated to.
     public let routeShape: [CLLocationCoordinate2D]
-
-    /// Camera the view drives itself, so the rider can pan, rotate and zoom for a look around.
-    /// Reset to the followed camera once they let go — see ``returnToFollowing()``.
-    @State private var camera: MapCameraPosition = .automatic
-    @State private var isBrowsing = false
-    @State private var returnTask: Task<Void, Never>?
+    /// Where the rider has dragged the map, or `nil` while it follows the bike. Comes from the
+    /// store like everything else here; this view holds no state at all.
+    public let browsedCamera: BrowsedCamera?
+    /// The browse gesture, as an event on its way to the store.
+    public let onMapBrowsed: (BrowsedCamera) -> Void
+    public let onRecentre: () -> Void
 
     public var body: some View {
         ZStack(alignment: .top) {
@@ -79,13 +79,53 @@ public struct SpeedMonitorContent: View {
         ))
     }
 
-    /// Anything that should move the camera when the rider is *not* holding it themselves.
-    private var followingKey: String {
-        "\(mapLatitude),\(mapLongitude),\(mapDistance),\(mapHeading),\(mapPitch)"
+    /// The map's camera, spoken redux.
+    ///
+    /// Reading renders whatever the store says — the browsed camera while the rider holds the map,
+    /// the followed one otherwise. Writing *is* the browse gesture: SwiftUI hands back a
+    /// user-positioned camera, its five numbers go up as an event, and the store's answer comes
+    /// back down through `get`. No view state, no timer, no gesture bookkeeping — the auto-return
+    /// lives in the feature, counted in fixes, where it can be tested without a finger.
+    private var cameraBinding: Binding<MapCameraPosition> {
+        Binding(
+            get: {
+                guard let browsed = browsedCamera else { return followingCamera }
+                return .camera(MapCamera(
+                    centerCoordinate: .init(latitude: browsed.latitude, longitude: browsed.longitude),
+                    distance: browsed.distance,
+                    heading: browsed.heading,
+                    pitch: browsed.pitch
+                ))
+            },
+            set: { position in
+                // Programmatic moves echo back through this setter too; only the rider's own
+                // interaction is an event.
+                guard position.positionedByUser else { return }
+                if let camera = position.camera {
+                    onMapBrowsed(BrowsedCamera(
+                        latitude: camera.centerCoordinate.latitude,
+                        longitude: camera.centerCoordinate.longitude,
+                        distance: camera.distance,
+                        heading: camera.heading,
+                        pitch: camera.pitch
+                    ))
+                } else if let region = position.region {
+                    // Some interactions come back as a region rather than a camera; its span is
+                    // the same fact in different clothes.
+                    onMapBrowsed(BrowsedCamera(
+                        latitude: region.center.latitude,
+                        longitude: region.center.longitude,
+                        distance: region.span.latitudeDelta * 111_320 * 1.2,
+                        heading: 0,
+                        pitch: 0
+                    ))
+                }
+            }
+        )
     }
 
     private var map: some View {
-        Map(position: $camera, interactionModes: .all) {
+        Map(position: cameraBinding, interactionModes: .all) {
             // Under the rider marker, so the arrow is never hidden by the line it is following.
             if routeShape.count > 1 {
                 MapPolyline(coordinates: routeShape)
@@ -103,43 +143,19 @@ public struct SpeedMonitorContent: View {
         }
         .mapControlVisibility(.hidden)
         .ignoresSafeArea()
-        .onAppear { camera = followingCamera }
-        // Follow, unless the rider has taken hold of the map.
-        .onChange(of: followingKey) { if !isBrowsing { camera = followingCamera } }
-        // Any of the three map gestures counts as taking hold. `simultaneousGesture` rather than
-        // `gesture`, so the map still pans and zooms normally — this only observes.
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 2)
-                .onChanged { _ in beginBrowsing() }
-                .onEnded { _ in scheduleReturn() }
-        )
-        .simultaneousGesture(
-            MagnifyGesture()
-                .onChanged { _ in beginBrowsing() }
-                .onEnded { _ in scheduleReturn() }
-        )
-        .simultaneousGesture(
-            RotateGesture()
-                .onChanged { _ in beginBrowsing() }
-                .onEnded { _ in scheduleReturn() }
-        )
-        .onDisappear { returnTask?.cancel() }
     }
 
     /// Back to the followed camera, now.
     ///
     /// The automatic return only fires above 5 mph, which is right — a rider stopped and studying
     /// the next few junctions should be left alone. But that leaves someone stationary with a map
-    /// they have panned to Luton and no way home, which is exactly the state this button exists
-    /// for. It appears only while the map is being held.
+    /// panned to the next county and no way home, which is exactly the state this button exists
+    /// for. It appears only while the store says the map is being held.
     @ViewBuilder
     private var recentreButton: some View {
-        if isBrowsing {
+        if browsedCamera != nil {
             Button {
-                returnTask?.cancel()
-                returnTask = nil
-                isBrowsing = false
-                withAnimation(.easeInOut(duration: 0.45)) { camera = followingCamera }
+                onRecentre()
             } label: {
                 Image(systemName: isNavigating ? "location.north.line.fill" : "location.fill")
                     .font(.title3)
@@ -150,41 +166,6 @@ public struct SpeedMonitorContent: View {
             .padding(.leading, 14)
             .padding(.bottom, 22)
             .transition(.opacity)
-        }
-    }
-
-    // MARK: - Browsing
-
-    /// The rider has the map. Stop moving it under them — nothing is more disorienting than a map
-    /// that fights the finger dragging it.
-    private func beginBrowsing() {
-        returnTask?.cancel()
-        returnTask = nil
-        withAnimation(.easeInOut(duration: 0.2)) { isBrowsing = true }
-    }
-
-    /// Fingers off. Come back to the followed camera two seconds later — but **only once moving**.
-    ///
-    /// The speed condition is the point of the whole thing. Stopped at the kerb, a rider looking
-    /// ahead at the next few junctions should be left alone indefinitely; the moment they set off
-    /// again the map is theirs no longer, because a browsed camera while riding is a map showing
-    /// somewhere that is not where you are.
-    ///
-    /// A raw sleep rather than an injected clock, deliberately: nothing decides anything on this
-    /// interval and no test would want to control it. It is an interaction debounce, local to this
-    /// view, and dressing it as a schedule would imply a domain rule that does not exist.
-    private func scheduleReturn() {
-        returnTask?.cancel()
-        returnTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(2))
-            while !Task.isCancelled {
-                if speedValue > 5 {
-                    isBrowsing = false
-                    withAnimation(.easeInOut(duration: 0.45)) { camera = followingCamera }
-                    return
-                }
-                try? await Task.sleep(for: .milliseconds(400))
-            }
         }
     }
 

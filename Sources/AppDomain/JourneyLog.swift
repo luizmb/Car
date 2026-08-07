@@ -19,6 +19,7 @@ public enum RecordType: String, Codable, Sendable, CaseIterable {
     case device
     case refuel
     case reserve
+    case destination
 }
 
 // MARK: - Payload protocol
@@ -212,6 +213,23 @@ public struct DevicePayload: JourneyPayloadType, Equatable {
     }
 }
 
+/// Where a route was started to. Written at GO, so the log carries the rider's destinations and
+/// the search screen can offer them back — the places someone actually goes are the best
+/// completion list there is.
+public struct DestinationPayload: JourneyPayloadType, Equatable {
+    public static let recordType: RecordType = .destination
+
+    public let name: String?
+    public let lat: Double
+    public let lon: Double
+
+    public init(name: String?, lat: Double, lon: Double) {
+        self.name = name
+        self.lat = lat
+        self.lon = lon
+    }
+}
+
 public struct RefuelPayload: JourneyPayloadType, Equatable {
     public static let recordType: RecordType = .refuel
 
@@ -270,6 +288,7 @@ public extension RecordType {
         case .barometer: BarometerPayload.self
         case .activity: ActivityPayload.self
         case .device: DevicePayload.self
+        case .destination: DestinationPayload.self
         case .refuel: RefuelPayload.self
         case .reserve: ReservePayload.self
         }

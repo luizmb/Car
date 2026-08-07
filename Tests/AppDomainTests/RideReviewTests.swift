@@ -187,3 +187,52 @@ struct GPXTests {
         #expect(!xml.contains("<trkpt"))
     }
 }
+
+// MARK: - Destinations
+
+@Suite("Recent destinations")
+struct RecentDestinationTests {
+    private func went(_ day: Int, to name: String?, lat: Double = 51.75, lon: Double = -0.47) -> JourneyRecord {
+        JourneyRecord(time: at(Double(day) * 86_400), payload: DestinationPayload(
+            name: name, lat: lat, lon: lon
+        ))
+    }
+
+    /// The best completion list is the places someone actually goes — newest first, each already
+    /// carrying the coordinates it resolved to, so choosing one skips the completer entirely.
+    @Test("Newest first, deduplicated by name")
+    func newestFirstUnique() {
+        let recents = recentDestinations(from: [
+            went(1, to: "Home"),
+            went(2, to: "Gadebridge Park, Queensway"),
+            went(3, to: "Home")
+        ])
+        #expect(recents.map(\.title) == ["Home", "Gadebridge Park, Queensway"])
+        #expect(recents[safe: 0]?.coordinate != nil)
+    }
+
+    @Test("A destination with no name falls back to its coordinates")
+    func namelessFallsBack() {
+        let recents = recentDestinations(from: [went(1, to: nil, lat: 51.7512, lon: -0.4699)])
+        #expect(recents[safe: 0]?.title == "51.7512, -0.4699")
+    }
+
+    @Test("A ride knows where it was heading")
+    func rideDestination() {
+        let ride = assembleRides(from: [
+            start(0),
+            went(0, to: "Gadebridge Park, Queensway"),
+            fix(1, lat: 52, lon: -0.46),
+            end(60)
+        ])[safe: 0]
+        #expect(ride?.destination?.name == "Gadebridge Park, Queensway")
+    }
+
+    @Test("A ride with no GO has no destination")
+    func rideWithout() {
+        let ride = assembleRides(from: [
+            start(0), fix(1, lat: 52, lon: -0.46), end(60)
+        ])[safe: 0]
+        #expect(ride?.destination == nil)
+    }
+}

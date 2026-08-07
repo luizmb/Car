@@ -15,9 +15,8 @@ import SwiftUI
 struct IndicatorStatusView: View {
     let viewStore: ViewStore<IndicatorFeature.State, IndicatorFeature.Action>
 
-    /// Matches the audio loop's 0.698s cycle, so the strip and the ticking feel like one thing —
-    /// even though neither is synced to the bike's actual relay.
-    @State private var blinking = false
+    // No view state: the blink below is a phase animator, which owns its own repetition — the
+    // last `@State` in the app went with it.
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -35,13 +34,13 @@ struct IndicatorStatusView: View {
                 Text(side.arrowLabel)
                     .font(.system(size: 15, weight: .black, design: .rounded))
                     .foregroundStyle(.green)
-                    .opacity(blinking ? 1 : 0.15)
-                    .onAppear {
-                        withAnimation(.easeInOut(duration: 0.349).repeatForever(autoreverses: true)) {
-                            blinking = true
-                        }
+                    // Matches the audio loop's 0.698 s cycle, so the strip and the ticking feel
+                    // like one thing — even though neither is synced to the bike's actual relay.
+                    .phaseAnimator([1.0, 0.15]) { view, phase in
+                        view.opacity(phase)
+                    } animation: { _ in
+                        .easeInOut(duration: 0.349)
                     }
-                    .onDisappear { blinking = false }
             }
         }
         .animation(.easeInOut(duration: 0.2), value: viewStore.state.side == nil)

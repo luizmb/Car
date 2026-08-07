@@ -103,6 +103,87 @@ public struct Ride: Sendable, Equatable, Identifiable {
     }
 }
 
+public extension Ride {
+    /// The stretches where an indicator was actually on.
+    ///
+    /// Rebuilt from the events rather than stored: a `left`/`right` payload opens a stretch, the
+    /// next event closes it — a cancellation, the opposite side, or the same side again (the unit
+    /// re-reports). A stretch still open at the ride's end closes there, because the Indimate
+    /// disconnecting eats the cancel and an indicator cannot outlive the ride it was part of.
+    var indicatorIntervals: [(side: String, start: Date, end: Date)] {
+        var intervals: [(String, Date, Date)] = []
+        var open: (side: String, start: Date)?
+        for record in records {
+            guard let payload = record.payload as? IndicatorPayload else { continue }
+            if let current = open {
+                intervals.append((current.side, current.start, record.time))
+                open = nil
+            }
+            if let side = payload.side {
+                open = (side, record.time)
+            }
+        }
+        if let current = open {
+            intervals.append((current.side, current.start, end))
+        }
+        return intervals
+    }
+
+    /// Road gradient over the ride, in percent, from consecutive fixes.
+    ///
+    /// Only pairs that measure something: at least five metres apart horizontally (altitude noise
+    /// over a shorter base reads as a cliff), within thirty seconds (a gap is signal loss, not
+    /// road), and both carrying an altitude. Clamped to ±25% — Britain has no public road steeper,
+    /// so anything beyond it is GPS altitude doing what GPS altitude does.
+    var gradients: [(time: Date, percent: Double)] {
+        let fixes = track
+        guard fixes.count > 1 else { return [] }
+        var series: [(Date, Double)] = []
+        for index in 1..<fixes.count {
+            guard
+                let a = fixes[safe: index - 1], let b = fixes[safe: index],
+                let altA = a.fix.alt, let altB = b.fix.alt,
+                b.time.timeIntervalSince(a.time) <= 30
+            else { continue }
+            let run = AppDomain.distanceMetres(
+                from: (Latitude(a.fix.lat), Longitude(a.fix.lon)),
+                to: (Latitude(b.fix.lat), Longitude(b.fix.lon))
+            )
+            guard run >= 5 else { continue }
+            let percent = (altB - altA) / run * 100
+            series.append((b.time, max(-25, min(25, percent))))
+        }
+        return series
+    }
+
+    /// Where the bike was at an instant, interpolated between the fixes either side.
+    ///
+    /// What the scrub ball runs on: a finger over a chart names a time, and this names the place.
+    /// Linear between neighbours — a second apart, the road curves less than GPS wanders — and
+    /// clamped to the track's ends rather than extrapolated beyond them.
+    func position(at time: Date) -> Coordinate? {
+        let fixes = track
+        guard let first = fixes.first, let last = fixes.last else { return nil }
+        guard time > first.time else {
+            return Coordinate(latitude: Latitude(first.fix.lat), longitude: Longitude(first.fix.lon))
+        }
+        guard time < last.time else {
+            return Coordinate(latitude: Latitude(last.fix.lat), longitude: Longitude(last.fix.lon))
+        }
+        for index in 1..<fixes.count {
+            guard let a = fixes[safe: index - 1], let b = fixes[safe: index] else { continue }
+            guard time <= b.time else { continue }
+            let span = b.time.timeIntervalSince(a.time)
+            let fraction = span > 0 ? time.timeIntervalSince(a.time) / span : 0
+            return Coordinate(
+                latitude: Latitude(a.fix.lat + (b.fix.lat - a.fix.lat) * fraction),
+                longitude: Longitude(a.fix.lon + (b.fix.lon - a.fix.lon) * fraction)
+            )
+        }
+        return Coordinate(latitude: Latitude(last.fix.lat), longitude: Longitude(last.fix.lon))
+    }
+}
+
 // MARK: - Cutting the log into rides
 
 /// Groups a log's records into rides.
@@ -143,6 +224,33 @@ public func assembleRides(from records: [JourneyRecord]) -> [Ride] {
     }
     close(cleanly: false)
     return rides
+}
+
+/// The places routes have been started to, newest first, deduplicated.
+///
+/// The best completion list is the places someone actually goes: home, work, the parents', the
+/// usual fuel stop. Each carries the coordinates it was resolved to at the time, so choosing one
+/// skips the completer round-trip entirely — it is already a resolved destination.
+public func recentDestinations(from records: [JourneyRecord]) -> [AddressSuggestion] {
+    var seen: Set<String> = []
+    return records
+        .sorted { $0.time > $1.time }
+        .compactMap { record -> AddressSuggestion? in
+            guard let payload = record.payload as? DestinationPayload else { return nil }
+            let title = payload.name ?? String(format: "%.4f, %.4f", payload.lat, payload.lon)
+            guard seen.insert(title).inserted else { return nil }
+            return AddressSuggestion(
+                title: title, subtitle: "",
+                latitude: Latitude(payload.lat), longitude: Longitude(payload.lon)
+            )
+        }
+}
+
+/// The destination a ride was heading to, when one was set.
+public extension Ride {
+    var destination: DestinationPayload? {
+        records.compactMap { $0.payload as? DestinationPayload }.last
+    }
 }
 
 // MARK: - GPX
