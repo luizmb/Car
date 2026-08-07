@@ -44,9 +44,15 @@ public enum NavigationFeature {
 
         public var isRouting: Bool = false
         public var outcome: RouteSearchOutcome?
-        /// The one being ridden. Separate from the outcome's list so that changing a preference and
-        /// re-routing cannot silently swap the route underneath the rider.
+        /// The one highlighted on the planner's map. Choosing is not yet following.
         public var chosen: RouteOption?
+        /// The one actually being followed, and the guidance position along it.
+        ///
+        /// Separate from `chosen` because they are different commitments: tapping a route to look at
+        /// it must not start talking, and re-routing after a preference change must not swap the
+        /// route under a rider already following one.
+        public var following: RouteOption?
+        public var guidanceState: GuidanceState = GuidanceState()
 
         /// Where the rider is, pushed in from the location stream. Routing needs an origin, and the
         /// bike's own position is the only origin that makes sense.
@@ -74,14 +80,26 @@ public enum NavigationFeature {
         /// Run the search. Separate from typing: a request per keystroke would be a request per
         /// keystroke, and Apple throttles.
         case search
-        case suggestionsLoaded([AddressSuggestion])
+        /// Carries the query it answers, so a slow completion for "amp" cannot overwrite the
+        /// results for "ampthill" typed since.
+        case suggestionsLoaded(String, [AddressSuggestion])
         case choose(AddressSuggestion)
+        /// The chosen suggestion, now with coordinates. `nil` means it could not be placed.
+        case destinationResolved(AddressSuggestion?)
         case setAvoidTolls(Bool)
         case setAvoidMotorways(Bool)
         /// Ask for routes to the chosen destination with the current preferences.
         case route
         case routesLoaded(Result<[RouteOption], RouteError>)
         case select(RouteOption)
+        /// Begin following the selected route.
+        case start
+        case stop
+        /// A fix, while following. Drives the turn-by-turn.
+        case advance(Coordinate, MPS)
+        /// The guidance position that followed from a fix. Separate because working it out needs the
+        /// distance formatter, which lives in the environment and is only reachable from an effect.
+        case guidanceAdvanced(GuidanceState)
         case clear
         case setPosition(Latitude, Longitude)
     }
@@ -89,8 +107,11 @@ public enum NavigationFeature {
     // MARK: Environment
 
     public struct Environment: Sendable {
-        public let searchAddresses: @Sendable (String, Latitude?, Longitude?)
+        /// Completions for a fragment. Cheap and local-ish, so it runs as the rider types.
+        public let completeAddress: @Sendable (String, Latitude?, Longitude?)
             -> Publisher<[AddressSuggestion], Never>
+        /// A completion turned into a position. Costs a request, so it runs once, for the one picked.
+        public let resolveAddress: @Sendable (AddressSuggestion) -> Publisher<AddressSuggestion?, Never>
         public let routes: @Sendable (Coordinate, Coordinate, RoutePreferences)
             -> Publisher<Result<[RouteOption], RouteError>, Never>
         /// Queued rather than interrupting: nothing here is time-critical, and cutting off a speed
@@ -98,21 +119,31 @@ public enum NavigationFeature {
         public let speak: @Sendable (String) -> Publisher<Void, Never>
         public let formatDistance: @Sendable (Meters) -> String
         public let formatDuration: @Sendable (TimeInterval) -> String
+        public let formatTime: @Sendable (Date) -> String
+        /// Injected, never called ambiently — an arrival estimate is `now + travel time`, and `now`
+        /// is exactly the sort of thing the architecture forbids reaching for inside logic.
+        public let now: @Sendable () -> Date
 
         public init(
-            searchAddresses: @escaping @Sendable (String, Latitude?, Longitude?)
+            completeAddress: @escaping @Sendable (String, Latitude?, Longitude?)
                 -> Publisher<[AddressSuggestion], Never>,
+            resolveAddress: @escaping @Sendable (AddressSuggestion) -> Publisher<AddressSuggestion?, Never>,
             routes: @escaping @Sendable (Coordinate, Coordinate, RoutePreferences)
                 -> Publisher<Result<[RouteOption], RouteError>, Never>,
             speak: @escaping @Sendable (String) -> Publisher<Void, Never>,
             formatDistance: @escaping @Sendable (Meters) -> String,
-            formatDuration: @escaping @Sendable (TimeInterval) -> String
+            formatDuration: @escaping @Sendable (TimeInterval) -> String,
+            formatTime: @escaping @Sendable (Date) -> String,
+            now: @escaping @Sendable () -> Date
         ) {
-            self.searchAddresses = searchAddresses
+            self.completeAddress = completeAddress
+            self.resolveAddress = resolveAddress
             self.routes = routes
             self.speak = speak
             self.formatDistance = formatDistance
             self.formatDuration = formatDuration
+            self.formatTime = formatTime
+            self.now = now
         }
     }
 
@@ -129,11 +160,10 @@ public enum NavigationFeature {
             case let .setQuery(text):
                 return .reduce {
                     $0.query = text
-                    // Typing again invalidates what is on screen. Leaving stale suggestions up is
-                    // how a rider taps the result for the previous query.
                     guard text.isEmpty else { return }
                     $0.suggestions = []
                 }
+                .produce { _ in Effect.just(.search) }
 
             case .search:
                 guard let state = context.stateBefore else { return .doNothing }
@@ -142,27 +172,41 @@ public enum NavigationFeature {
                 guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return .doNothing }
                 return .reduce { $0.isSearching = true }
                     .produce { ctx in
-                        ctx.environment.searchAddresses(query, latitude, longitude)
-                            .asEffect(Action.suggestionsLoaded)
+                        ctx.environment.completeAddress(query, latitude, longitude)
+                            .asEffect { Action.suggestionsLoaded(query, $0) }
                     }
 
-            case let .suggestionsLoaded(suggestions):
+            case let .suggestionsLoaded(query, suggestions):
                 return .reduce {
+                    // Completions arrive out of order — a slow answer for "amp" must not replace the
+                    // list for "ampthill" typed since.
+                    guard query == $0.query else { return }
                     $0.suggestions = suggestions
                     $0.isSearching = false
                 }
 
             case let .choose(suggestion):
                 return .reduce {
-                    $0.destination = suggestion
                     $0.suggestions = []
-                    $0.query = suggestion.spoken
-                    // A new destination invalidates the old routes outright rather than leaving
-                    // them on screen looking like answers to the new question.
+                    $0.query = suggestion.searchText
+                    // A new destination invalidates the old routes outright rather than leaving them
+                    // on screen looking like answers to the new question.
                     $0.outcome = nil
                     $0.chosen = nil
                 }
-                .produce { _ in Effect.just(.route) }
+                .produce { ctx in
+                    // A completion is text with no coordinates. Resolving is a request, so it
+                    // happens here — once, for the one actually picked — rather than for every row
+                    // as it was typed.
+                    ctx.environment.resolveAddress(suggestion).asEffect(Action.destinationResolved)
+                }
+
+            case let .destinationResolved(resolved):
+                guard let resolved else {
+                    return .reduce { $0.outcome = .failed(.placeNotFound) }
+                }
+                return .reduce { $0.destination = resolved }
+                    .produce { _ in Effect.just(.route) }
 
             case let .setAvoidTolls(value):
                 return .reduce { $0.preferences.avoidTolls = value }
@@ -174,14 +218,13 @@ public enum NavigationFeature {
             case .route:
                 guard
                     let state = context.stateBefore,
-                    let destination = state.destination,
+                    // Resolved, not merely chosen: a completion is text until `resolveAddress` has
+                    // placed it, and there is nothing to route towards until then.
+                    let target = state.destination?.coordinate,
                     let latitude = state.latitude,
                     let longitude = state.longitude
                 else { return .doNothing }
                 let origin = Coordinate(latitude: latitude, longitude: longitude)
-                let target = Coordinate(
-                    latitude: destination.latitude, longitude: destination.longitude
-                )
                 // Read here rather than in the effect: `stateBefore` is the state the rider was
                 // looking at when they asked, and a preference toggled a moment later must produce
                 // its own request rather than retroactively changing this one.
@@ -205,6 +248,10 @@ public enum NavigationFeature {
                 return .reduce {
                     $0.isRouting = false
                     $0.outcome = outcome
+                    // Pre-select the fastest, so the map has a highlighted line and GO is live the
+                    // moment the sheet appears. A rider who wants the default should not have to
+                    // tap a route to say so.
+                    if case let .routes(routes) = outcome { $0.chosen = routes.first }
                 }
                 .produce { ctx in
                     // Spoken, because the rider asked for this before setting off and may already
@@ -225,23 +272,69 @@ public enum NavigationFeature {
                 }
 
             case let .select(route):
-                let destination = context.stateBefore?.destination?.spoken
+                // Highlights it on the map. Deliberately silent and deliberately not the same as
+                // following it — tapping through the options to compare them must not start talking.
                 return .reduce { $0.chosen = route }
-                    .produce { ctx in
-                        guard let destination else { return .empty }
-                        return ctx.environment.speak(routeChosenAnnouncement(
-                            route,
-                            to: destination,
-                            formatDistance: ctx.environment.formatDistance,
-                            formatDuration: ctx.environment.formatDuration
-                        )) |> Effect<Action>.fireAndForget
-                    }
+
+            case .start:
+                guard let state = context.stateBefore, let route = state.chosen else {
+                    return .doNothing
+                }
+                let destination = state.destination?.searchText
+                return .reduce {
+                    $0.following = route
+                    $0.guidanceState = GuidanceState()
+                }
+                .produce { ctx in
+                    guard let destination else { return .empty }
+                    return ctx.environment.speak(routeChosenAnnouncement(
+                        route,
+                        to: destination,
+                        formatDistance: ctx.environment.formatDistance,
+                        formatDuration: ctx.environment.formatDuration
+                    )) |> Effect<Action>.fireAndForget
+                }
+
+            case .stop:
+                return .reduce {
+                    $0.following = nil
+                    $0.guidanceState = GuidanceState()
+                }
+                .produce { ctx in
+                    ctx.environment.speak("Navigation stopped.") |> Effect<Action>.fireAndForget
+                }
+
+            case let .advance(position, speed):
+                guard
+                    let state = context.stateBefore,
+                    let route = state.following
+                else { return .doNothing }
+                let current = state.guidanceState
+                return .produce { ctx in
+                    let update = guidance(
+                        route: route,
+                        at: position,
+                        speed: speed,
+                        state: current,
+                        formatDistance: ctx.environment.formatDistance
+                    )
+                    let spoken = update.announcement.map {
+                        ctx.environment.speak($0) |> Effect<Action>.fireAndForget
+                    } ?? .empty
+                    guard update.state != current else { return spoken }
+                    return Effect.just(.guidanceAdvanced(update.state)) <> spoken
+                }
+
+            case let .guidanceAdvanced(guidanceState):
+                return .reduce { $0.guidanceState = guidanceState }
 
             case .clear:
                 return .reduce {
                     $0.destination = nil
                     $0.outcome = nil
                     $0.chosen = nil
+                    $0.following = nil
+                    $0.guidanceState = GuidanceState()
                     $0.query = ""
                     $0.suggestions = []
                 }

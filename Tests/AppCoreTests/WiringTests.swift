@@ -197,7 +197,10 @@ struct WiringTests {
             title: "Ampthill Road", subtitle: "Bedford",
             latitude: Latitude(52.12), longitude: Longitude(-0.46)
         )
-        store.dispatch(.navigate(.choose(destination)), source: .init(file: #file, function: #function, line: #line))
+
+        // `.choose` only kicks off resolution — a completion is text until it is placed, and the
+        // stub never resolves — so the resolved destination is supplied directly here.
+        store.dispatch(.navigate(.destinationResolved(destination)), source: .init(file: #file, function: #function, line: #line))
         for _ in 0..<10 { await Task.yield() }
 
         // No fix yet, so nothing could be asked.
@@ -350,7 +353,8 @@ struct RefuelRecordingTests {
             speakSequence: world.speakSequence,
             announceOverLimit: world.announceOverLimit,
             announceUnderLimit: world.announceUnderLimit,
-            searchAddresses: world.searchAddresses,
+            completeAddress: world.completeAddress,
+            resolveAddress: world.resolveAddress,
             routes: world.routes,
             thresholds: world.thresholds,
             formatSpeed: world.formatSpeed,
@@ -358,6 +362,7 @@ struct RefuelRecordingTests {
             formatAltitude: world.formatAltitude,
             formatDistance: world.formatDistance,
             formatDuration: world.formatDuration,
+            formatTime: world.formatTime,
             formatBearing: world.formatBearing,
             formatCoordinate: world.formatCoordinate
         )

@@ -111,8 +111,11 @@ public struct World: Sendable {
     /// Addresses and postcodes matching a query, biased toward a position. Addresses only — points
     /// of interest are excluded at the source, because "Tesco" is a hundred places and picking one
     /// from a list at a junction is the interaction this app exists to avoid.
-    public let searchAddresses: @Sendable (String, Latitude?, Longitude?)
+    public let completeAddress: @Sendable (String, Latitude?, Longitude?)
         -> Publisher<[AddressSuggestion], Never>
+    /// A chosen completion turned into a position. Costs a request, so it runs once — for the one
+    /// the rider picked, not for every row as it was typed.
+    public let resolveAddress: @Sendable (AddressSuggestion) -> Publisher<AddressSuggestion?, Never>
     /// Every route found between two points, **unfiltered** — the preferences are passed on to the
     /// routing service as a hint, and the domain then checks the answers and drops what does not
     /// honour them. `Result` rather than an empty list, so "no route" and "routing failed" stay
@@ -130,6 +133,9 @@ public struct World: Sendable {
     /// them would make one of the two wrong.
     public let formatDistance: @Sendable (Meters) -> String
     public let formatDuration: @Sendable (TimeInterval) -> String
+    /// A time of day, for an arrival estimate. Locale-aware, so it follows the rider's 12/24-hour
+    /// setting rather than this app having an opinion about it.
+    public let formatTime: @Sendable (Date) -> String
     public let formatBearing: @Sendable (Course) -> String
     public let formatCoordinate: @Sendable (Latitude, Longitude) -> String
 }

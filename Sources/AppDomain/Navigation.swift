@@ -11,21 +11,39 @@ import Foundation
 /// exactly the interaction this app exists to avoid, whereas a postcode is unambiguous and is what a
 /// rider actually has written down.
 public struct AddressSuggestion: Sendable, Equatable, Identifiable {
-    /// Composed from the text rather than from anything Apple supplies, because `MKMapItem` carries
-    /// no stable identifier across searches and SwiftUI needs one that survives a re-query.
-    public var id: String { "\(title)|\(subtitle)|\(latitude.rawValue),\(longitude.rawValue)" }
+    /// Composed from the text, because nothing Apple returns carries a stable identifier across
+    /// searches and SwiftUI needs one that survives a re-query.
+    public var id: String { "\(title)|\(subtitle)" }
     /// The headline — usually the street line.
     public let title: String
-    /// Town, county, postcode. Empty when the search matched something with no further context.
+    /// Town, county, postcode. Empty when the match had no further context.
     public let subtitle: String
-    public let latitude: Latitude
-    public let longitude: Longitude
 
-    public init(title: String, subtitle: String, latitude: Latitude, longitude: Longitude) {
+    /// **Absent until resolved.** A completion is text: Apple's completer returns "Ampthill Road,
+    /// Bedford" with no coordinates at all, and getting them costs a second request. Resolving every
+    /// suggestion as it is typed would be a request per keystroke per row, so it happens once, for
+    /// the one the rider actually picks.
+    public let latitude: Latitude?
+    public let longitude: Longitude?
+
+    public init(
+        title: String, subtitle: String,
+        latitude: Latitude? = nil, longitude: Longitude? = nil
+    ) {
         self.title = title
         self.subtitle = subtitle
         self.latitude = latitude
         self.longitude = longitude
+    }
+
+    public var coordinate: Coordinate? {
+        guard let latitude, let longitude else { return nil }
+        return Coordinate(latitude: latitude, longitude: longitude)
+    }
+
+    /// What to send back to the geocoder to turn this into a position.
+    public var searchText: String {
+        subtitle.isEmpty ? title : "\(title), \(subtitle)"
     }
 
     /// One line, for speaking and for the route header.
@@ -64,11 +82,17 @@ public struct RouteStep: Sendable, Equatable {
     public let distance: Meters
     /// A legal or warning notice attached to this step — level crossings, restricted access.
     public let notice: String?
+    /// Where the manoeuvre happens — the first point of the step's own geometry.
+    ///
+    /// This is what makes guidance possible at all: an instruction without a position can be
+    /// listed but never spoken at the right moment.
+    public let start: Coordinate?
 
-    public init(instructions: String, distance: Meters, notice: String?) {
+    public init(instructions: String, distance: Meters, notice: String?, start: Coordinate? = nil) {
         self.instructions = instructions
         self.distance = distance
         self.notice = notice
+        self.start = start
     }
 }
 
@@ -190,6 +214,156 @@ public func acceptableRoutes(
         .filter { seen.insert($0.signature).inserted }
 
     return .routes(Array(unique.prefix(limit)))
+}
+
+// MARK: - Labelling the options
+
+/// The short phrase that distinguishes a route from the others on screen.
+///
+/// What a rider needs at a glance is not "route 2" but *why they might pick it*. Fastest is the
+/// obvious one; the exclusions are the ones this app exists for, since a route that avoids motorways
+/// is the whole reason someone on a carburettor 400 is looking at this list.
+///
+/// `nil` when there is nothing to distinguish — a middling route needs no label, and inventing one
+/// would make three identical badges.
+public func routeBadge(_ route: RouteOption, among routes: [RouteOption]) -> String? {
+    let fastest = routes.min { $0.travelTime < $1.travelTime }
+    if route.id == fastest?.id { return "Fastest" }
+    if !route.hasMotorways, routes.contains(where: \.hasMotorways) { return "Avoids motorways" }
+    if !route.hasTolls, routes.contains(where: \.hasTolls) { return "Avoids tolls" }
+    return nil
+}
+
+/// Where to hang a route's badge on the map.
+///
+/// Spread along the line by position in the list rather than all at the midpoint, because routes
+/// between the same two points converge at both ends — three badges stacked on top of each other
+/// would defeat the purpose of drawing them at all.
+public func badgeAnchor(_ route: RouteOption, index: Int, of count: Int) -> Coordinate? {
+    guard !route.shape.isEmpty else { return nil }
+    let spread = count > 1 ? 0.3 + 0.4 * (Double(index) / Double(count - 1)) : 0.5
+    let position = Int((Double(route.shape.count - 1) * spread).rounded())
+    return route.shape[max(0, min(route.shape.count - 1, position))]
+}
+
+// MARK: - Following it
+
+/// How far from a manoeuvre each of the two calls is made.
+///
+/// Two, not one. A single call is either too early to act on or too late to prepare for, and on a
+/// bike the preparation is the part that matters — a lane change and a gear change both have to
+/// happen before the junction, not at it.
+///
+/// The early call scales with speed for the same reason ``lookaheadDistance`` does: 300 m is a
+/// comfortable twenty seconds at 30 mph and six at 70.
+public func guidanceDistances(speed: MPS) -> (early: Meters, imminent: Meters) {
+    let early = min(800, max(200, speed.rawValue * 20))
+    return (Meters(early), Meters(40))
+}
+
+/// What has been said about the step being approached.
+///
+/// Tracked so each call happens once. Without it every fix inside the window would repeat the
+/// instruction, which at one fix a second is unusable in a helmet.
+public enum GuidanceStage: Int, Sendable, Equatable, Comparable {
+    case none = 0
+    case early = 1
+    case imminent = 2
+
+    public static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
+}
+
+/// Where the rider is along a route, and what remains to be said.
+public struct GuidanceState: Sendable, Equatable {
+    /// The step being approached. Steps are followed in order rather than by proximity: a route that
+    /// doubles back passes close to a later manoeuvre long before it is due, and picking the nearest
+    /// would announce it then.
+    public var stepIndex: Int
+    public var stage: GuidanceStage
+    /// Set once the last step has been passed, so arrival is announced exactly once.
+    public var arrived: Bool
+
+    public init(stepIndex: Int = 0, stage: GuidanceStage = .none, arrived: Bool = false) {
+        self.stepIndex = stepIndex
+        self.stage = stage
+        self.arrived = arrived
+    }
+}
+
+/// One thing to say, and the guidance state that follows from having said it.
+public struct GuidanceUpdate: Sendable, Equatable {
+    public let announcement: String?
+    public let state: GuidanceState
+
+    public init(announcement: String?, state: GuidanceState) {
+        self.announcement = announcement
+        self.state = state
+    }
+}
+
+/// Advances guidance for one position fix.
+///
+/// Pure, and the whole of the turn-by-turn logic — which is what makes it testable without a bike, a
+/// route server, or a moving map.
+///
+/// The rules, in order:
+/// - past the last step, announce arrival once
+/// - within the imminent window, give the instruction and move to the next step
+/// - within the early window, give it as a warning
+/// - otherwise say nothing
+public func guidance(
+    route: RouteOption,
+    at position: Coordinate,
+    speed: MPS,
+    state: GuidanceState,
+    formatDistance: (Meters) -> String
+) -> GuidanceUpdate {
+    guard !state.arrived else { return GuidanceUpdate(announcement: nil, state: state) }
+
+    let steps = route.steps.filter { $0.start != nil }
+    guard state.stepIndex < steps.count else {
+        // Nothing left to turn at. Arrival is judged against the end of the line rather than the
+        // last instruction, because the last instruction is usually "arrive" at the same place.
+        guard let destination = route.shape.last else {
+            return GuidanceUpdate(announcement: nil, state: state)
+        }
+        let remaining = distanceMetres(from: position.pair, to: destination.pair)
+        guard remaining <= 60 else { return GuidanceUpdate(announcement: nil, state: state) }
+        var next = state
+        next.arrived = true
+        return GuidanceUpdate(announcement: "You have arrived.", state: next)
+    }
+
+    let step = steps[state.stepIndex]
+    guard let start = step.start else { return GuidanceUpdate(announcement: nil, state: state) }
+
+    let distance = Meters(distanceMetres(from: position.pair, to: start.pair))
+    let windows = guidanceDistances(speed: speed)
+
+    if distance.rawValue <= windows.imminent.rawValue {
+        var next = state
+        next.stepIndex += 1
+        next.stage = .none
+        return GuidanceUpdate(announcement: step.instructions, state: next)
+    }
+
+    if distance.rawValue <= windows.early.rawValue, state.stage < .early {
+        var next = state
+        next.stage = .early
+        return GuidanceUpdate(
+            announcement: "In \(formatDistance(distance)), \(lowercasedFirst(step.instructions))",
+            state: next
+        )
+    }
+
+    return GuidanceUpdate(announcement: nil, state: state)
+}
+
+/// "Turn left onto A421" becomes "turn left onto A421", so it reads as one sentence after "In 300
+/// metres,". Only the first character — lowercasing the lot would ruin every road name in it.
+func lowercasedFirst(_ text: String) -> String {
+    guard let first = text.first else { return text }
+    return first.lowercased() + text.dropFirst()
 }
 
 // MARK: - Drawing it

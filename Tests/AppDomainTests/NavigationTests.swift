@@ -189,6 +189,189 @@ struct RouteSimplificationTests {
     }
 }
 
+// MARK: - Guidance
+
+@Suite("Turn-by-turn")
+struct GuidanceTests {
+    private func metres(_ m: Meters) -> String { "\(Int(m.rawValue)) metres" }
+
+    /// A step every ~1.11 km north of 52.0 (0.01° of latitude), which is wide enough that the early
+    /// and imminent windows are distinguishable rather than overlapping.
+    private func routeWithSteps(_ count: Int) -> RouteOption {
+        let steps = (1...count).map { index in
+            RouteStep(
+                instructions: "Turn left onto Road \(index)",
+                distance: Meters(1_000),
+                notice: nil,
+                start: Coordinate(
+                    latitude: Latitude(52.0 + Double(index) / 100),
+                    longitude: Longitude(-0.46)
+                )
+            )
+        }
+        return RouteOption(
+            name: "A421", distance: Meters(5_000), travelTime: 600,
+            hasTolls: false, hasMotorways: false, steps: steps,
+            shape: [
+                Coordinate(latitude: Latitude(52.0), longitude: Longitude(-0.46)),
+                Coordinate(latitude: Latitude(52.0 + Double(count) / 100), longitude: Longitude(-0.46))
+            ]
+        )
+    }
+
+    private func at(_ latitude: Double) -> Coordinate {
+        Coordinate(latitude: Latitude(latitude), longitude: Longitude(-0.46))
+    }
+
+    @Test("Far from the next turn, nothing is said")
+    func silentWhenFar() {
+        let update = guidance(
+            route: routeWithSteps(3), at: at(52.0), speed: MPS(13),
+            state: GuidanceState(), formatDistance: metres
+        )
+        #expect(update.announcement == nil)
+        #expect(update.state == GuidanceState())
+    }
+
+    /// The early call is the one that matters on a bike: a lane change and a gear change both have
+    /// to happen before the junction, not at it.
+    @Test("Approaching, the turn is given as a warning with the distance")
+    func earlyWarning() {
+        // ~200 m short of the first step, at 30 mph (early window ≈ 270 m).
+        let update = guidance(
+            route: routeWithSteps(3), at: at(52.0082), speed: MPS(13.4),
+            state: GuidanceState(), formatDistance: metres
+        )
+        #expect(update.announcement?.hasPrefix("In ") == true)
+        #expect(update.announcement?.contains("turn left onto Road 1") == true)
+        #expect(update.state.stage == .early)
+    }
+
+    /// At one fix a second, repeating inside the window would be unusable in a helmet.
+    @Test("The warning is given once, not on every fix inside the window")
+    func warningIsGivenOnce() {
+        let route = routeWithSteps(3)
+        let first = guidance(
+            route: route, at: at(52.0082), speed: MPS(13.4),
+            state: GuidanceState(), formatDistance: metres
+        )
+        let second = guidance(
+            route: route, at: at(52.0083), speed: MPS(13.4),
+            state: first.state, formatDistance: metres
+        )
+        #expect(first.announcement != nil)
+        #expect(second.announcement == nil)
+    }
+
+    @Test("At the junction the instruction is given plainly and the next step becomes current")
+    func imminentAdvances() {
+        let update = guidance(
+            route: routeWithSteps(3), at: at(52.00973), speed: MPS(13.4),
+            state: GuidanceState(stepIndex: 0, stage: .early), formatDistance: metres
+        )
+        #expect(update.announcement == "Turn left onto Road 1")
+        #expect(update.state.stepIndex == 1)
+        #expect(update.state.stage == .none)
+    }
+
+    /// Steps are followed in order rather than by proximity: a route that doubles back passes close
+    /// to a later manoeuvre long before it is due.
+    @Test("A later step close by is not announced early")
+    func inOrderNotNearest() {
+        let route = routeWithSteps(3)
+        // Sitting right on step 3, but step 1 is still the one being approached.
+        let update = guidance(
+            route: route, at: at(52.03), speed: MPS(13.4),
+            state: GuidanceState(stepIndex: 0), formatDistance: metres
+        )
+        #expect(update.announcement != "Turn left onto Road 3")
+    }
+
+    @Test("Arrival is announced once, at the end of the line")
+    func arrival() {
+        let route = routeWithSteps(1)
+        let past = GuidanceState(stepIndex: 5)
+        let arriving = guidance(
+            route: route, at: at(52.01), speed: MPS(5),
+            state: past, formatDistance: metres
+        )
+        #expect(arriving.announcement == "You have arrived.")
+        #expect(arriving.state.arrived)
+
+        let again = guidance(
+            route: route, at: at(52.01), speed: MPS(5),
+            state: arriving.state, formatDistance: metres
+        )
+        #expect(again.announcement == nil)
+    }
+
+    /// 300 m is a comfortable twenty seconds at 30 mph and six at 70, which is why the early window
+    /// scales rather than being a constant.
+    @Test("The early window grows with speed")
+    func windowScalesWithSpeed() {
+        #expect(guidanceDistances(speed: MPS(13)).early.rawValue < guidanceDistances(speed: MPS(31)).early.rawValue)
+        // Clamped at both ends, so it is neither useless when crawling nor absurd on a motorway.
+        #expect(guidanceDistances(speed: MPS(0)).early == Meters(200))
+        #expect(guidanceDistances(speed: MPS(100)).early == Meters(800))
+    }
+
+    @Test("Only the first character is lowercased, so road names survive")
+    func sentenceJoining() {
+        #expect(lowercasedFirst("Turn left onto A421") == "turn left onto A421")
+    }
+}
+
+// MARK: - Badges
+
+@Suite("Route labels")
+struct RouteBadgeTests {
+    private func route(_ name: String, minutes: Double, motorways: Bool = false, tolls: Bool = false) -> RouteOption {
+        RouteOption(
+            name: name, distance: Meters(10_000), travelTime: minutes * 60,
+            hasTolls: tolls, hasMotorways: motorways, steps: [], shape: []
+        )
+    }
+
+    @Test("The quickest is labelled fastest")
+    func fastest() {
+        let routes = [route("A", minutes: 20), route("B", minutes: 30)]
+        #expect(routeBadge(routes[0], among: routes) == "Fastest")
+    }
+
+    /// The label this app exists for: a slower route that keeps you off the motorway is the reason
+    /// someone on a carburettor 400 is looking at the list at all.
+    @Test("A slower route that avoids motorways says so")
+    func avoidsMotorways() {
+        let routes = [route("M1", minutes: 17, motorways: true), route("A5", minutes: 20)]
+        #expect(routeBadge(routes[1], among: routes) == "Avoids motorways")
+    }
+
+    @Test("A route with nothing to distinguish it gets no label")
+    func noBadge() {
+        let routes = [route("A", minutes: 17), route("B", minutes: 20), route("C", minutes: 25)]
+        #expect(routeBadge(routes[1], among: routes) == nil)
+    }
+
+    /// Routes between the same two points converge at both ends, so badges pinned to the midpoint
+    /// would stack on top of each other and defeat the purpose of drawing them.
+    @Test("Badges are spread along the line rather than stacked")
+    func anchorsDiffer() {
+        let shape = (0..<100).map {
+            Coordinate(latitude: Latitude(52 + Double($0) / 1_000), longitude: Longitude(-0.46))
+        }
+        let r = RouteOption(
+            name: "A", distance: Meters(1), travelTime: 1,
+            hasTolls: false, hasMotorways: false, steps: [], shape: shape
+        )
+        #expect(badgeAnchor(r, index: 0, of: 3) != badgeAnchor(r, index: 2, of: 3))
+    }
+
+    @Test("A route with no shape has nowhere to hang a badge")
+    func noShape() {
+        #expect(badgeAnchor(route("A", minutes: 10), index: 0, of: 1) == nil)
+    }
+}
+
 // MARK: - Wording
 
 @Suite("What navigation says")
@@ -255,34 +438,40 @@ struct AddressSuggestionTests {
     func spokenWithSubtitle() {
         let suggestion = AddressSuggestion(
             title: "Ampthill Road",
-            subtitle: "Bedford, MK42",
-            latitude: Latitude(52.12), longitude: Longitude(-0.46)
+            subtitle: "Bedford, MK42"
         )
-        #expect(suggestion.spoken == "Ampthill Road, Bedford, MK42")
+        #expect(suggestion.searchText == "Ampthill Road, Bedford, MK42")
     }
 
     @Test("A suggestion with no context does not trail a comma")
     func spokenWithoutSubtitle() {
         let suggestion = AddressSuggestion(
             title: "MK42",
-            subtitle: "",
-            latitude: Latitude(52.12), longitude: Longitude(-0.46)
+            subtitle: ""
         )
-        #expect(suggestion.spoken == "MK42")
+        #expect(suggestion.searchText == "MK42")
     }
 
-    /// The id has to survive a re-query, since SwiftUI keys the results list on it, and two
-    /// different addresses in the same town must not collide.
-    @Test("Suggestions at different places have different identities")
-    func identity() {
-        let a = AddressSuggestion(
+    /// Identity is the text, because a completion *is* text — it carries no coordinates at all
+    /// until it is resolved, and the id has to be stable across a re-query since SwiftUI keys the
+    /// results list on it. Resolving must therefore not change which row it is.
+    @Test("Resolving a suggestion does not change its identity")
+    func identitySurvivesResolution() {
+        let unresolved = AddressSuggestion(title: "High Street", subtitle: "Bedford")
+        let resolved = AddressSuggestion(
             title: "High Street", subtitle: "Bedford",
             latitude: Latitude(52.12), longitude: Longitude(-0.46)
         )
-        let b = AddressSuggestion(
-            title: "High Street", subtitle: "Bedford",
-            latitude: Latitude(52.20), longitude: Longitude(-0.50)
+        #expect(unresolved.id == resolved.id)
+        #expect(unresolved.coordinate == nil)
+        #expect(resolved.coordinate != nil)
+    }
+
+    @Test("Different streets are different rows")
+    func distinctStreets() {
+        #expect(
+            AddressSuggestion(title: "High Street", subtitle: "Bedford").id
+                != AddressSuggestion(title: "High Street", subtitle: "Luton").id
         )
-        #expect(a.id != b.id)
     }
 }

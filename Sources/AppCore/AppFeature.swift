@@ -333,6 +333,10 @@ public enum AppFeature {
                 .action(\.navigate.clear),
                 dispatch: .action(review: const(.speedMonitor(.setRoute([]))))
             )
+            .on(
+                .action(\.navigate.stop),
+                dispatch: .action(review: const(.speedMonitor(.setRoute([]))))
+            )
 
         // Location fans out from the one feature that owns the stream. A second subscription would
         // clobber the delegate's single continuation slot — the failure that silently killed the
@@ -349,6 +353,13 @@ public enum AppFeature {
                     // rather than only while the screen is up: the scope is affine, so with no
                     // planner on the stack this lands nowhere and costs nothing.
                     <> Effect.just(.navigate(.setPosition(update.latitude, update.longitude)))
+                    // Turn-by-turn. Sent on every fix; the planner ignores it unless a route is
+                    // actually being followed, which keeps the decision in one place rather than
+                    // splitting it between here and there.
+                    <> Effect.just(.navigate(.advance(
+                        Coordinate(latitude: update.latitude, longitude: update.longitude),
+                        update.speed ?? MPS(0)
+                    )))
                     <> Effect.just(.trip(.located(update)))
             }
         }
@@ -599,6 +610,7 @@ public enum AppScopes: Rig {
         .action(\.navigate)
         .state(preview: topmost(StackEntry.prism.navigate), set: replacing(StackEntry.prism.navigate))
         .environment(fanout(
-            \.searchAddresses, \.routes, \.speakQueued, \.formatDistance, \.formatDuration
+            \.completeAddress, \.resolveAddress, \.routes, \.speakQueued,
+            \.formatDistance, \.formatDuration, \.formatTime, \.now
         ) >>> NavigationFeature.Environment.init)
 }

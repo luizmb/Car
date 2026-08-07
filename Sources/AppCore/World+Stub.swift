@@ -49,7 +49,8 @@ public extension World {
             speakSequence: { _, _ in .empty() },
             announceOverLimit: { .empty() },
             announceUnderLimit: { .empty() },
-            searchAddresses: { _, _, _ in .empty() },
+            completeAddress: { _, _, _ in .empty() },
+            resolveAddress: { _ in .empty() },
             routes: { _, _, _ in .empty() },
             thresholds: [],
             formatSpeed: { "\($0.rawValue)" },
@@ -57,6 +58,7 @@ public extension World {
             formatAltitude: { "\($0.rawValue)" },
             formatDistance: { "\($0.rawValue)" },
             formatDuration: { "\($0)" },
+            formatTime: { "\($0)" },
             formatBearing: { "\($0.rawValue)" },
             formatCoordinate: { _, _ in "" }
         )

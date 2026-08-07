@@ -375,7 +375,8 @@ extension World {
             announceUnderLimit: {
                 Publisher.future { DispatchQueue.main.async { speech.speak("back") } }
             },
-            searchAddresses: RoutingClient.searchAddresses,
+            completeAddress: RoutingClient.completeAddress,
+            resolveAddress: RoutingClient.resolve,
             routes: RoutingClient.routes,
             thresholds: [110.0, 99, 88, 77, 66, 55, 44, 33, 22, 11].map { MPH($0) },
             formatSpeed: {
@@ -402,6 +403,9 @@ extension World {
                     .units(allowed: [.hours, .minutes], width: .abbreviated)
                         .locale(locale)
                 )
+            },
+            formatTime: { date in
+                date.formatted(.dateTime.hour().minute().locale(locale))
             },
             formatBearing: { @Sendable course in numFmt1dp.format(course.rawValue) },
             formatCoordinate: { lat, lon in

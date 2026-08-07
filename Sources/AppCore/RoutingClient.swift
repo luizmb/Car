@@ -20,40 +20,60 @@ enum RoutingClient {
 
     // MARK: Address search
 
-    /// Addresses and postcodes near a position.
+    /// Address and postcode completions for what has been typed so far.
     ///
-    /// `resultTypes = .address` is the whole reason this is a search rather than a completer:
-    /// points of interest are excluded at the source, so "Tesco" returns the streets it matched and
-    /// not fifty shops. A rider at a junction is not going to scroll a list.
+    /// `MKLocalSearchCompleter`, not `MKLocalSearch`. The difference is the whole reason search felt
+    /// broken: a full search *resolves* a query and returns the handful of places it is confident
+    /// about — type a street name and you get one result. The completer is what Apple Maps' own
+    /// suggestion list uses, and returns every address it can complete the fragment to.
     ///
-    /// The region biases rather than restricts — a search from Bedfordshire still finds a Cornish
-    /// postcode, it just offers local matches first, which is right far more often than not.
-    static let searchAddresses: @Sendable (String, Latitude?, Longitude?)
+    /// Completions carry **no coordinates** — see ``AddressSuggestion``. Resolving happens once, for
+    /// the one the rider picks, via ``resolve``.
+    static let completeAddress: @Sendable (String, Latitude?, Longitude?)
         -> Publisher<[AddressSuggestion], Never> = { query, latitude, longitude in
         Publisher { continuation in
             let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else {
+            guard trimmed.count >= 2 else {
                 continuation.yield([])
                 return
             }
+            continuation.yield(
+                await CompleterBox.shared.complete(trimmed, latitude: latitude, longitude: longitude)
+            )
+        }
+    }
 
-            let request = MKLocalSearch.Request()
-            request.naturalLanguageQuery = trimmed
-            request.resultTypes = .address
-            if let latitude, let longitude {
-                // 100 km or so. Wide enough that the whole of a day's riding is "local", narrow
-                // enough that it actually orders the results.
-                request.region = MKCoordinateRegion(
-                    center: CLLocationCoordinate2D(
-                        latitude: latitude.rawValue, longitude: longitude.rawValue
-                    ),
-                    latitudinalMeters: 200_000,
-                    longitudinalMeters: 200_000
-                )
+    /// Turns a chosen completion into a position.
+    ///
+    /// Uses the original `MKLocalSearchCompletion` when the box still holds it, which is the exact
+    /// thing the rider tapped. Falls back to a natural-language search on the same text — a second
+    /// best that still lands on the right street, and covers the case where the suggestion outlived
+    /// the completer's result set.
+    static let resolve: @Sendable (AddressSuggestion) -> Publisher<AddressSuggestion?, Never> = {
+        suggestion in
+        Publisher { continuation in
+            let request: MKLocalSearch.Request
+            if let completion = await CompleterBox.shared.completion(for: suggestion.id) {
+                request = MKLocalSearch.Request(completion: completion)
+            } else {
+                request = MKLocalSearch.Request()
+                request.naturalLanguageQuery = suggestion.searchText
+                request.resultTypes = .address
             }
-
             let response = try? await MKLocalSearch(request: request).start()
-            continuation.yield((response?.mapItems ?? []).compactMap(suggestion))
+            guard
+                let placemark = response?.mapItems.first?.placemark,
+                CLLocationCoordinate2DIsValid(placemark.coordinate)
+            else {
+                continuation.yield(nil)
+                return
+            }
+            continuation.yield(AddressSuggestion(
+                title: suggestion.title,
+                subtitle: suggestion.subtitle,
+                latitude: Latitude(placemark.coordinate.latitude),
+                longitude: Longitude(placemark.coordinate.longitude)
+            ))
         }
     }
 
@@ -139,33 +159,6 @@ enum RoutingClient {
 
 // MARK: - MapKit to domain
 
-private func suggestion(_ item: MKMapItem) -> AddressSuggestion? {
-    let placemark = item.placemark
-    let coordinate = placemark.coordinate
-    guard CLLocationCoordinate2DIsValid(coordinate) else { return nil }
-
-    // `name` is the street line for an address result; the title falls back to the thoroughfare so
-    // a bare postcode search still says something useful rather than showing an empty row.
-    let title = item.name ?? placemark.thoroughfare ?? placemark.postalCode ?? "Unknown"
-    return AddressSuggestion(
-        title: title,
-        subtitle: contextLine(placemark, excluding: title),
-        latitude: Latitude(coordinate.latitude),
-        longitude: Longitude(coordinate.longitude)
-    )
-}
-
-/// Town, county and postcode, minus whatever the title already said.
-///
-/// Without the exclusion the common case reads "Bedford Road, Bedford Road, Bedford, MK40" — the
-/// street appears twice because `name` and `thoroughfare` are usually the same string.
-private func contextLine(_ placemark: MKPlacemark, excluding title: String) -> String {
-    [placemark.locality, placemark.administrativeArea, placemark.postalCode]
-        .compactMap { $0 }
-        .filter { $0 != title }
-        .joined(separator: ", ")
-}
-
 private func option(_ route: MKRoute) -> RouteOption {
     RouteOption(
         name: route.name,
@@ -181,7 +174,11 @@ private func option(_ route: MKRoute) -> RouteOption {
                 RouteStep(
                     instructions: $0.instructions,
                     distance: Meters($0.distance),
-                    notice: $0.notice
+                    notice: $0.notice,
+                    // Where the manoeuvre is. Without it an instruction can be listed but never
+                    // spoken at the right moment, which is the difference between a route and
+                    // navigation.
+                    start: $0.polyline.coordinates.first
                 )
             },
         shape: route.polyline.coordinates
