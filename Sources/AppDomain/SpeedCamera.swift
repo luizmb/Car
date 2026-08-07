@@ -344,6 +344,26 @@ public func camerasAhead(
         .map(\.0)
 }
 
+/// How far off the route a camera can be and still be about the road being ridden.
+///
+/// A carriageway is a few metres wide and a mapped camera sits beside it, so 35 m keeps the ones
+/// that watch this road and drops the ones on the next arm of the roundabout.
+public let cameraOnRouteMetres: Double = 35
+
+/// The cameras that are on the route, when there is a route.
+///
+/// With no route this is everything — the bearing cone is all there is to go on, and being
+/// permissive is the right error when a missed camera costs a fine.
+public func onRoute(_ cameras: [SpeedCamera], shape: [Coordinate]) -> [SpeedCamera] {
+    guard shape.count > 1 else { return cameras }
+    return cameras.filter {
+        distanceToRoute(
+            shape: shape,
+            from: Coordinate(latitude: $0.latitude, longitude: $0.longitude)
+        ) <= cameraOnRouteMetres
+    }
+}
+
 // MARK: - Announcement
 
 /// What to say about a camera.

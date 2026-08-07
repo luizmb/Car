@@ -412,6 +412,17 @@ let passedByMetres: Double = 30
 /// one manoeuvre and are spoken as one.
 public let chainWithinMetres: Double = 150
 
+/// A spoken gap, rounded the way a person would say it.
+///
+/// Not the injected distance formatter: that one is for display and gives "0.04 miles" here, which
+/// is unreadable aloud. Between two manoeuvres a few dozen metres apart, metres are what a rider
+/// can act on.
+func formatGap(_ distance: Meters) -> String {
+    let metres = distance.rawValue
+    if metres < 100 { return "\(Int((metres / 10).rounded()) * 10) metres" }
+    return "\(Int((metres / 50).rounded()) * 50) metres"
+}
+
 /// The instruction for a step, with the one after it attached when they come too close together.
 ///
 /// "Turn left onto Tennyson Road, then immediately turn right onto London Road" — because being
@@ -433,7 +444,12 @@ public func chainedInstruction(
         steps[index].distance.rawValue <= within,
         steps.indices.contains(index + 1)
     else { return instruction }
-    return "\(instruction), then immediately \(lowercasedFirst(steps[index + 1].instructions))"
+    // The gap, spoken. "Then immediately turn left" is a claim about *which* left, and on a
+    // residential street with side roads every thirty metres it is the wrong one — a rider who
+    // takes the next left is on the wrong road. The distance says the same thing without asserting
+    // anything false.
+    let gap = formatGap(steps[index].distance)
+    return "\(instruction), then in \(gap) \(lowercasedFirst(steps[index + 1].instructions))"
 }
 
 /// One thing to say, and the guidance state that follows from having said it.
@@ -487,6 +503,15 @@ public func guidanceBanner(
     )
 }
 
+/// Move on to the next manoeuvre with nothing carried over from this one.
+private func advanced(_ state: GuidanceState) -> GuidanceState {
+    var next = state
+    next.stepIndex += 1
+    next.stage = .none
+    next.closest = .greatestFiniteMagnitude
+    return next
+}
+
 /// Advances guidance for one position fix.
 ///
 /// Pure, and the whole of the turn-by-turn logic — which is what makes it testable without a bike, a
@@ -530,10 +555,24 @@ public func guidance(
 
     // Taken the turn: it was reached, and is now receding.
     if state.stage == .imminent, distance.rawValue > next.closest + passedByMetres {
-        next.stepIndex += 1
-        next.stage = .none
-        next.closest = .greatestFiniteMagnitude
-        return GuidanceUpdate(announcement: nil, state: next)
+        return GuidanceUpdate(announcement: nil, state: advanced(next))
+    }
+
+    // **Or missed it entirely.** A junction that is never come within 40 m of never reaches
+    // `.imminent`, so the rule above can never fire and guidance sticks on it for the rest of the
+    // ride — which is exactly what happened: sixteen minutes still saying "turn right onto High
+    // Street" while riding somewhere else and arriving at the destination.
+    //
+    // The signal is that a *later* manoeuvre is nearer than the current one. Routes run forwards,
+    // so until the current turn is behind you the next one is further away; once it is closer, the
+    // current one has been passed however that came about. Guarded on the current junction being
+    // well clear, so this cannot fire while manoeuvring around one.
+    if
+        distance.rawValue > passedByMetres * 2,
+        state.stepIndex + 1 < steps.count,
+        let following = steps[state.stepIndex + 1].start,
+        distanceMetres(from: position.pair, to: following.pair) < distance.rawValue {
+        return GuidanceUpdate(announcement: nil, state: advanced(next))
     }
 
     if distance.rawValue <= windows.imminent.rawValue, state.stage < .imminent {

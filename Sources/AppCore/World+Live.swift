@@ -99,7 +99,10 @@ private final class SpeechBox: @unchecked Sendable {
     private func utterance(_ text: String) -> AVSpeechUtterance {
         let u = AVSpeechUtterance(string: text)
         u.voice = SpeechBox.voice
-        u.rate  = 0.65
+        // 0.65 was too fast for the old compact voice and 0.52 too slow for the premium one: a
+        // neural voice keeps its consonants at pace, so it can carry speed that a compact voice
+        // could not. Apple's default is 0.5.
+        u.rate  = 0.57
         return u
     }
 
@@ -161,7 +164,7 @@ private final class SpeechBox: @unchecked Sendable {
         for text in texts {
             let u = AVSpeechUtterance(string: text)
             u.voice = SpeechBox.voice
-            u.rate  = 0.65
+            u.rate  = 0.57
             u.postUtteranceDelay = gap
             synth.speak(u)
         }
@@ -225,9 +228,19 @@ extension World {
         // phone with premium voices installed from one still on super-compact — they sound
         // different and nothing else reports which is in use.
         rideLog.append(
-            "voice \(SpeechBox.voice?.identifier ?? "none") "
+            "voice-chosen \(SpeechBox.voice?.identifier ?? "none") "
                 + "quality=\(SpeechBox.voice?.quality.rawValue ?? 0)"
         )
+        // Every British voice on the device, not just the winner. Ranking cannot improve on a list
+        // of one, so the only question that matters is whether a better one is installed at all —
+        // and that is a fact about this phone, which no amount of code can report from here.
+        for installed in AVSpeechSynthesisVoice.speechVoices()
+            where installed.language.hasPrefix("en") {
+            rideLog.append(
+                "voice-available \(installed.language) q=\(installed.quality.rawValue) "
+                    + "\(installed.identifier)"
+            )
+        }
 
         // Locale captured once — all formatters below are pure closures over this snapshot
         let locale     = Locale.current

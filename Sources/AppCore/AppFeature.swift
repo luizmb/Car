@@ -436,6 +436,14 @@ public enum AppFeature {
             state.guidanceBanner = banner
         }
 
+        // Without this, off-route detection was dead code. The action was dispatched on every fix
+        // and nothing applied it, so the counter recomputed 0 + 1 = 1 for ever and never reached
+        // the three consecutive fixes it needs — 208 of them in one ride, every single one a 1.
+        <> Behavior<AppAction, AppState, World>.reduce { action, state in
+            guard let tracked = AppAction.prism.rerouteTracked.preview(action) else { return }
+            state.reroute = tracked
+        }
+
         // Leaving the route, and getting back onto it.
         //
         // Two responses, and which one depends on how often it has happened. A missed turn is a

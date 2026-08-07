@@ -609,9 +609,12 @@ struct ChainedInstructionTests {
     @Test("Two turns in quick succession are spoken as one instruction")
     func chainsWhenClose() {
         let steps = [step("Turn left onto Tennyson Road", runningOn: 80), step("Turn right onto London Road", runningOn: 500)]
+        // The gap is spoken rather than "immediately". On a residential street with side roads
+        // every thirty metres, "then immediately turn right" names the wrong turning — a rider who
+        // takes the next right is on the wrong road, which is what happened on a real ride.
         #expect(
             chainedInstruction(steps, from: 0)
-                == "Turn left onto Tennyson Road, then immediately turn right onto London Road"
+                == "Turn left onto Tennyson Road, then in 80 metres turn right onto London Road"
         )
     }
 
@@ -630,6 +633,7 @@ struct ChainedInstructionTests {
             step("Turn left onto C", runningOn: 40)
         ]
         let spoken = chainedInstruction(steps, from: 0)
+        #expect(spoken.contains("40 metres"))
         #expect(spoken.contains("onto A"))
         #expect(spoken.contains("onto B"))
         #expect(!spoken.contains("onto C"))
@@ -860,6 +864,51 @@ struct SpliceTests {
     func pastTheEnd() {
         let spliced = splice(rejoin: rejoin, onto: original, fromStep: 9)
         #expect(spliced.steps.map(\.instructions) == ["Turn around"])
+    }
+}
+
+@Suite("A manoeuvre that was missed")
+struct SkippedStepTests {
+    private func metres(_ m: Meters) -> String { "\(Int(m.rawValue)) m" }
+
+    /// Two turns 1.1 km apart, on a line running north.
+    private var route: RouteOption {
+        RouteOption(
+            name: "A", distance: Meters(5_000), travelTime: 600,
+            hasTolls: false, hasMotorways: false,
+            steps: [
+                RouteStep(instructions: "Turn right onto High Street", distance: Meters(1_100), notice: nil,
+                          start: Coordinate(latitude: Latitude(52.01), longitude: Longitude(-0.46))),
+                RouteStep(instructions: "Turn left onto Dunstable Road", distance: Meters(1_100), notice: nil,
+                          start: Coordinate(latitude: Latitude(52.02), longitude: Longitude(-0.46)))
+            ],
+            shape: (0..<40).map { Coordinate(latitude: Latitude(52 + Double($0) / 1_000), longitude: Longitude(-0.46)) }
+        )
+    }
+
+    /// The failure this rule exists for. A junction never come within 40 m of never reaches
+    /// `.imminent`, so the "reached and receding" rule can never fire — guidance stuck on "turn
+    /// right onto High Street" for sixteen minutes, all the way to the destination.
+    @Test("A junction that was never reached does not strand guidance for ever")
+    func skippedStepAdvances() {
+        // Well past the first turn and closer to the second, having never gone near the first.
+        let update = guidance(
+            route: route,
+            at: Coordinate(latitude: Latitude(52.018), longitude: Longitude(-0.46)),
+            speed: MPS(13), state: GuidanceState(), formatDistance: metres
+        )
+        #expect(update.state.stepIndex == 1)
+    }
+
+    /// It must not fire while actually manoeuvring around the junction it is about to take.
+    @Test("Approaching the turn normally does not skip it")
+    func approachingDoesNotSkip() {
+        let update = guidance(
+            route: route,
+            at: Coordinate(latitude: Latitude(52.008), longitude: Longitude(-0.46)),
+            speed: MPS(13), state: GuidanceState(), formatDistance: metres
+        )
+        #expect(update.state.stepIndex == 0)
     }
 }
 

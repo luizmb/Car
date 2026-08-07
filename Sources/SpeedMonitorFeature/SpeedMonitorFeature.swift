@@ -355,6 +355,7 @@ public enum SpeedMonitorFeature {
                 let zones        = context.stateBefore?.averageZones ?? []
                 let activeZone   = context.stateBefore?.activeAverageZone
                 let wasOver      = context.stateBefore?.wasOverAverageLimit ?? false
+                let routeShape   = context.stateBefore?.routeShape ?? []
                 return .produce { ctx in
                     let display = buildDisplay(newLocation, roadInfo: roadInfo, env: ctx.environment)
                     return Effect.just(.locationReady(newLocation, display))
@@ -363,8 +364,8 @@ public enum SpeedMonitorFeature {
                             roadInfo: roadInfo, env: ctx.environment
                         )
                         <> cameraEffects(
-                            at: newLocation, cameras: cameras,
-                            announced: announced, roadInfo: roadInfo, env: ctx.environment
+                            at: newLocation, cameras: cameras, announced: announced,
+                            roadInfo: roadInfo, routeShape: routeShape, env: ctx.environment
                         )
                         <> averageZoneEffects(
                             at: newLocation, zones: zones, cameras: cameras,
@@ -501,13 +502,20 @@ private func cameraEffects(
     cameras: [SpeedCamera],
     announced: Set<Int>,
     roadInfo: RoadInfo?,
+    routeShape: [Coordinate],
     env: SpeedMonitorFeature.Environment
 ) -> Effect<SpeedMonitorFeature.Action> {
     guard !cameras.isEmpty else { return .empty }
 
     let speed = location.speed ?? MPS(0)
     let ahead = camerasAhead(
-        cameras,
+        // While following a route, only cameras actually **on** it count.
+        //
+        // The ±100° cone is deliberately permissive, and at a roundabout that means every camera on
+        // every arm: six were announced in forty-three seconds on one ride, none of them on the road
+        // being ridden, plus a 70 mph camera on a motorway crossing perpendicular. A route is a far
+        // better filter than a bearing, and while navigating there is one to hand.
+        onRoute(cameras, shape: routeShape),
         at: (location.latitude, location.longitude),
         course: location.course,
         speed: speed
@@ -548,7 +556,11 @@ private func ttsUp(
     env: SpeedMonitorFeature.Environment
 ) -> Effect<SpeedMonitorFeature.Action> {
     thresholds.first { prevMph < $0 && newMph >= $0 }
-        .map { $0 |> (env.formatSpeedSpeech >>> env.speak >>> Effect.fireAndForget) }
+        // Queued, not interrupting. `speak` stops whatever is playing, and crossing a threshold on
+        // the way out of a junction is exactly when a road announcement is mid-sentence: "forty
+        // z—" cut off by "eleven" was heard on a real ride. A number half a second late is worth
+        // far more than a limit the rider never hears.
+        .map { $0 |> (env.formatSpeedSpeech >>> env.announceRoad >>> Effect.fireAndForget) }
     ?? .empty
 }
 
