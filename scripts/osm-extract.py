@@ -12,6 +12,7 @@ cameras near here" and "no data for here" are the same empty result, and the app
 tell them apart to know whether to ask the network. Ride to France and every lookup falls through to
 Overpass, which is exactly right.
 """
+import math
 import osmium
 import sqlite3
 import struct
@@ -273,6 +274,65 @@ class Extractor(osmium.SimpleHandler):
             self.flush()
 
 
+def attach_roads(db):
+    """Give every camera the road it stands beside, and where along it.
+
+    Three facts settle whether a camera is about *this* rider: which road it is on, where on that
+    road, and which way it faces. The first two are properties of the map and belong here, computed
+    once, rather than re-derived from geometry on every GPS fix. Straight-line distance cannot do
+    it: six cameras on the M1 slip roads were announced to a rider on the A1081 beside them —
+    thirty metres apart in space, several hundred by road.
+
+    Nearest road by bounding box, then by true perpendicular distance to its segments — the same
+    measure the app uses to decide which road the *rider* is on, so the two answers are comparable.
+    Further than 40 m from anything and the camera is left unattached rather than guessed at.
+    """
+    def unpack(blob):
+        return [(struct.unpack_from("<i", blob, i)[0] / 1e7,
+                 struct.unpack_from("<i", blob, i + 4)[0] / 1e7)
+                for i in range(0, len(blob), 8)]
+
+    def segment_distance(point, a, b):
+        scale = math.cos(math.radians(a[0]))
+        bx, by = (b[1] - a[1]) * 111_320 * scale, (b[0] - a[0]) * 111_320
+        px, py = (point[1] - a[1]) * 111_320 * scale, (point[0] - a[0]) * 111_320
+        length = bx * bx + by * by
+        if length == 0:
+            return math.hypot(px, py), 0.0
+        t = max(0.0, min(1.0, (px * bx + py * by) / length))
+        return math.hypot(px - t * bx, py - t * by), t * math.sqrt(length)
+
+    cameras = db.execute("SELECT id, lat, lon FROM camera").fetchall()
+    updates = []
+    for cid, lat, lon in cameras:
+        pad = 60 / 111_320
+        lonpad = pad / math.cos(math.radians(lat))
+        best = None
+        for rid, name, ref, cls, geom in db.execute(
+            "SELECT r.id, r.name, r.ref, r.class, r.geom FROM road_bbox b JOIN road r ON r.id = b.id"
+            " WHERE b.maxlat >= ? AND b.minlat <= ? AND b.maxlon >= ? AND b.minlon <= ?",
+            (lat - pad, lat + pad, lon - lonpad, lon + lonpad),
+        ):
+            points = unpack(geom)
+            travelled = 0.0
+            for i in range(len(points) - 1):
+                a, b = points[i], points[i + 1]
+                offset, into = segment_distance((lat, lon), a, b)
+                if best is None or offset < best[0]:
+                    best = (offset, rid, name, ref, cls, travelled + into)
+                travelled += math.hypot(
+                    (b[0] - a[0]) * 111_320,
+                    (b[1] - a[1]) * 111_320 * math.cos(math.radians(a[0])))
+        if best and best[0] <= 40:
+            updates.append((best[1], best[2], best[3], best[4], best[5], cid))
+    db.executemany(
+        "UPDATE camera SET road_id=?, road_name=?, road_ref=?, road_class=?, road_offset=?"
+        " WHERE id=?", updates)
+    db.execute("CREATE INDEX camera_road ON camera(road_id)")
+    db.commit()
+    print(f"  cameras attached to a road: {len(updates):,}/{len(cameras):,}", flush=True)
+
+
 def zone_rows(zones, located):
     """Zone rows with their geometry filled in from the located members.
 
@@ -300,8 +360,15 @@ def main(pbf, out):
         CREATE TABLE road (id INTEGER PRIMARY KEY, name TEXT, ref TEXT, class INTEGER, mph INTEGER,
                            geom BLOB);
         CREATE VIRTUAL TABLE road_bbox USING rtree(id, minlat, maxlat, minlon, maxlon);
+        -- A camera belongs to a *road*, and which road it is on is a fact about the map rather
+        -- than about the rider — so it is settled here, once, instead of re-derived from geometry
+        -- on every GPS fix. Six cameras on the M1 slip roads were announced to a rider on the
+        -- A1081 beside them because straight-line distance cannot tell a slip road from the
+        -- carriageway it runs along: 30 m apart in space, several hundred by road.
         CREATE TABLE camera (id INTEGER PRIMARY KEY, kind TEXT, mph INTEGER, direction REAL,
-                             lat REAL, lon REAL);
+                             lat REAL, lon REAL,
+                             road_id INTEGER, road_name TEXT, road_ref TEXT, road_class INTEGER,
+                             road_offset REAL);
         CREATE TABLE zone (id INTEGER PRIMARY KEY, mph INTEGER,
                            start_lat REAL, start_lon REAL, end_lat REAL, end_lon REAL);
         CREATE TABLE zone_device (zone_id INTEGER, lat REAL, lon REAL);
@@ -335,6 +402,9 @@ def main(pbf, out):
          if position is not None])
     db.execute("CREATE INDEX zone_device_zone ON zone_device(zone_id)")
     db.commit()
+
+    print("attaching cameras to roads …", flush=True)
+    attach_roads(db)
 
     print("building spatial index …", flush=True)
     db.executescript("""
