@@ -23,7 +23,10 @@ public struct SpeedMonitorView: View {
             roadName:           viewStore.state.roadName,
             routeShape:         viewStore.state.routeShape.map {
                 CLLocationCoordinate2D(latitude: $0.latitude.rawValue, longitude: $0.longitude.rawValue)
-            }
+            },
+            browsedCamera:      viewStore.state.browsedCamera,
+            onMapBrowsed:       { viewStore.dispatch(.mapBrowsed($0)) },
+            onRecentre:         { viewStore.dispatch(.mapRecentre) }
         )
         .onAppear { viewStore.dispatch(.onAppear) }
     }

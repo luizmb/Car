@@ -269,6 +269,62 @@ struct WiringTests {
         #expect(later.latitude == Latitude(52.14))
     }
 
+    /// The map-browsing law, now store-owned: the gesture is an action, the auto-return is a rule
+    /// over fixes, and none of it lives in a view.
+    @Test("a browsed map is handed back to the bike once demonstrably riding")
+    func browsedMapAutoReturns() async {
+        let store = MainStore.app(world: .stub)
+        let camera = BrowsedCamera(
+            latitude: 52.2, longitude: -0.5, distance: 900, heading: 45, pitch: 0
+        )
+        store.dispatch(.speedMonitor(.mapBrowsed(camera)), source: .init(file: #file, function: #function, line: #line))
+        #expect(store.state.speedMonitor.browsedCamera == camera)
+
+        func fix(_ latitude: Double, mps: Double) -> AppFeature.Action {
+            .speedMonitor(.locationUpdate(LocationUpdate(
+                speed: MPS(mps), speedAccuracy: MPS(1), course: nil,
+                latitude: Latitude(latitude), longitude: Longitude(-0.46),
+                altitude: Meters(30), timestamp: Date(timeIntervalSince1970: 0),
+                horizontalAccuracy: Meters(5)
+            )))
+        }
+
+        // One fast fix is not enough — a single blip must not snatch the map back.
+        store.dispatch(fix(52.130, mps: 10), source: .init(file: #file, function: #function, line: #line))
+        for _ in 0..<10 { await Task.yield() }
+        #expect(store.state.speedMonitor.browsedCamera != nil)
+
+        // The second fast fix is: demonstrably riding, the map is the bike's again.
+        store.dispatch(fix(52.131, mps: 10), source: .init(file: #file, function: #function, line: #line))
+        for _ in 0..<10 { await Task.yield() }
+        #expect(store.state.speedMonitor.browsedCamera == nil)
+    }
+
+    /// Stopped at the kerb, studying the junctions ahead: left alone indefinitely.
+    @Test("a browsed map stays browsed while stationary")
+    func browsedMapStaysWhileStopped() async {
+        let store = MainStore.app(world: .stub)
+        store.dispatch(
+            .speedMonitor(.mapBrowsed(BrowsedCamera(
+                latitude: 52.2, longitude: -0.5, distance: 900, heading: 45, pitch: 0
+            ))),
+            source: .init(file: #file, function: #function, line: #line)
+        )
+        for tick in 0..<5 {
+            store.dispatch(
+                .speedMonitor(.locationUpdate(LocationUpdate(
+                    speed: MPS(0), speedAccuracy: MPS(1), course: nil,
+                    latitude: Latitude(52.13 + Double(tick) * 0.00001), longitude: Longitude(-0.46),
+                    altitude: Meters(30), timestamp: Date(timeIntervalSince1970: 0),
+                    horizontalAccuracy: Meters(5)
+                ))),
+                source: .init(file: #file, function: #function, line: #line)
+            )
+            for _ in 0..<5 { await Task.yield() }
+        }
+        #expect(store.state.speedMonitor.browsedCamera != nil)
+    }
+
     /// Otherwise the planner forgets where you were going while the map carries on drawing the route
     /// there, and the only way to be rid of it is to navigate somewhere else.
     @Test("stopping rubs the route off the map")

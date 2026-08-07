@@ -51,6 +51,7 @@ struct RideReviewView: View {
                 viewStore: viewStore,
                 formatDistance: formatDistance,
                 formatDuration: formatDuration,
+                formatTime: formatTime,
                 formatSpeed: formatSpeed
             )
         }
@@ -67,7 +68,7 @@ struct RideReviewView: View {
     private func row(_ ride: Ride) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack {
-                Text(ride.start.formatted(date: .abbreviated, time: .shortened))
+                Text(formatTime(ride.start))
                     .foregroundStyle(.primary)
                 if !ride.endedCleanly {
                     Image(systemName: "bolt.slash")
@@ -103,6 +104,7 @@ private struct RideDetailView: View {
     let viewStore: ViewStore<RideReviewFeature.State, RideReviewFeature.Action>
     let formatDistance: @Sendable (Meters) -> String
     let formatDuration: @Sendable (TimeInterval) -> String
+    let formatTime: @Sendable (Date) -> String
     let formatSpeed: @Sendable (MPH) -> String
 
     // No view state at all: the scrub, the window and the pinch anchor live in the store, arrive
@@ -166,9 +168,7 @@ private struct RideDetailView: View {
     private var charts: some View {
         List {
             Section("Ride") {
-                LabeledContent("Started", value: ride.start.formatted(
-                    date: .abbreviated, time: .shortened
-                ))
+                LabeledContent("Started", value: formatTime(ride.start))
                 LabeledContent("Duration", value: formatDuration(ride.duration))
                 LabeledContent("Distance", value: formatDistance(Meters(ride.distanceMetres)))
                 if let average = ride.averageMovingMPH {
@@ -350,6 +350,9 @@ private struct RideDetailView: View {
         .chartXScale(domain: ride.start...max(ride.end, ride.start.addingTimeInterval(60)))
         .chartScrollableAxes(.horizontal)
         .chartXVisibleDomain(length: viewStore.state.chartWindowSeconds)
+        .chartScrollPosition(x: viewStore.binding(
+            .state(\.chartAnchorTime), dispatch: .action(\.chartScrolled)
+        ))
         .chartXSelection(value: viewStore.binding(.state(\.scrubTime), dispatch: .action(\.scrub)))
         .frame(height: height)
         .simultaneousGesture(

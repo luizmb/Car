@@ -40,6 +40,10 @@ public enum RideReviewFeature {
         /// The window the current pinch began on, so zoom is relative to it rather than
         /// compounding per frame. `nil` between pinches.
         public var pinchBaseSeconds: Double?
+        /// The instant at the left edge of every chart's viewport. One value, four charts: scroll
+        /// any of them and the rest follow, because comparing speed against gradient needs the
+        /// columns to line up.
+        public var chartAnchorTime: Date = Date(timeIntervalSince1970: 0)
 
         public init() {}
 
@@ -60,6 +64,8 @@ public enum RideReviewFeature {
         /// The pinch's current magnification. The reducer owns the arithmetic, so the view carries
         /// no zoom state of its own.
         case chartPinchChanged(Double)
+        /// A chart's viewport moved; every chart follows.
+        case chartScrolled(Date)
         case chartPinchEnded
         case exportGPX
         case exported(URL?)
@@ -132,6 +138,7 @@ public enum RideReviewFeature {
                     // producing a chart too narrow to hold a single axis label.
                     if let id, let ride = state.rides.first(where: { $0.id == id }) {
                         state.chartWindowSeconds = max(60, ride.duration)
+                        state.chartAnchorTime = ride.start
                     }
                 }
 
@@ -150,6 +157,9 @@ public enum RideReviewFeature {
 
             case .chartPinchEnded:
                 return .reduce { $0.pinchBaseSeconds = nil }
+
+            case let .chartScrolled(anchor):
+                return .reduce { $0.chartAnchorTime = anchor }
 
             case .exportGPX:
                 guard let ride = context.stateBefore?.selectedRide else { return .doNothing }

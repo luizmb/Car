@@ -25,6 +25,27 @@ public enum RoadLimitDisplay: Sendable, Equatable {
     case variable(text: String?, value: Double)
 }
 
+/// Where the rider has dragged the map to — the camera as values, not as a UI handle.
+///
+/// `MapCameraPosition` is a SwiftUI artifact and has no business in a store; these five numbers
+/// are what it actually says. Holding them here is what lets the map's browsing obey the same law
+/// as everything else: the gesture is an event, the store decides, the view renders the answer.
+public struct BrowsedCamera: Sendable, Equatable {
+    public var latitude: Double
+    public var longitude: Double
+    public var distance: Double
+    public var heading: Double
+    public var pitch: Double
+
+    public init(latitude: Double, longitude: Double, distance: Double, heading: Double, pitch: Double) {
+        self.latitude = latitude
+        self.longitude = longitude
+        self.distance = distance
+        self.heading = heading
+        self.pitch = pitch
+    }
+}
+
 // MARK: - Authorization lifecycle
 
 public enum AuthorizationPhase: Sendable, Equatable {
@@ -78,6 +99,13 @@ public enum SpeedMonitorFeature {
         public var routeShape: [Coordinate]
         /// Distance to the next manoeuvre, when following a route.
         public var nextTurn: Meters?
+        /// Where the rider has dragged the map, or `nil` while it follows the bike. Store state,
+        /// not view state: the recentre button, the auto-return rule and the rendering all read
+        /// the same value, and the browse gesture arrives as an action like every other event.
+        public var browsedCamera: BrowsedCamera?
+        /// Fixes since the rider last touched the map. The auto-return clock, in the only ticks
+        /// the domain has: two fixes with the bike moving and the map is the bike's again.
+        public var fixesSinceMapTouch: Int
 
         public struct Display: Sendable, Equatable {
             public var mapLatitude: Double
@@ -119,6 +147,10 @@ public enum SpeedMonitorFeature {
         /// How far to the next manoeuvre, or `nil` when not following one. Drives the camera only —
         /// the instruction itself belongs to the banner.
         case setNextTurn(Meters?)
+        /// The rider dragged, zoomed or rotated the map to here.
+        case mapBrowsed(BrowsedCamera)
+        /// The map goes back to the bike — the recentre button, or the auto-return rule.
+        case mapFollowResumed
         case locationReady(LocationUpdate, State.Display)
         // Road speed
         case roadSpeedChanged(RoadInfo)
@@ -230,6 +262,7 @@ public enum SpeedMonitorFeature {
         /// Carried alongside `Display` rather than inside it, because it changes once per journey
         /// while `Display` is rebuilt on every fix.
         public var routeShape: [Coordinate]
+        public var browsedCamera: BrowsedCamera?
         /// Where the camera looks, how far back it sits and how far it leans.
         ///
         /// Two modes. Idle, it hovers over the rider — fine for "where am I". Following a route it
@@ -243,7 +276,11 @@ public enum SpeedMonitorFeature {
         /// course, which is undefined when stopped and jitters at walking pace.
         public var cameraHeading: Double
 
-        init(display: State.Display, routeShape: [Coordinate], nextTurn: Meters?) {
+        init(
+            display: State.Display, routeShape: [Coordinate], nextTurn: Meters?,
+            browsedCamera: BrowsedCamera?
+        ) {
+            self.browsedCamera  = browsedCamera
             self.routeShape     = routeShape
             let here = Coordinate(
                 latitude: Latitude(display.mapLatitude), longitude: Longitude(display.mapLongitude)
@@ -306,16 +343,27 @@ public enum SpeedMonitorFeature {
 
     public enum ViewAction: Sendable {
         case onAppear
+        case mapBrowsed(BrowsedCamera)
+        case mapRecentre
     }
 
     // MARK: - Mappings (env-aware Readers)
 
     public static let mapState = Reader<Environment, @MainActor @Sendable (State) -> ViewState> { _ in
-        { ViewState(display: $0.display, routeShape: $0.routeShape, nextTurn: $0.nextTurn) }
+        { ViewState(
+            display: $0.display, routeShape: $0.routeShape, nextTurn: $0.nextTurn,
+            browsedCamera: $0.browsedCamera
+        ) }
     }
 
     public static let mapAction = Reader<Environment, @Sendable (ViewAction) -> Action> { _ in
-        const(.start)
+        { viewAction in
+            switch viewAction {
+            case .onAppear: .start
+            case let .mapBrowsed(camera): .mapBrowsed(camera)
+            case .mapRecentre: .mapFollowResumed
+            }
+        }
     }
 
     // MARK: - Lifecycle
@@ -333,7 +381,9 @@ public enum SpeedMonitorFeature {
             wasOverAverageLimit: false,
             display: .empty,
             routeShape: [],
-            nextTurn: nil
+            nextTurn: nil,
+            browsedCamera: nil,
+            fixesSinceMapTouch: 0
         )
     }
 
@@ -384,7 +434,30 @@ public enum SpeedMonitorFeature {
             case let .setNextTurn(distance):
                 return .reduce { $0.nextTurn = distance }
 
+            case let .mapBrowsed(camera):
+                return .reduce {
+                    $0.browsedCamera = camera
+                    $0.fixesSinceMapTouch = 0
+                }
+
+            case .mapFollowResumed:
+                return .reduce {
+                    $0.browsedCamera = nil
+                    $0.fixesSinceMapTouch = 0
+                }
+
             case let .locationUpdate(newLocation):
+                // The auto-return rule: a browsed map is handed back to the bike once the rider is
+                // demonstrably riding again — two fixes after the last touch, above 5 mph. Stopped
+                // at the kerb studying the next junctions they are left alone indefinitely; moving,
+                // a map showing somewhere else is a map showing the wrong thing. Counted in fixes
+                // because a fix a second is the only clock the domain has.
+                let browsing = context.stateBefore?.browsedCamera != nil
+                let touchedFixes = (context.stateBefore?.fixesSinceMapTouch ?? 0) + 1
+                let resume = browsing
+                    && touchedFixes >= 2
+                    && (newLocation.speed?.rawValue ?? 0) > 2.24
+
                 let prevLocation = context.stateBefore?.lastLocation
                 let roadInfo     = context.stateBefore?.currentRoadInfo
                 let cameras      = context.stateBefore?.cameras ?? []
@@ -394,12 +467,19 @@ public enum SpeedMonitorFeature {
                 let wasOver      = context.stateBefore?.wasOverAverageLimit ?? false
                 let routeShape   = context.stateBefore?.routeShape ?? []
                 let roadCameras  = context.stateBefore?.roadCameras
-                return .produce { ctx in
+                return .reduce {
+                    if $0.browsedCamera != nil { $0.fixesSinceMapTouch += 1 }
+                }
+                .produce { ctx in
+                    let handBack: Effect<SpeedMonitorFeature.Action> = resume
+                        ? .just(.mapFollowResumed)
+                        : .empty
                     let display = buildDisplay(
                         previous: prevLocation, to: newLocation,
                         roadInfo: roadInfo, env: ctx.environment
                     )
-                    return Effect.just(.locationReady(newLocation, display))
+                    return handBack
+                        <> Effect.just(.locationReady(newLocation, display))
                         <> audioEffects(
                             prev: prevLocation, new: newLocation,
                             roadInfo: roadInfo, env: ctx.environment
