@@ -187,8 +187,9 @@ class Extractor(osmium.SimpleHandler):
             # duplicated four REALs across 4.3 million rows for no reader — the candidate query
             # joins through the index and never selects them — which is about 140 MB.
             self.db.executemany(
-                "INSERT OR IGNORE INTO road (id, name, ref, class, mph, geom) VALUES (?,?,?,?,?,?)",
-                [(r[0], r[1], r[2], r[3], r[4], r[9]) for r in self.roads])
+                "INSERT OR IGNORE INTO road (id, name, ref, class, mph, geom, lit)"
+                " VALUES (?,?,?,?,?,?,?)",
+                [(r[0], r[1], r[2], r[3], r[4], r[9], r[10]) for r in self.roads])
             self.db.executemany(
                 "INSERT OR IGNORE INTO road_bbox (id, minlat, maxlat, minlon, maxlon)"
                 " VALUES (?,?,?,?,?)",
@@ -265,10 +266,14 @@ class Extractor(osmium.SimpleHandler):
         lons = [c[1] for c in coords]
         self.note(min(lats), min(lons))
         self.note(max(lats), max(lons))
+        # Any lit value except an explicit negative means lamps: yes, 24/7, automatic,
+        # sunset-sunrise all describe lighting that exists.
+        lit_tag = tags.get("lit")
+        lit = None if lit_tag is None else (0 if lit_tag in ("no", "disused") else 1)
         self.roads.append((
             w.id, tags.get("name"), tags.get("ref"), CLASS_ID[highway],
             parse_mph(tags.get("maxspeed")),
-            min(lats), max(lats), min(lons), max(lons), pack(coords),
+            min(lats), max(lats), min(lons), max(lons), pack(coords), lit,
         ))
         if len(self.roads) >= 50_000:
             self.flush()
@@ -357,8 +362,12 @@ def main(pbf, out):
     db = sqlite3.connect(out)
     db.executescript("""
         PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
+        -- lit: 1 has street lamps, 0 tagged as not having them, NULL untagged. In the UK this is
+        -- the law's own discriminator: lamps and no signs make a *restricted road*, 30 mph
+        -- whatever the class - the difference between the A505 through Dunstable and the same
+        -- A505 in the fields, neither of which carries a maxspeed tag.
         CREATE TABLE road (id INTEGER PRIMARY KEY, name TEXT, ref TEXT, class INTEGER, mph INTEGER,
-                           geom BLOB);
+                           geom BLOB, lit INTEGER);
         CREATE VIRTUAL TABLE road_bbox USING rtree(id, minlat, maxlat, minlon, maxlon);
         -- A camera belongs to a *road*, and which road it is on is a fact about the map rather
         -- than about the rider — so it is settled here, once, instead of re-derived from geometry

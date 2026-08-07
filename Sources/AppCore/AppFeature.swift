@@ -542,9 +542,10 @@ public enum AppFeature {
                 deviations: tracked.deviations + 1,
                 isRerouting: false,
                 reroutingFixes: 0,
-                // The storm guard: no new reroute for ~15 s after this one lands, however far off
-                // the new route the rider still is.
-                cooldownFixes: rerouteCooldownFixes
+                // The storm guard, escalating: each successive deviation doubles the quiet
+                // period, so a rider persistently going their own way is rerouted less and less
+                // often rather than narrated at every fifteen seconds.
+                cooldownFixes: rerouteCooldown(afterDeviations: tracked.deviations + 1)
             )
 
             let stepIndex = state.guidance.stepIndex

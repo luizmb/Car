@@ -33,6 +33,10 @@ final class LocalRoadStore: @unchecked Sendable {
     private let bounds: (minLat: Double, maxLat: Double, minLon: Double, maxLon: Double)?
     /// Whether this extract's cameras know which road they stand beside (v4 onwards).
     private let camerasCarryRoads: Bool
+    /// Whether this extract's roads carry the `lit` tag (v5 onwards) — the difference between an
+    /// untagged urban primary resolving to 30 (restricted road: lamps, no signs) and to a
+    /// fictitious "national 60".
+    private let roadsCarryLit: Bool
 
     /// The extract, if one has been put in Documents. Absent is normal and not an error — the app
     /// simply falls through to Overpass, which is what it did before this existed.
@@ -71,6 +75,13 @@ final class LocalRoadStore: @unchecked Sendable {
         }
         sqlite3_finalize(statement)
         camerasCarryRoads = hasRoads
+        var litStatement: OpaquePointer?
+        var hasLit = false
+        if sqlite3_prepare_v2(db, "SELECT lit FROM road LIMIT 1", -1, &litStatement, nil) == SQLITE_OK {
+            hasLit = true
+        }
+        sqlite3_finalize(litStatement)
+        roadsCarryLit = hasLit
     }
 
     deinit { sqlite3_close(handle) }
@@ -318,9 +329,12 @@ final class LocalRoadStore: @unchecked Sendable {
         let lonPad = pad / cos(latitude.rawValue * .pi / 180)
         var candidates: [RoadCandidate] = []
 
+        // The v5 extract carries `lit`; asking an older file for it would be an SQL error, not an
+        // empty column, so the query itself has two shapes.
+        let litColumn = roadsCarryLit ? ", r.lit" : ""
         query(
             """
-            SELECT r.name, r.ref, r.class, r.mph, r.geom
+            SELECT r.name, r.ref, r.class, r.mph, r.geom\(litColumn)
             FROM road_bbox b JOIN road r ON r.id = b.id
             WHERE b.maxlat >= ? AND b.minlat <= ? AND b.maxlon >= ? AND b.minlon <= ?
             LIMIT 200
@@ -337,6 +351,10 @@ final class LocalRoadStore: @unchecked Sendable {
 
             let mph: String? = sqlite3_column_type(statement, 3) == SQLITE_NULL
                 ? nil : "\(sqlite3_column_int(statement, 3)) mph"
+            // Stored as 1 / 0 / NULL; the domain speaks OSM's dialect, so it crosses back as
+            // "yes" / "no" / absent.
+            let lit: String? = !roadsCarryLit || sqlite3_column_type(statement, 5) == SQLITE_NULL
+                ? nil : (sqlite3_column_int(statement, 5) != 0 ? "yes" : "no")
 
             candidates.append(RoadCandidate(
                 tags: OverpassResponse.Element.Tags(
@@ -345,7 +363,8 @@ final class LocalRoadStore: @unchecked Sendable {
                     ref: text(statement, 1),
                     highway: className(Int(sqlite3_column_int(statement, 2))),
                     maxspeedType: nil,
-                    maxspeedVariable: nil
+                    maxspeedVariable: nil,
+                    lit: lit
                 ),
                 points: points
             ))

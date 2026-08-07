@@ -21,7 +21,10 @@ private func makeExtract(
     cameras: [(id: Int, kind: String, mph: Int?, direction: Double?, lat: Double, lon: Double)] = [],
     roadCameras: [(id: Int, mph: Int?, ref: String?, name: String?, roadClass: Int, lat: Double, lon: Double)] = [],
     zones: [(id: Int, mph: Int?, start: (Double, Double)?, end: (Double, Double)?)] = [],
-    stations: [(id: Int, name: String?, brand: String?, lat: Double, lon: Double)] = []
+    stations: [(id: Int, name: String?, brand: String?, lat: Double, lon: Double)] = [],
+    roads: [(id: Int, name: String?, roadClass: Int, mph: Int?, lit: Int?, points: [(Double, Double)])] = [],
+    // The extract already ridden with has no `lit` column; asking it must degrade, not error.
+    roadsHaveLitColumn: Bool = true
 ) throws -> URL {
     let url = FileManager.default.temporaryDirectory
         .appendingPathComponent("extract-\(UUID().uuidString).sqlite")
@@ -41,7 +44,8 @@ private func makeExtract(
 
     run("""
         CREATE TABLE road (id INTEGER PRIMARY KEY, name TEXT, ref TEXT, class INTEGER, mph INTEGER,
-                           minlat REAL, maxlat REAL, minlon REAL, maxlon REAL, geom BLOB);
+                           minlat REAL, maxlat REAL, minlon REAL, maxlon REAL, geom BLOB\(
+                               roadsHaveLitColumn ? ", lit INTEGER" : ""));
         CREATE TABLE camera (id INTEGER PRIMARY KEY, kind TEXT, mph INTEGER, direction REAL,
                              lat REAL, lon REAL,
                              road_id INTEGER, road_name TEXT, road_ref TEXT, road_class INTEGER,
@@ -106,6 +110,28 @@ private func makeExtract(
             INSERT INTO station (id, name, brand, lat, lon)
               VALUES (\(id), \(name), \(brand), \(lat), \(lon));
             INSERT INTO station_bbox VALUES (\(id), \(lat), \(lat), \(lon), \(lon));
+            """)
+    }
+
+    for road in roads {
+        // The geometry blob exactly as the extractor packs it: int32 pairs at 1e-7 degrees.
+        var geom = Data()
+        for (lat, lon) in road.points {
+            withUnsafeBytes(of: Int32(lat * 1e7).littleEndian) { geom.append(contentsOf: $0) }
+            withUnsafeBytes(of: Int32(lon * 1e7).littleEndian) { geom.append(contentsOf: $0) }
+        }
+        let hex = geom.map { String(format: "%02x", $0) }.joined()
+        let name = road.name.map { "'\($0)'" } ?? "NULL"
+        let mph = road.mph.map { "\($0)" } ?? "NULL"
+        let lats = road.points.map(\.0)
+        let lons = road.points.map(\.1)
+        let box = (lats.min() ?? 0, lats.max() ?? 0, lons.min() ?? 0, lons.max() ?? 0)
+        let litColumns = roadsHaveLitColumn
+            ? (", lit", ", \(road.lit.map { "\($0)" } ?? "NULL")") : ("", "")
+        run("""
+            INSERT INTO road (id, name, class, mph, geom\(litColumns.0))
+              VALUES (\(road.id), \(name), \(road.roadClass), \(mph), X'\(hex)'\(litColumns.1));
+            INSERT INTO road_bbox VALUES (\(road.id), \(box.0), \(box.1), \(box.2), \(box.3));
             """)
     }
 
@@ -368,5 +394,46 @@ struct RoadCameraQueryTests {
             on: RoadKey(ref: "A6", name: nil, roadClass: "trunk"),
             near: Latitude(50.95), longitude: Longitude(1.85)
         ) == nil)
+    }
+}
+
+// MARK: - Lit roads from the extract
+
+@Suite("Local extract lit roads")
+struct LocalExtractLitTests {
+    /// A short east–west primary through the fixture's Bedford point.
+    private let path = [(52.13, -0.461), (52.13, -0.459)]
+
+    @Test("An untagged lit primary resolves to 30, built-up")
+    func litPrimary() throws {
+        let store = try #require(LocalRoadStore(url: makeExtract(roads: [
+            (1, "Dunstable Road", 3, nil, 1, path)
+        ])))
+        let info = store.road(at: bedford.0, longitude: bedford.1, course: nil)
+        #expect(info?.limit == .value(MPH(30)))
+        #expect(info?.origin == .builtUpArea)
+    }
+
+    @Test("An untagged primary with no lighting data keeps the rural default")
+    func unknownLighting() throws {
+        let store = try #require(LocalRoadStore(url: makeExtract(roads: [
+            (2, "Dunstable Road", 3, nil, nil, path)
+        ])))
+        let info = store.road(at: bedford.0, longitude: bedford.1, course: nil)
+        #expect(info?.limit == .value(MPH(60)))
+        #expect(info?.origin == .nationalSpeedLimit)
+    }
+
+    /// The v4 extract on the phone right now has no `lit` column. It must keep answering exactly
+    /// as before — a SQL error against a missing column would silently return *no road at all*.
+    @Test("A pre-lit extract still answers roads")
+    func oldSchemaStillWorks() throws {
+        let store = try #require(LocalRoadStore(url: makeExtract(
+            roads: [(3, "Dunstable Road", 3, nil, nil, path)],
+            roadsHaveLitColumn: false
+        )))
+        let info = store.road(at: bedford.0, longitude: bedford.1, course: nil)
+        #expect(info?.limit == .value(MPH(60)))
+        #expect(info?.name == "Dunstable Road")
     }
 }
