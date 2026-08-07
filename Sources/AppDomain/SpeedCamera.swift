@@ -277,7 +277,7 @@ func parseDirection(_ raw: String?) -> Double? {
 // MARK: - Geometry
 
 /// Initial bearing from one point to another, in compass degrees.
-func bearing(from origin: (Latitude, Longitude), to target: (Latitude, Longitude)) -> Double {
+public func bearing(from origin: (Latitude, Longitude), to target: (Latitude, Longitude)) -> Double {
     let point = project(target.0, target.1, origin: origin)
     var degrees = atan2(point.x, point.y) * 180 / .pi
     if degrees < 0 { degrees += 360 }

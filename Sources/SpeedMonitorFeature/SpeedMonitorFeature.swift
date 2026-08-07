@@ -380,7 +380,10 @@ public enum SpeedMonitorFeature {
                 let wasOver      = context.stateBefore?.wasOverAverageLimit ?? false
                 let routeShape   = context.stateBefore?.routeShape ?? []
                 return .produce { ctx in
-                    let display = buildDisplay(newLocation, roadInfo: roadInfo, env: ctx.environment)
+                    let display = buildDisplay(
+                        previous: prevLocation, to: newLocation,
+                        roadInfo: roadInfo, env: ctx.environment
+                    )
                     return Effect.just(.locationReady(newLocation, display))
                         <> audioEffects(
                             prev: prevLocation, new: newLocation,
@@ -413,7 +416,13 @@ public enum SpeedMonitorFeature {
                         let refresh = lastLocation.map { loc in
                             Effect<SpeedMonitorFeature.Action>.just(.locationReady(
                                 loc,
-                                buildDisplay(loc, roadInfo: info, env: ctx.environment)
+                                buildDisplay(
+                                    // The same fix, rebuilt because the road changed rather than
+                                    // because the bike moved — so there is no delta, and
+                                    // `travelHeading` keeps whatever the fix already knows.
+                                    previous: loc, to: loc,
+                                    roadInfo: info, env: ctx.environment
+                                )
                             ))
                         } ?? .empty
                         return announce <> refresh
@@ -626,8 +635,30 @@ private func beeps(
 
 // MARK: - Display builder
 
+/// Which way the bike is actually going.
+///
+/// `CLLocation.course` first, since that is what the receiver computed — but it is `nil` far more
+/// often than expected: eighteen fixes out of a replayed ride reported none, and the old fallback
+/// was zero, which is north. A map that snaps north every few seconds while riding south is worse
+/// than one that lags.
+///
+/// So the fallback is the bearing between the last two positions, which is what course over ground
+/// *is*. Below three metres of movement it keeps the previous answer rather than amplifying the
+/// noise in a stationary fix into a spinning map.
+func travelHeading(from previous: LocationUpdate?, to current: LocationUpdate) -> Double {
+    if let course = current.course { return course.rawValue }
+    guard let previous else { return 0 }
+    let from = (previous.latitude, previous.longitude)
+    let to = (current.latitude, current.longitude)
+    guard distanceMetres(from: from, to: to) >= 3 else {
+        return previous.course?.rawValue ?? 0
+    }
+    return bearing(from: from, to: to)
+}
+
 private func buildDisplay(
-    _ loc: LocationUpdate,
+    previous: LocationUpdate?,
+    to loc: LocationUpdate,
     roadInfo: RoadInfo?,
     env: SpeedMonitorFeature.Environment
 ) -> SpeedMonitorFeature.State.Display {
@@ -669,12 +700,12 @@ private func buildDisplay(
         mapLatitude:        loc.latitude.rawValue,
         mapLongitude:       loc.longitude.rawValue,
         mapDistance:        speedMph.map { max(200, min(1250, $0.rawValue * 50)) } ?? 500,
-        mapHeading:         loc.course?.rawValue ?? 0,
+        mapHeading:         travelHeading(from: previous, to: loc),
         speedText:          speedMph.map(env.formatSpeedSpeech) ?? "0",
         speedValue:         speedMph?.rawValue ?? 0,
         speedAccuracyText:  loc.speedAccuracy.map(toMph >>> env.formatSpeedSpeech).map("±".appending) ?? "",
         directionText:      dirText,
-        courseAngleDegrees: 360 - (loc.course?.rawValue ?? 0),
+        courseAngleDegrees: 360 - travelHeading(from: previous, to: loc),
         coordinatesText:    env.formatCoordinate(loc.latitude, loc.longitude),
         altitudeText:       env.formatAltitude(loc.altitude),
         roadLimitDisplay:   roadLimitDisplay,
