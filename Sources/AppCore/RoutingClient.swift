@@ -202,15 +202,20 @@ private func option(_ route: MKRoute) -> RouteOption {
             // reads as noise at the top of the list.
             .filter { !$0.instructions.isEmpty }
             .map { step -> RouteStep in
-                // The step's own polyline, kept whole. It begins at the manoeuvre the instruction
-                // names and ends at the next one — the structure that makes "has this instruction
-                // been completed" answerable at all: the rider is on this path, or they are not.
+                // The step's own polyline, kept whole. It is the **approach**: it leads up to the
+                // manoeuvre, and the instruction applies at its END. Settled empirically, not from
+                // the docs — the rider measured Newlands Road at 1.1 km and the "Turn right onto
+                // Church Road" step's polyline is 1,022 m (the length of Newlands, not of Church),
+                // and the final "destination is on your left" step carries a 292 m polyline, which
+                // is meaningless as road-after-arrival and exact as the final approach. Reading it
+                // the other way keyed every announcement one junction early.
                 let path = simplified(step.polyline.coordinates, maxPoints: 150)
                 return RouteStep(
                     instructions: step.instructions,
                     distance: Meters(step.distance),
                     notice: step.notice,
-                    start: path.first,
+                    // The manoeuvre point — where the instruction happens.
+                    start: path.last,
                     path: path
                 )
             },

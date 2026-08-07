@@ -230,19 +230,20 @@ struct RouteSimplificationTests {
 struct GuidanceTests {
     private func metres(_ m: Meters) -> String { "\(Int(m.rawValue)) metres" }
 
-    /// A step every ~1.11 km north of 52.0 (0.01° of latitude), each carrying its own path — the
-    /// stretch of road ridden after taking it, exactly as MapKit segments a route.
+    /// A junction every ~1.11 km north of 52.0, each step carrying its **approach** — the polyline
+    /// that leads up to its manoeuvre, exactly as MapKit segments a route.
     private func routeWithSteps(_ count: Int) -> RouteOption {
         let steps = (1...count).map { index in
             let junction = 52.0 + Double(index) / 100
+            let previous = 52.0 + Double(index - 1) / 100
             return RouteStep(
                 instructions: "Turn left onto Road \(index)",
                 distance: Meters(1_000),
                 notice: nil,
                 start: Coordinate(latitude: Latitude(junction), longitude: Longitude(-0.46)),
                 path: [
-                    Coordinate(latitude: Latitude(junction), longitude: Longitude(-0.46)),
-                    Coordinate(latitude: Latitude(junction + 0.01), longitude: Longitude(-0.46))
+                    Coordinate(latitude: Latitude(previous), longitude: Longitude(-0.46)),
+                    Coordinate(latitude: Latitude(junction), longitude: Longitude(-0.46))
                 ]
             )
         }
@@ -616,7 +617,8 @@ struct ChainedInstructionTests {
     /// lane for the second.
     @Test("Two turns in quick succession are spoken as one instruction")
     func chainsWhenClose() {
-        let steps = [step("Turn left onto Tennyson Road", runningOn: 80), step("Turn right onto London Road", runningOn: 500)]
+        // The gap between manoeuvres is the *following* step's approach length.
+        let steps = [step("Turn left onto Tennyson Road", runningOn: 500), step("Turn right onto London Road", runningOn: 80)]
         // The gap is spoken rather than "immediately". On a residential street with side roads
         // every thirty metres, "then immediately turn right" names the wrong turning — a rider who
         // takes the next right is on the wrong road, which is what happened on a real ride.
@@ -628,7 +630,7 @@ struct ChainedInstructionTests {
 
     @Test("A turn with a long run after it stands alone")
     func doesNotChainWhenFar() {
-        let steps = [step("Turn left onto Tennyson Road", runningOn: 800), step("Turn right onto London Road", runningOn: 500)]
+        let steps = [step("Turn left onto Tennyson Road", runningOn: 80), step("Turn right onto London Road", runningOn: 800)]
         #expect(chainedInstruction(steps, from: 0) == "Turn left onto Tennyson Road")
     }
 
@@ -636,7 +638,7 @@ struct ChainedInstructionTests {
     @Test("At most two are chained")
     func chainsAtMostTwo() {
         let steps = [
-            step("Turn left onto A", runningOn: 40),
+            step("Turn left onto A", runningOn: 500),
             step("Turn right onto B", runningOn: 40),
             step("Turn left onto C", runningOn: 40)
         ]
@@ -930,14 +932,15 @@ struct SkippedStepTests {
                 RouteStep(instructions: "Turn right onto High Street", distance: Meters(1_100), notice: nil,
                           start: Coordinate(latitude: Latitude(52.01), longitude: Longitude(-0.46)),
                           path: [
-                              Coordinate(latitude: Latitude(52.01), longitude: Longitude(-0.46)),
-                              Coordinate(latitude: Latitude(52.02), longitude: Longitude(-0.46))
+                              Coordinate(latitude: Latitude(52.00), longitude: Longitude(-0.46)),
+                              Coordinate(latitude: Latitude(52.01), longitude: Longitude(-0.46))
                           ]),
                 RouteStep(instructions: "Turn left onto Dunstable Road", distance: Meters(1_100), notice: nil,
                           start: Coordinate(latitude: Latitude(52.02), longitude: Longitude(-0.46)),
                           path: [
-                              Coordinate(latitude: Latitude(52.02), longitude: Longitude(-0.46)),
-                              Coordinate(latitude: Latitude(52.03), longitude: Longitude(-0.46))
+                              // High Street itself: from the turn onto it up to the Dunstable turn.
+                              Coordinate(latitude: Latitude(52.01), longitude: Longitude(-0.46)),
+                              Coordinate(latitude: Latitude(52.02), longitude: Longitude(-0.46))
                           ])
             ],
             shape: (0..<40).map { Coordinate(latitude: Latitude(52 + Double($0) / 1_000), longitude: Longitude(-0.46)) }
@@ -987,14 +990,10 @@ struct SkippedStepTests {
     /// southbound step's road must not mark it visited.
     @Test("Crossing a future step's road with the opposite vector visits nothing")
     func oppositeVectorDoesNotVisit() {
-        let southbound = RouteStep(
-            instructions: "Turn left onto Return Leg", distance: Meters(1_100), notice: nil,
-            start: Coordinate(latitude: Latitude(52.02), longitude: Longitude(-0.46)),
-            path: [
-                Coordinate(latitude: Latitude(52.02), longitude: Longitude(-0.46)),
-                Coordinate(latitude: Latitude(52.01), longitude: Longitude(-0.46))
-            ]
-        )
+        let southbound = [
+            Coordinate(latitude: Latitude(52.02), longitude: Longitude(-0.46)),
+            Coordinate(latitude: Latitude(52.01), longitude: Longitude(-0.46))
+        ]
         // On that road's geography, 500 m into it, but heading north — the outward leg.
         let here = Coordinate(latitude: Latitude(52.0155), longitude: Longitude(-0.46))
         #expect(!riding(southbound, at: here, heading: Course(0)))
@@ -1134,15 +1133,17 @@ struct ChainedPairTests {
             name: "Markyate St Lane", distance: Meters(5_000), travelTime: 600,
             hasTolls: false, hasMotorways: false,
             steps: [
-                RouteStep(instructions: "Turn right onto Markyate St Lane", distance: Meters(44),
+                RouteStep(instructions: "Turn right onto Markyate St Lane", distance: Meters(500),
                           notice: nil, start: coordinate(52.0100),
-                          path: [coordinate(52.0100), coordinate(52.0104)]),
-                RouteStep(instructions: "Keep left onto Markyate St Lane", distance: Meters(4_000),
+                          path: [coordinate(52.0055), coordinate(52.0100)]),
+                // The 44 m between the fork's manoeuvres is this step's approach — the gap that
+                // makes the pair chain.
+                RouteStep(instructions: "Keep left onto Markyate St Lane", distance: Meters(44),
                           notice: nil, start: coordinate(52.0104),
-                          path: [coordinate(52.0104), coordinate(52.0464)]),
-                RouteStep(instructions: "Turn left onto Hicks Road", distance: Meters(500),
+                          path: [coordinate(52.0100), coordinate(52.0104)]),
+                RouteStep(instructions: "Turn left onto Hicks Road", distance: Meters(4_000),
                           notice: nil, start: coordinate(52.0464),
-                          path: [coordinate(52.0464), coordinate(52.0509)])
+                          path: [coordinate(52.0104), coordinate(52.0464)])
             ],
             shape: (0..<60).map { coordinate(52 + Double($0) / 1_000) }
         )
@@ -1184,11 +1185,15 @@ struct ChainedPairTests {
             name: "Pickford", distance: Meters(4_000), travelTime: 600,
             hasTolls: false, hasMotorways: false,
             steps: [
-                RouteStep(instructions: "Turn left onto Pickford Road", distance: Meters(13),
+                RouteStep(instructions: "Turn left onto Pickford Road", distance: Meters(500),
                           notice: nil, start: coordinate(52.0100),
-                          path: [coordinate(52.0100), coordinate(52.0101)]),
-                RouteStep(instructions: "Bear right onto Markyate St Lane", distance: Meters(3_500),
+                          path: [coordinate(52.0055), coordinate(52.0100)]),
+                // Thirteen metres of Pickford Road: the approach to the bear-right.
+                RouteStep(instructions: "Bear right onto Markyate St Lane", distance: Meters(13),
                           notice: nil, start: coordinate(52.0101),
+                          path: [coordinate(52.0100), coordinate(52.0101)]),
+                RouteStep(instructions: "Turn left onto High Street", distance: Meters(3_500),
+                          notice: nil, start: coordinate(52.0416),
                           path: [coordinate(52.0101), coordinate(52.0416)])
             ],
             shape: (0..<40).map { coordinate(52 + Double($0) / 1_000) }
@@ -1217,7 +1222,7 @@ struct CompoundingAdvanceTests {
                 return RouteStep(
                     instructions: "onto Road \(index)", distance: Meters(1_100),
                     notice: nil, start: at(junction),
-                    path: [at(junction), at(junction + 0.01)]
+                    path: [at(52.0 + Double(index - 1) / 100), at(junction)]
                 )
             },
             shape: (0..<60).map { at(52.0 + Double($0) / 1_000) }
@@ -1255,7 +1260,7 @@ struct CompoundingAdvanceTests {
                 route: route, at: at(52.0 + Double(tick) * 0.00025), speed: MPS(13),
                 state: state, formatDistance: metres
             )
-            if let said = update.announcement {
+            if let said = update.announcement, said != "You have arrived." {
                 let current = route.steps[safe: state.stepIndex]?.instructions
                 let next = route.steps[safe: state.stepIndex + 1]?.instructions
                 #expect(current.map { said.contains($0) } ?? false)
