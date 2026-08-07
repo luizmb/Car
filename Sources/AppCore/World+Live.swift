@@ -246,7 +246,9 @@ extension World {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         // Two files, deliberately. `journey-*` is the record; `debug-*` is the dump.
         let rideLog    = ActionLogBox(directory: documents, prefix: "debug", now: { Date() })
-        let journeyLog = ActionLogBox(directory: documents, prefix: "journey", now: { Date() })
+        // The journey timeline now lives in the app database; only the debug firehose - the
+        // temporary, deleted-weekly dump - remains a text file, because grep is its query engine.
+        let appDatabase = AppDatabase()
         let motionBox = MotionBox()
         let device    = DeviceBox()
         let ticks     = IndicatorAudioBox()
@@ -429,12 +431,12 @@ extension World {
             motion: { makeMotionStream(box: motionBox) },
             motionActivity: { makeActivityStream(box: motionBox) },
             fetchWeather: weatherFetch,
-            loadTripDistance: { makeFileReader(Double.self, filename: TripStore.filename) },
-            saveTripDistance: { makeFileWriter($0, filename: TripStore.filename) },
-            loadFuelLog: { makeFileReader(FuelLog.self, filename: FuelStore.filename) },
-            saveFuelLog: { makeFileWriter($0, filename: FuelStore.filename) },
-            loadMaintenanceLog: { makeFileReader(MaintenanceLog.self, filename: MaintenanceStore.filename) },
-            saveMaintenanceLog: { makeFileWriter($0, filename: MaintenanceStore.filename) },
+            loadTripDistance: { makeDocumentReader(Double.self, name: AppDocument.tripDistance, database: appDatabase) },
+            saveTripDistance: { makeDocumentWriter($0, name: AppDocument.tripDistance, database: appDatabase) },
+            loadFuelLog: { makeDocumentReader(FuelLog.self, name: AppDocument.fuelLog, database: appDatabase) },
+            saveFuelLog: { makeDocumentWriter($0, name: AppDocument.fuelLog, database: appDatabase) },
+            loadMaintenanceLog: { makeDocumentReader(MaintenanceLog.self, name: AppDocument.maintenanceLog, database: appDatabase) },
+            saveMaintenanceLog: { makeDocumentWriter($0, name: AppDocument.maintenanceLog, database: appDatabase) },
             phoneBattery: { device.batteryLevel },
             isLowPowerMode: { ProcessInfo.processInfo.isLowPowerModeEnabled },
             fetchStation: { latitude, longitude in
@@ -483,23 +485,9 @@ extension World {
             },
             loadJourneyRecords: {
                 Publisher.future {
-                    // Every journey file present, oldest first, each line a complete record. A
-                    // truncated last line — the app killed mid-write, which is the normal ending —
-                    // is dropped by the parser rather than failing the day.
-                    let files = ((try? FileManager.default.contentsOfDirectory(
-                        at: documents, includingPropertiesForKeys: nil
-                    )) ?? [])
-                        .filter { $0.lastPathComponent.hasPrefix("journey-")
-                            && $0.pathExtension == "jsonl" }
-                        .sorted { $0.lastPathComponent < $1.lastPathComponent }
-                    return files.flatMap { url -> [JourneyRecord] in
-                        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
-                            return []
-                        }
-                        return JourneyLog.records(
-                            fromLines: text.split(separator: "\n").map(String.init)
-                        )
-                    }
+                    // Every row is exactly the line the JSONL files used to hold, so the parser -
+                    // and its tolerance for one bad record - carries over unchanged.
+                    JourneyLog.records(fromLines: appDatabase?.journeyLines() ?? [])
                 }
             },
             writeShareFile: { name, contents in
@@ -512,7 +500,21 @@ extension World {
                 }
             },
             logJourney: { event in
-                Publisher.future { journeyLog.append(event) }
+                Publisher.future {
+                    // Encoded through the same coder the reader uses, exactly as the file writer
+                    // was - a shape that fails to decode fails here, not in a year.
+                    let date = Date()
+                    guard
+                        let data = try? JourneyLog.encoder.encode(
+                            JourneyRecord(time: date, payload: event)
+                        )
+                    else { return }
+                    appDatabase?.appendJourney(
+                        time: JourneyLog.timestamp(date),
+                        type: Swift.type(of: event).recordType.rawValue,
+                        json: String(decoding: data, as: UTF8.self)
+                    )
+                }
             },
             speak: { text in
                 // Every utterance, with the time it was handed over. Step transitions were already

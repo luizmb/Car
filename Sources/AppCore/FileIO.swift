@@ -19,73 +19,59 @@ public enum FileError: Error, Sendable, Equatable {
 
 // MARK: - Live implementation
 
-/// Reads a JSON document from Documents. Cold — nothing touches the disk until subscribed.
-func makeFileReader<A: Decodable & Sendable>(
+/// Reads a named JSON document from the app database. Cold — nothing is touched until subscribed.
+///
+/// The error vocabulary survives the move from files unchanged, because the distinctions it draws
+/// are about the *data*, not the container: an absent row is the normal first-run state, a row
+/// that fails to decode means the shape changed, and an absent database means the disk failed.
+func makeDocumentReader<A: Decodable & Sendable>(
     _ type: A.Type,
-    filename: String
+    name: String,
+    database: AppDatabase?
 ) -> Publisher<Result<A, FileError>, Never> {
     Publisher { continuation in
-        let url = FileManager.default
-            .urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent(filename)
-
-        guard FileManager.default.fileExists(atPath: url.path) else {
+        guard let database else {
+            continuation.yield(.failure(.unreadable("app database unavailable")))
+            return
+        }
+        guard let json = database.document(name) else {
             continuation.yield(.failure(.notFound))
             return
         }
         do {
-            let data = try Data(contentsOf: url)
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
-            continuation.yield(.success(try decoder.decode(A.self, from: data)))
-        } catch let error as DecodingError {
-            // Distinguished from an IO failure on purpose — a decode error means the file is there
-            // but its shape changed, which is a migration problem, not a missing file.
-            continuation.yield(.failure(.malformed(String(describing: error))))
+            continuation.yield(.success(try decoder.decode(A.self, from: Data(json.utf8))))
         } catch {
-            continuation.yield(.failure(.unreadable(error.localizedDescription)))
+            // A decode error means the row is there but its shape changed — a migration problem,
+            // never to be silently treated as empty.
+            continuation.yield(.failure(.malformed(String(describing: error))))
         }
     }
 }
 
-/// Writes a JSON document to Documents, atomically.
-///
-/// Atomic matters here: a fuel log half-written when the app is killed would take every past fill
-/// with it, and this app spends its life being backgrounded and terminated.
-func makeFileWriter<A: Encodable & Sendable>(
+/// Writes a named JSON document to the app database, replacing it whole — the same semantics the
+/// atomic file write had, for the same reason: a fuel log half-written when the app is killed
+/// would take every past fill with it.
+func makeDocumentWriter<A: Encodable & Sendable>(
     _ value: A,
-    filename: String
+    name: String,
+    database: AppDatabase?
 ) -> Publisher<Result<Void, FileError>, Never> {
     Publisher { continuation in
-        let url = FileManager.default
-            .urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent(filename)
+        guard let database else {
+            continuation.yield(.failure(.unwritable("app database unavailable")))
+            return
+        }
         do {
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try encoder.encode(value).write(to: url, options: .atomic)
+            encoder.outputFormatting = [.sortedKeys]
+            let data = try encoder.encode(value)
+            database.saveDocument(name, json: String(decoding: data, as: UTF8.self))
             continuation.yield(.success(()))
         } catch {
-            continuation.yield(.failure(.unwritable(error.localizedDescription)))
+            continuation.yield(.failure(.unwritable(String(describing: error))))
         }
     }
-}
-
-public enum TripStore {
-    /// Kept in its own tiny file rather than inside the fuel log: it is written every few hundred
-    /// metres, and rewriting the whole fill history at that rate would be both wasteful and a
-    /// needless risk to the only durable record of every refuel.
-    public static let filename = "trip-distance.json"
-}
-
-public enum MaintenanceStore {
-    /// Beside the fuel log, for the same reasons it is plain JSON there.
-    public static let filename = "maintenance-log.json"
-}
-
-public enum FuelStore {
-    /// Plain JSON in Documents, visible in the Files app — so the record can be inspected, backed
-    /// up, or corrected by hand without needing the app at all.
-    public static let filename = "fuel-log.json"
 }
