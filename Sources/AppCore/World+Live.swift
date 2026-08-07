@@ -188,6 +188,36 @@ private let milkyWayBands: [TyrePosition: TyreThresholds] = [
     .rear:  TyreThresholds(minimum: PSI(33), recommended: PSI(36), maximum: PSI(45))
 ]
 
+// MARK: - Simulator rig
+//
+// A simulator has no bike. There is no CHIGEE to say the ignition is on, no Indimate to report the
+// indicators, and the audio route is always "Speaker", so the app decides the helmet intercom is
+// absent — and the cues that matter most are the ones gated on all three.
+//
+// Faked at the `World` boundary rather than by dispatching actions into the store, which was tried
+// and does not work: the real streams emit on subscribe and on every supervision pass, so a
+// pretended state is overwritten within the second. Replacing the stream is the only level at which
+// the lie holds.
+//
+// Compiled out entirely on device.
+
+#if targetEnvironment(simulator)
+/// Emits its values and then parks.
+///
+/// Parking matters: supervision re-subscribes a channel whose stream has finished, so a factory
+/// that emitted and returned would re-emit for ever in a tight loop.
+private func fakeStream<A: Sendable>(_ values: [A]) -> Publisher<A, Never> {
+    Publisher { continuation in
+        for value in values { continuation.yield(value) }
+        try? await Task.sleep(for: .seconds(86_400))
+    }
+}
+
+private let simulatedBluetoothRoute = AudioRoute(outputs: [
+    AudioOutput(portType: "BluetoothA2DPOutput", portName: "PT EDGE (simulated)", uid: "sim-cardo")
+])
+#endif
+
 // MARK: - Live world
 
 extension World {
@@ -345,11 +375,18 @@ extension World {
             },
             bluetoothAuthorization: { CBManager.authorization.domain },
             indimateEvents: {
-                makeIndimateStream(
+                #if targetEnvironment(simulator)
+                return fakeStream([
+                    IndimateEvent.availability(.ready),
+                    IndimateEvent.connected
+                ])
+                #else
+                return makeIndimateStream(
                     central: indimate,
                     knownIdentifier: IndimatePeripheralStore.load,
                     onLearn: IndimatePeripheralStore.save
                 )
+                #endif
             },
             playIndicatorLoop: { side in
                 Publisher.future { DispatchQueue.main.async { ticks.play(side) } }
@@ -364,15 +401,27 @@ extension World {
             formatPressure: { numFmt1dp.format($0.rawValue) + " psi" },
             formatTemperature: { numFmt0dp.format($0.rawValue) + "°C" },
             chigeeEvents: {
-                makeChigeeStream(
+                #if targetEnvironment(simulator)
+                return fakeStream([ChigeeEvent.present])
+                #else
+                return makeChigeeStream(
                     central: chigee,
                     knownIdentifier: ChigeePeripheralStore.load,
                     log: rideLog.append,
                     onLearn: ChigeePeripheralStore.save
                 )
+                #endif
             },
             cardoEvents: { makeCardoStream(central: cardo, log: rideLog.append) },
-            audioRouteChanges: { makeAudioRouteStream() },
+            audioRouteChanges: {
+                #if targetEnvironment(simulator)
+                // The Cardo is judged present by the audio route, so a simulated Bluetooth output
+                // is all it takes for every intercom-gated cue to fire.
+                return fakeStream([simulatedBluetoothRoute])
+                #else
+                return makeAudioRouteStream()
+                #endif
+            },
             barometer: { makeBarometerStream(box: motionBox) },
             motion: { makeMotionStream(box: motionBox) },
             motionActivity: { makeActivityStream(box: motionBox) },
