@@ -427,7 +427,12 @@ public enum AppFeature {
                 $0.guidanceBanner = nil
                 $0.reroute = RerouteState()
             }
-            .produce { _ in Effect.just(.speedMonitor(.setRoute([]))) }
+            .produce { _ in
+                Effect.just(.speedMonitor(.setRoute([])))
+                    // The banner's distance drives the camera's zoom; a stale one would hold the
+                    // map pulled in at a junction that no longer matters.
+                    <> Effect.just(.speedMonitor(.setNextTurn(nil)))
+            }
         }
 
         // Turn-by-turn, per fix.
@@ -454,9 +459,17 @@ public enum AppFeature {
                 let spoken = advanced.announcement.map {
                     ctx.environment.speakQueued($0) |> Effect<AppAction>.fireAndForget
                 } ?? .empty
+                // Arrival ends navigation, not just the talking. "You have arrived" used to leave
+                // the route loaded, so the reroute machinery treated every metre of onward riding
+                // as off-route and recalculated the way *back* — ten minutes of it on a real ride.
+                // Arriving tears the whole thing down exactly as the Stop button does.
+                let finished = advanced.state.arrived
+                    ? Effect.just(AppAction.stopNavigation)
+                    : .empty
                 return Effect.just(.guidanceUpdated(advanced.state, banner))
                     <> Effect.just(.speedMonitor(.setNextTurn(banner?.distance)))
                     <> spoken
+                    <> finished
             }
         }
 

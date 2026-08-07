@@ -350,6 +350,48 @@ struct WiringTests {
         #expect(store.state.speedMonitor.routeShape.isEmpty)
         #expect(store.state.activeRoute == nil)
     }
+
+    /// Reaching the destination must end navigation itself, not only the talking. "You have
+    /// arrived" once left the route loaded — so the reroute machinery read every metre of onward
+    /// riding as off-route and spent ten real minutes recalculating the way back to a destination
+    /// the rider had already left.
+    @Test("arrival tears navigation down like the stop button")
+    func arrivalStopsNavigation() async {
+        let store = MainStore.app(world: .stub)
+        store.dispatch(.navigation(.push(.navigate)), source: .init(file: #file, function: #function, line: #line))
+        let end = Coordinate(latitude: Latitude(52.001), longitude: Longitude(-0.46))
+        store.dispatch(
+            .navigate(.start(RouteOption(
+                name: "A421", distance: Meters(120), travelTime: 30,
+                hasTolls: false, hasMotorways: false,
+                steps: [RouteStep(
+                    instructions: "Arrive at the destination", distance: Meters(120), notice: nil,
+                    start: end,
+                    path: [Coordinate(latitude: Latitude(52), longitude: Longitude(-0.46)), end]
+                )],
+                shape: [Coordinate(latitude: Latitude(52), longitude: Longitude(-0.46)), end]
+            ), "Bedford")),
+            source: .init(file: #file, function: #function, line: #line)
+        )
+        for _ in 0..<10 { await Task.yield() }
+        #expect(store.state.activeRoute != nil)
+
+        // A fix on the doorstep: within arrival reach of the final manoeuvre.
+        store.dispatch(
+            .speedMonitor(.locationUpdate(LocationUpdate(
+                speed: MPS(3), speedAccuracy: MPS(1), course: nil,
+                latitude: end.latitude, longitude: end.longitude,
+                altitude: Meters(30), timestamp: Date(timeIntervalSince1970: 0),
+                horizontalAccuracy: Meters(5)
+            ))),
+            source: .init(file: #file, function: #function, line: #line)
+        )
+        for _ in 0..<20 { await Task.yield() }
+
+        #expect(store.state.activeRoute == nil)
+        #expect(store.state.speedMonitor.routeShape.isEmpty)
+        #expect(store.state.speedMonitor.nextTurn == nil)
+    }
 }
 
 @Suite("Journey rule")
