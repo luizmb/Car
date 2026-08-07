@@ -19,6 +19,22 @@ public struct OverpassResponse: Decodable, Sendable {
                 case maxspeedType = "maxspeed:type"
                 case maxspeedVariable = "maxspeed:variable"
             }
+
+            /// Public so the on-device extract can build candidates without going through JSON.
+            /// The local store answers the same question from a file, and reusing this type means
+            /// selection runs identical code either way rather than a parallel implementation that
+            /// can drift.
+            public init(
+                maxspeed: String?, name: String?, ref: String?, highway: String?,
+                maxspeedType: String? = nil, maxspeedVariable: String? = nil
+            ) {
+                self.maxspeed = maxspeed
+                self.name = name
+                self.ref = ref
+                self.highway = highway
+                self.maxspeedType = maxspeedType
+                self.maxspeedVariable = maxspeedVariable
+            }
         }
         public let tags: Tags?
         /// Way shape, present because the query asks for `geom`. Needed to work out which road you
