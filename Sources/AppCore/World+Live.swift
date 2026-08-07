@@ -1,4 +1,5 @@
 import AVFoundation
+import AudioToolbox
 import UIKit
 import ReactiveConcurrency
 import Core
@@ -374,6 +375,13 @@ extension World {
             },
             announceUnderLimit: {
                 Publisher.future { DispatchQueue.main.async { speech.speak("back") } }
+            },
+            playRerouteTone: {
+                // A system sound rather than an asset: it needs no file, ducks nothing, and cannot
+                // be cut off by speech the way an `AVAudioPlayer` competing for the session can.
+                // 1113 is the short double note iOS uses for "begin recording" — distinctive,
+                // unmistakably not an alert, and about a third of a second.
+                Publisher.future { AudioServicesPlaySystemSound(1113) }
             },
             completeAddress: RoutingClient.completeAddress,
             resolveAddress: RoutingClient.resolve,

@@ -360,6 +360,7 @@ struct RefuelRecordingTests {
             speakSequence: world.speakSequence,
             announceOverLimit: world.announceOverLimit,
             announceUnderLimit: world.announceUnderLimit,
+            playRerouteTone: world.playRerouteTone,
             completeAddress: world.completeAddress,
             resolveAddress: world.resolveAddress,
             routes: world.routes,

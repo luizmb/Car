@@ -562,6 +562,177 @@ func lowercasedFirst(_ text: String) -> String {
     return first.lowercased() + text.dropFirst()
 }
 
+// MARK: - Leaving the route
+
+/// How far the rider is from the line they are supposed to be on.
+///
+/// Measured to the nearest **segment**, not the nearest point: a polyline through open country can
+/// have vertices hundreds of metres apart, and measuring only to vertices would call a rider
+/// perfectly on the road fifty metres off it, halfway between two of them.
+public func distanceToRoute(shape: [Coordinate], from position: Coordinate) -> Double {
+    guard let first = shape.first else { return .greatestFiniteMagnitude }
+    guard shape.count > 1 else { return distanceMetres(from: position.pair, to: first.pair) }
+
+    var best = Double.greatestFiniteMagnitude
+    for index in 0..<(shape.count - 1) {
+        best = min(best, distanceToSegment(position, shape[index], shape[index + 1]))
+    }
+    return best
+}
+
+/// Perpendicular distance to a segment, falling back to the nearer end when the foot of the
+/// perpendicular lies outside it.
+///
+/// Done in metres on a local flat approximation rather than in degrees. A degree of longitude is
+/// two thirds of a degree of latitude at this latitude, so treating them as interchangeable would
+/// make every east–west road look closer than it is.
+func distanceToSegment(_ point: Coordinate, _ a: Coordinate, _ b: Coordinate) -> Double {
+    let scale = cos(a.latitude.rawValue * .pi / 180)
+    let ax = 0.0, ay = 0.0
+    let bx = (b.longitude.rawValue - a.longitude.rawValue) * 111_320 * scale
+    let by = (b.latitude.rawValue - a.latitude.rawValue) * 111_320
+    let px = (point.longitude.rawValue - a.longitude.rawValue) * 111_320 * scale
+    let py = (point.latitude.rawValue - a.latitude.rawValue) * 111_320
+
+    let dx = bx - ax, dy = by - ay
+    let lengthSquared = dx * dx + dy * dy
+    guard lengthSquared > 0 else { return (px * px + py * py).squareRoot() }
+
+    // Clamped, so a point beyond either end measures to that end rather than to the infinite line.
+    let t = max(0, min(1, (px * dx + py * dy) / lengthSquared))
+    let cx = t * dx, cy = t * dy
+    return ((px - cx) * (px - cx) + (py - cy) * (py - cy)).squareRoot()
+}
+
+/// How far off the line counts as off the route.
+///
+/// Wide, and deliberately. A parallel service road, a dual carriageway's other carriageway and a
+/// GPS fix bouncing off a building are all tens of metres, and re-routing a rider who is in fact on
+/// the right road is worse than being slow to notice one who is not.
+public let offRouteMetres: Double = 55
+
+/// How many consecutive fixes off the line before believing it. At roughly one a second, three is
+/// enough to rule out a single bad fix without dawdling.
+public let offRouteFixes: Int = 3
+
+/// What is known about having left the route.
+public struct RerouteState: Sendable, Equatable {
+    /// Consecutive fixes measured off the line. Reset by a single fix back on it.
+    public var offRouteFixCount: Int
+    /// How many times a new route has been needed on this journey. The escalation is built on this:
+    /// one missed turn is a missed turn, and four is a road that is not there any more.
+    public var deviations: Int
+    /// Set while a request is out, so a reroute is not asked for again on every fix while the first
+    /// one is still in flight.
+    public var isRerouting: Bool
+
+    public init(offRouteFixCount: Int = 0, deviations: Int = 0, isRerouting: Bool = false) {
+        self.offRouteFixCount = offRouteFixCount
+        self.deviations = deviations
+        self.isRerouting = isRerouting
+    }
+}
+
+/// What to do about being off the route.
+@Prisms
+public enum RerouteDecision: Sendable, Equatable {
+    case carryOn
+    /// Get back to the route the rider chose, joining it at the next manoeuvre. The default
+    /// response to a missed turn or a wrong exit, and the reason a single mistake does not throw
+    /// away the route they picked and send them somewhere else entirely.
+    case rejoin
+    /// Give up on the original line and route to the destination afresh. Reached only after
+    /// repeated deviations, on the theory that a rider who keeps not taking a turn is being stopped
+    /// from taking it — roadworks, a closure, a no-entry that OSM has not caught up with.
+    case replan
+}
+
+public func rerouteDecision(
+    distanceOff: Double, state: RerouteState, afterDeviations threshold: Int = 3
+) -> RerouteDecision {
+    guard !state.isRerouting else { return .carryOn }
+    guard state.offRouteFixCount >= offRouteFixes else { return .carryOn }
+    return state.deviations >= threshold ? .replan : .rejoin
+}
+
+/// Advances the off-route counter for one fix.
+public func trackingRoute(_ state: RerouteState, distanceOff: Double) -> RerouteState {
+    var next = state
+    next.offRouteFixCount = distanceOff > offRouteMetres ? state.offRouteFixCount + 1 : 0
+    return next
+}
+
+// MARK: - Stitching a way back on
+
+/// The rejoin route, followed by whatever was left of the original.
+///
+/// This is what makes ``RerouteDecision/rejoin`` mean what it says. Routing straight to the final
+/// destination after a missed turn is what sends a rider down a completely different road — Apple
+/// answers "best way there from here", which after one wrong turn is frequently a different route
+/// altogether. Splicing keeps the ride the rider actually chose and treats the mistake as a
+/// detour back onto it.
+///
+/// Distance and travel time add; the exclusions are `true` if either half carries them, since a
+/// spliced route uses a motorway if any part of it does.
+public func splice(
+    rejoin: RouteOption, onto original: RouteOption, fromStep index: Int
+) -> RouteOption {
+    let remainingSteps = index < original.steps.count
+        ? Array(original.steps[index...])
+        : []
+    // The tail of the original's geometry, from the manoeuvre being rejoined at. Falls back to the
+    // whole of it when that manoeuvre has no position, which is the same fallback guidance uses.
+    let joinPoint = remainingSteps.first?.start
+    let tail = joinPoint.map { point in
+        Array(original.shape.drop { distanceMetres(from: $0.pair, to: point.pair) > 25 })
+    } ?? []
+
+    return RouteOption(
+        name: original.name,
+        distance: Meters(rejoin.distance.rawValue + original.distance.rawValue),
+        travelTime: rejoin.travelTime + original.travelTime,
+        hasTolls: rejoin.hasTolls || original.hasTolls,
+        hasMotorways: rejoin.hasMotorways || original.hasMotorways,
+        steps: rejoin.steps + remainingSteps,
+        shape: rejoin.shape + tail
+    )
+}
+
+// MARK: - When the exclusions cannot be kept
+
+/// What to say when a new route has had to break one of the rider's rules.
+///
+/// Spoken, unlike the reroute itself. A reroute is routine and gets a tone; this is a change to the
+/// terms the rider agreed to — they said no motorways, and they are about to be sent down one — and
+/// that is worth words.
+public func exclusionBrokenAnnouncement(
+    original: RoutePreferences, replacement: RoutePreferences
+) -> String? {
+    let motorway = original.avoidMotorways && !replacement.avoidMotorways
+    let toll = original.avoidTolls && !replacement.avoidTolls
+    switch (motorway, toll) {
+    case (true, true): return "No way round from here. New route uses a motorway and tolls."
+    case (true, false): return "No way round from here. New route uses a motorway."
+    case (false, true): return "No way round from here. New route uses a toll."
+    case (false, false): return nil
+    }
+}
+
+/// The exclusions, given up one at a time.
+///
+/// Motorways go first because that is the one most likely to be genuinely unavoidable — a rider
+/// already *on* a motorway cannot be routed off it without using it, and slip roads are motorway.
+/// Tolls are almost always avoidable, so they are surrendered last.
+public func relaxed(_ preferences: RoutePreferences) -> RoutePreferences? {
+    if preferences.avoidMotorways {
+        return RoutePreferences(avoidTolls: preferences.avoidTolls, avoidMotorways: false)
+    }
+    if preferences.avoidTolls {
+        return RoutePreferences(avoidTolls: false, avoidMotorways: false)
+    }
+    return nil
+}
+
 // MARK: - Drawing it
 
 /// The route thinned to something a map can draw once a second.

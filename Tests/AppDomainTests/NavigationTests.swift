@@ -669,6 +669,200 @@ struct ChainedInstructionTests {
     }
 }
 
+@Suite("Leaving the route")
+struct OffRouteTests {
+    /// A line running due north with vertices 111 m apart — sparse, like a route through open
+    /// country, which is where measuring to vertices instead of segments goes wrong.
+    private var line: [Coordinate] {
+        (0..<10).map {
+            Coordinate(latitude: Latitude(52 + Double($0) / 1_000), longitude: Longitude(-0.46))
+        }
+    }
+
+    @Test("On the line is on the line")
+    func onRoute() {
+        let on = Coordinate(latitude: Latitude(52.003), longitude: Longitude(-0.46))
+        #expect(distanceToRoute(shape: line, from: on) < 1)
+    }
+
+    /// The reason this measures to segments rather than vertices: a rider exactly on the road but
+    /// halfway between two sparse points would otherwise measure ~55 m off it and be rerouted.
+    @Test("Halfway between two distant points is still on the line")
+    func betweenVertices() {
+        let between = Coordinate(latitude: Latitude(52.0005), longitude: Longitude(-0.46))
+        #expect(distanceToRoute(shape: line, from: between) < 5)
+    }
+
+    @Test("Genuinely off the line measures as off it")
+    func offRoute() {
+        // ~200 m east.
+        let off = Coordinate(latitude: Latitude(52.003), longitude: Longitude(-0.4571))
+        #expect(distanceToRoute(shape: line, from: off) > offRouteMetres)
+    }
+
+    /// Longitude degrees are two thirds of latitude degrees here, so treating them alike would make
+    /// every east–west road look closer than it is.
+    @Test("East and west are scaled for the latitude")
+    func longitudeScaled() {
+        let eastWest = [
+            Coordinate(latitude: Latitude(52), longitude: Longitude(-0.46)),
+            Coordinate(latitude: Latitude(52), longitude: Longitude(-0.45))
+        ]
+        let north = Coordinate(latitude: Latitude(52.0009), longitude: Longitude(-0.455))
+        #expect(abs(distanceToRoute(shape: eastWest, from: north) - 100) < 10)
+    }
+}
+
+@Suite("What to do about it")
+struct RerouteDecisionTests {
+    @Test("One bad fix is not a wrong turn")
+    func needsSeveralFixes() {
+        var state = RerouteState()
+        state = trackingRoute(state, distanceOff: 200)
+        #expect(rerouteDecision(distanceOff: 200, state: state) == .carryOn)
+    }
+
+    @Test("Consistently off the line means off the route")
+    func triggersAfterEnoughFixes() {
+        var state = RerouteState()
+        for _ in 0..<offRouteFixes { state = trackingRoute(state, distanceOff: 200) }
+        #expect(rerouteDecision(distanceOff: 200, state: state) == .rejoin)
+    }
+
+    @Test("Coming back onto the line resets the count")
+    func resetsWhenBackOn() {
+        var state = RerouteState()
+        state = trackingRoute(state, distanceOff: 200)
+        state = trackingRoute(state, distanceOff: 200)
+        state = trackingRoute(state, distanceOff: 5)
+        #expect(state.offRouteFixCount == 0)
+    }
+
+    /// A missed turn should not throw away the route the rider chose and send them somewhere else.
+    @Test("The first few deviations rejoin the chosen route")
+    func rejoinsFirst() {
+        var state = RerouteState(deviations: 1)
+        for _ in 0..<offRouteFixes { state = trackingRoute(state, distanceOff: 200) }
+        #expect(rerouteDecision(distanceOff: 200, state: state) == .rejoin)
+    }
+
+    /// A rider who keeps not taking the same turn is being stopped from taking it.
+    @Test("Repeated deviations replan instead")
+    func replansEventually() {
+        var state = RerouteState(deviations: 3)
+        for _ in 0..<offRouteFixes { state = trackingRoute(state, distanceOff: 200) }
+        #expect(rerouteDecision(distanceOff: 200, state: state) == .replan)
+    }
+
+    /// Otherwise every fix while a request is in flight would fire another one.
+    @Test("Nothing is asked while a request is already out")
+    func noStampede() {
+        var state = RerouteState(deviations: 1, isRerouting: true)
+        for _ in 0..<offRouteFixes { state = trackingRoute(state, distanceOff: 200) }
+        #expect(rerouteDecision(distanceOff: 200, state: state) == .carryOn)
+    }
+}
+
+@Suite("Giving up an exclusion")
+struct RelaxationTests {
+    /// Motorways go first: a rider already on one cannot be routed off it without using it, and
+    /// slip roads are motorway. Tolls are nearly always avoidable, so they go last.
+    @Test("Motorways are surrendered before tolls")
+    func motorwayFirst() {
+        let both = RoutePreferences(avoidTolls: true, avoidMotorways: true)
+        let once = relaxed(both)
+        #expect(once == RoutePreferences(avoidTolls: true, avoidMotorways: false))
+        #expect(relaxed(once ?? .none) == RoutePreferences(avoidTolls: false, avoidMotorways: false))
+    }
+
+    @Test("With nothing left to give up there is nothing to relax")
+    func nothingLeft() {
+        #expect(relaxed(.none) == nil)
+    }
+
+    /// A reroute gets a tone, not words — but breaking a rule the rider set is a change to the
+    /// terms and does deserve saying.
+    @Test("Breaking a rule is announced, and names the rule")
+    func announcesWhatItBroke() {
+        let chosen = RoutePreferences(avoidTolls: true, avoidMotorways: true)
+        #expect(
+            exclusionBrokenAnnouncement(
+                original: chosen,
+                replacement: RoutePreferences(avoidTolls: true, avoidMotorways: false)
+            ) == "No way round from here. New route uses a motorway."
+        )
+        #expect(
+            exclusionBrokenAnnouncement(
+                original: chosen, replacement: RoutePreferences()
+            ) == "No way round from here. New route uses a motorway and tolls."
+        )
+    }
+
+    @Test("A route that keeps the rules says nothing")
+    func silentWhenKept() {
+        let chosen = RoutePreferences(avoidTolls: true, avoidMotorways: true)
+        #expect(exclusionBrokenAnnouncement(original: chosen, replacement: chosen) == nil)
+    }
+}
+
+@Suite("Stitching a way back on")
+struct SpliceTests {
+    private func coordinate(_ latitude: Double) -> Coordinate {
+        Coordinate(latitude: Latitude(latitude), longitude: Longitude(-0.46))
+    }
+
+    private var original: RouteOption {
+        RouteOption(
+            name: "A421", distance: Meters(3_000), travelTime: 600,
+            hasTolls: false, hasMotorways: false,
+            steps: [
+                RouteStep(instructions: "Turn left onto A", distance: Meters(500), notice: nil, start: coordinate(52.00)),
+                RouteStep(instructions: "Turn right onto B", distance: Meters(500), notice: nil, start: coordinate(52.01)),
+                RouteStep(instructions: "Arrive", distance: Meters(200), notice: nil, start: coordinate(52.02))
+            ],
+            shape: (0..<30).map { coordinate(52.0 + Double($0) / 1_000) }
+        )
+    }
+
+    private var rejoin: RouteOption {
+        RouteOption(
+            name: "detour", distance: Meters(400), travelTime: 90,
+            hasTolls: false, hasMotorways: true, steps: [
+                RouteStep(instructions: "Turn around", distance: Meters(400), notice: nil, start: coordinate(51.99))
+            ],
+            shape: [coordinate(51.99), coordinate(52.005)]
+        )
+    }
+
+    /// The point of rejoining: the rest of the ride is still the one the rider picked.
+    @Test("The remaining original steps follow the way back")
+    func keepsTheRest() {
+        let spliced = splice(rejoin: rejoin, onto: original, fromStep: 1)
+        #expect(spliced.steps.map(\.instructions)
+            == ["Turn around", "Turn right onto B", "Arrive"])
+    }
+
+    @Test("Distance and time add up")
+    func sums() {
+        let spliced = splice(rejoin: rejoin, onto: original, fromStep: 1)
+        #expect(spliced.distance == Meters(3_400))
+        #expect(spliced.travelTime == 690)
+    }
+
+    /// A spliced route uses a motorway if any part of it does — otherwise the badge would say it
+    /// avoids one while the detour back is a slip road.
+    @Test("The exclusions of both halves carry over")
+    func exclusionsCombine() {
+        #expect(splice(rejoin: rejoin, onto: original, fromStep: 1).hasMotorways)
+    }
+
+    @Test("Splicing past the last step keeps just the way back")
+    func pastTheEnd() {
+        let spliced = splice(rejoin: rejoin, onto: original, fromStep: 9)
+        #expect(spliced.steps.map(\.instructions) == ["Turn around"])
+    }
+}
+
 // MARK: - Badges
 
 @Suite("Route labels")

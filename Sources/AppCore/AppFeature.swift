@@ -71,6 +71,10 @@ public enum AppFeature {
         /// What to show for the next manoeuvre. Distinct from the spoken calls, which happen twice
         /// and stop: this is always answering "what am I doing next", counting down.
         public var guidanceBanner: GuidanceBanner?
+        /// The exclusions the rider chose, kept for the whole ride. A reroute has to honour them,
+        /// and has to know which one it had to break when it cannot.
+        public var routePreferences: RoutePreferences = .none
+        public var reroute: RerouteState = RerouteState()
 
         /// Whether a journey is under way, by the two-signal rule. Not derived on demand: the rule
         /// is a *transition*, so the previous phase has to be remembered to know an edge happened.
@@ -129,6 +133,11 @@ public enum AppFeature {
         /// formatter and so happens inside an effect.
         case guidanceUpdated(GuidanceState, GuidanceBanner?)
         case stopNavigation
+        /// Off-route bookkeeping for a fix.
+        case rerouteTracked(RerouteState)
+        /// A replacement route arrived. `nil` means the attempt failed and the old one stands —
+        /// a stale route is still better than none, since it at least points at the destination.
+        case rerouted(RouteOption?, RerouteState)
     }
 
     // MARK: - Environment
@@ -347,11 +356,15 @@ public enum AppFeature {
                 let navigate = AppAction.prism.navigate.preview(action),
                 let (route, destination) = NavigationFeature.Action.prism.start.preview(navigate)
             else { return .doNothing }
+            let preferences = context.stateBefore?.path
+                .compactMap(StackEntry.prism.navigate.preview).last?.preferences ?? .none
             return .reduce {
                 $0.activeRoute = route
                 $0.navigationDestination = destination
                 $0.guidance = GuidanceState()
                 $0.guidanceBanner = nil
+                $0.routePreferences = preferences
+                $0.reroute = RerouteState()
             }
             .produce { ctx in
                 let spoken = destination.map { name in
@@ -381,6 +394,7 @@ public enum AppFeature {
                 $0.navigationDestination = nil
                 $0.guidance = GuidanceState()
                 $0.guidanceBanner = nil
+                $0.reroute = RerouteState()
             }
             .produce { _ in Effect.just(.speedMonitor(.setRoute([]))) }
         }
@@ -420,6 +434,83 @@ public enum AppFeature {
             else { return }
             state.guidance = guidanceState
             state.guidanceBanner = banner
+        }
+
+        // Leaving the route, and getting back onto it.
+        //
+        // Two responses, and which one depends on how often it has happened. A missed turn is a
+        // missed turn: the answer is to rejoin the route the rider chose, because routing straight
+        // to the destination from a wrong road is how a single mistake turns into a completely
+        // different ride. A rider who keeps not taking the same turn is being *stopped* from taking
+        // it — roadworks, a closure — and then the route itself is the problem and is replanned.
+        <> Behavior<AppAction, AppState, World>.handle { action, context in
+            guard
+                let monitorAction = AppAction.prism.speedMonitor.preview(action),
+                let update = SpeedMonitorFeature.Action.prism.locationUpdate.preview(monitorAction),
+                let state = context.stateBefore,
+                let route = state.activeRoute
+            else { return .doNothing }
+
+            let position = Coordinate(latitude: update.latitude, longitude: update.longitude)
+            let distanceOff = distanceToRoute(shape: route.shape, from: position)
+            let tracked = trackingRoute(state.reroute, distanceOff: distanceOff)
+            let decision = rerouteDecision(distanceOff: distanceOff, state: tracked)
+
+            guard decision != .carryOn else {
+                guard tracked != state.reroute else { return .doNothing }
+                return .produce { _ in Effect.just(.rerouteTracked(tracked)) }
+            }
+
+            // `let`, not `var`: these are captured by an effect that runs concurrently, and a
+            // mutable capture is a data race the compiler is right to refuse.
+            let starting = RerouteState(
+                offRouteFixCount: 0,
+                deviations: tracked.deviations + 1,
+                isRerouting: true
+            )
+            let finished = RerouteState(
+                offRouteFixCount: 0,
+                deviations: tracked.deviations + 1,
+                isRerouting: false
+            )
+
+            // Rejoin aims at the next manoeuvre on the original; replan aims at the destination.
+            let stepIndex = state.guidance.stepIndex
+            let steps = route.steps.filter { $0.start != nil }
+            let target: Coordinate? = decision == .rejoin
+                ? (stepIndex < steps.count ? steps[stepIndex].start : route.shape.last)
+                : route.shape.last
+            guard let target else { return .doNothing }
+
+            let preferences = state.routePreferences
+            return .reduce { $0.reroute = starting }
+                .produce { ctx in
+                    // The tone, not a sentence. A reroute is routine and usually follows a turn the
+                    // rider knows they missed; being told about it in words is nagging.
+                    let tone = ctx.environment.playRerouteTone() |> Effect<AppAction>.fireAndForget
+                    return tone <> rerouteRequest(
+                        from: position, to: target,
+                        preferences: preferences, chosen: preferences,
+                        original: route, decision: decision, fromStep: stepIndex,
+                        finished: finished, world: ctx.environment
+                    ).asEffect { $0 }
+                }
+        }
+
+        <> Behavior<AppAction, AppState, World>.handle { action, _ in
+            guard let (route, rerouteState) = AppAction.prism.rerouted.preview(action)
+            else { return .doNothing }
+            return .reduce {
+                $0.reroute = rerouteState
+                guard let route else { return }
+                $0.activeRoute = route
+                // Guidance restarts against the new line: the old step index means nothing on it.
+                $0.guidance = GuidanceState()
+            }
+            .produce { _ in
+                guard let route else { return .empty }
+                return Effect.just(.speedMonitor(.setRoute(simplified(route.shape))))
+            }
         }
             // Draw the chosen route on the root map. The planner is a pushed screen and the map is
             // the root, so neither can see the other — this is the only place that can join them.

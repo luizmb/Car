@@ -49,6 +49,7 @@ public extension World {
             speakSequence: { _, _ in .empty() },
             announceOverLimit: { .empty() },
             announceUnderLimit: { .empty() },
+            playRerouteTone: { .empty() },
             completeAddress: { _, _, _ in .empty() },
             resolveAddress: { _ in .empty() },
             routes: { _, _, _ in .empty() },

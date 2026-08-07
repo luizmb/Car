@@ -107,6 +107,11 @@ public struct World: Sendable {
     public let speakSequence: @Sendable ([String], TimeInterval) -> Publisher<Void, Never>
     public let announceOverLimit: @Sendable () -> Publisher<Void, Never>
     public let announceUnderLimit: @Sendable () -> Publisher<Void, Never>
+    /// The reroute chime. A **sound, not words**: a reroute is routine and happens most often right
+    /// after a missed turn, when the rider already knows they got it wrong and does not need to be
+    /// told. Words are reserved for the case where the new route breaks one of their exclusions,
+    /// which is a change to the terms and does deserve saying.
+    public let playRerouteTone: @Sendable () -> Publisher<Void, Never>
     // Navigation
     /// Addresses and postcodes matching a query, biased toward a position. Addresses only — points
     /// of interest are excluded at the source, because "Tesco" is a hundred places and picking one
