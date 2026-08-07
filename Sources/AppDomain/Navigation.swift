@@ -262,6 +262,39 @@ public func badgeAnchor(_ route: RouteOption, index: Int, of count: Int) -> Coor
     return route.shape[safe: max(0, min(route.shape.count - 1, position))]
 }
 
+/// How far along the route a point is, in metres from its start.
+///
+/// The honest measure of progress, and the only one that survives a bend: straight-line distance to
+/// a manoeuvre says nothing about whether it is ahead or behind, because a route that curves puts
+/// later turns physically nearer than earlier ones.
+///
+/// `nil` when the point is nowhere near the route — being off it is a different question, answered
+/// by ``distanceToRoute(shape:from:)``.
+public func distanceAlongRoute(
+    _ shape: [Coordinate], to point: Coordinate, within: Double = 200
+) -> Double? {
+    guard shape.count > 1 else { return nil }
+    var travelled = 0.0
+    var best: (distance: Double, along: Double)?
+
+    for index in 0..<(shape.count - 1) {
+        guard let a = shape[safe: index], let b = shape[safe: index + 1] else { continue }
+        let offset = distanceToSegment(point, a, b)
+        let segment = distanceMetres(from: a.pair, to: b.pair)
+        if best.map({ offset < $0.distance }) ?? true {
+            // Along the segment as far as the foot of the perpendicular, approximated by how much
+            // nearer the point is to the segment's end than its start. Good to a few metres, which
+            // is far below the thresholds this feeds.
+            let toStart = distanceMetres(from: point.pair, to: a.pair)
+            let into = max(0, min(segment, (toStart * toStart - offset * offset).squareRoot()))
+            best = (offset, travelled + into)
+        }
+        travelled += segment
+    }
+    guard let best, best.distance <= within else { return nil }
+    return best.along
+}
+
 /// A point `metres` away on a bearing.
 ///
 /// Used to aim the map camera *ahead* of the rider rather than at them. Centring on the rider puts
@@ -353,7 +386,12 @@ public func navigationCameraDistance(speed: MPS, nextTurn: Meters?) -> Double {
 /// comfortable twenty seconds at 30 mph and six at 70.
 public func guidanceDistances(speed: MPS) -> (early: Meters, imminent: Meters) {
     let early = min(800, max(200, speed.rawValue * 20))
-    return (Meters(early), Meters(40))
+    // The "now" call scales too. A fixed 40 m is four seconds at walking pace and *two* at 45 mph —
+    // and a fix only arrives each second, so a fast road could pass clean through the window
+    // between two of them and never announce the turn at all. Replayed against a real ride, that is
+    // exactly what happened at High Street.
+    let imminent = min(120, max(40, speed.rawValue * 4))
+    return (Meters(early), Meters(imminent))
 }
 
 /// What has been said about the step being approached.
@@ -417,6 +455,13 @@ public struct GuidanceState: Sendable, Equatable {
 /// metres must not read as having gone through it — and small enough that the next instruction
 /// arrives promptly once actually moving.
 let passedByMetres: Double = 30
+
+/// How far beyond a junction, measured along the route, counts as having missed it.
+///
+/// Much wider than ``passedByMetres``. That one confirms a turn was taken by watching it recede;
+/// this one writes one off as never taken, which is the more destructive conclusion — it advances
+/// with nothing said — so it waits until there is no doubt.
+let missedByMetres: Double = 150
 
 /// How short a run between two manoeuvres counts as "and then immediately".
 ///
@@ -528,7 +573,7 @@ public func guidanceBanner(
 private func advanced(_ state: GuidanceState) -> GuidanceState {
     var next = state
     next.stepIndex += 1
-    next.stage = state.nextAlreadyAnnounced ? .imminent : .none
+    next.stage = .none
     next.closest = .greatestFiniteMagnitude
     next.nextAlreadyAnnounced = false
     return next
@@ -581,28 +626,29 @@ public func guidance(
         return GuidanceUpdate(announcement: nil, state: advanced(next))
     }
 
-    // **Or missed it entirely.** A junction that is never come within 40 m of never reaches
-    // `.imminent`, so the rule above can never fire and guidance sticks on it for the rest of the
-    // ride — which is exactly what happened: sixteen minutes still saying "turn right onto High
-    // Street" while riding somewhere else and arriving at the destination.
-    //
-    // The signal is that a *later* manoeuvre is nearer than the current one. Routes run forwards,
-    // so until the current turn is behind you the next one is further away; once it is closer, the
-    // current one has been passed however that came about. Guarded on the current junction being
-    // well clear, so this cannot fire while manoeuvring around one.
-    if
-        distance.rawValue > passedByMetres * 2,
-        let following = steps[safe: state.stepIndex + 1]?.start,
-        distanceMetres(from: position.pair, to: following.pair) < distance.rawValue {
-        return GuidanceUpdate(announcement: nil, state: advanced(next))
-    }
-
     if distance.rawValue <= windows.imminent.rawValue, state.stage < .imminent {
         next.stage = .imminent
-        next.nextAlreadyAnnounced = chains(steps, from: state.stepIndex)
         return GuidanceUpdate(
             announcement: chainedInstruction(steps, from: state.stepIndex), state: next
         )
+    }
+
+    // **Or missed it entirely.** A junction never come within the "now" window never reaches
+    // `.imminent`, so the rule above can never fire and guidance sticks on it for the rest of the
+    // ride — sixteen minutes still saying "turn right onto High Street" while riding elsewhere.
+    //
+    // Measured **along the route**, not straight line. "Is a later manoeuvre nearer than this one"
+    // was tried and is badly wrong: roads curve, so a turn three kilometres ahead is routinely
+    // closer as the crow flies than the one before it, and replaying a real ride through that rule
+    // skipped three manoeuvres in single seconds without announcing any of them.
+    //
+    // Checked *after* the announcements and with a wide margin, so a junction being passed normally
+    // is announced first and only a genuinely missed one is written off.
+    if
+        let travelled = distanceAlongRoute(route.shape, to: position),
+        let junction = distanceAlongRoute(route.shape, to: start),
+        travelled > junction + missedByMetres {
+        return GuidanceUpdate(announcement: nil, state: advanced(next))
     }
 
     if distance.rawValue <= windows.early.rawValue, state.stage < .early {

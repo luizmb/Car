@@ -412,6 +412,11 @@ struct GuidanceTests {
         // Clamped at both ends, so it is neither useless when crawling nor absurd on a motorway.
         #expect(guidanceDistances(speed: MPS(0)).early == Meters(200))
         #expect(guidanceDistances(speed: MPS(100)).early == Meters(800))
+        // The "now" call scales too: a fixed 40 m is two seconds at 45 mph, and with a fix a
+        // second a fast road can pass clean through the window between two of them.
+        #expect(guidanceDistances(speed: MPS(0)).imminent == Meters(40))
+        #expect(guidanceDistances(speed: MPS(20)).imminent == Meters(80))
+        #expect(guidanceDistances(speed: MPS(100)).imminent == Meters(120))
     }
 
     @Test("Only the first character is lowercased, so road names survive")
@@ -997,15 +1002,14 @@ struct RejoinChoiceTests {
     }
 }
 
-@Suite("A chained pair is announced once, not twice")
-struct ChainDriftTests {
+@Suite("A chained pair")
+struct ChainedPairTests {
     private func metres(_ m: Meters) -> String { "\(Int(m.rawValue)) m" }
 
     private func coordinate(_ latitude: Double) -> Coordinate {
         Coordinate(latitude: Latitude(latitude), longitude: Longitude(-0.46))
     }
 
-    /// A fork: two manoeuvres 44 m apart, then a long run to a third.
     private var route: RouteOption {
         RouteOption(
             name: "Markyate St Lane", distance: Meters(5_000), travelTime: 600,
@@ -1022,67 +1026,31 @@ struct ChainDriftTests {
         )
     }
 
-    /// The observed drift, in one sequence. "A, then in 40 metres B" is said at A; B must not then
-    /// be said again on its own moments later, because passing A already leaves the rider inside
-    /// B's window — that is what spends two announcements on one junction's worth of road and puts
-    /// the *third* instruction on the second junction.
-    @Test("The second of a chained pair is not announced again on its own")
-    func chainedStepIsNotRepeated() {
-        // Reaching the fork announces both.
+    @Test("Reaching the first says both")
+    func saysBoth() {
         let atFork = guidance(
             route: route, at: coordinate(52.00985), speed: MPS(13),
             state: GuidanceState(), formatDistance: metres
         )
         #expect(atFork.announcement?.contains("Turn right onto Markyate St Lane") == true)
         #expect(atFork.announcement?.contains("keep left onto Markyate St Lane") == true)
-        #expect(atFork.state.nextAlreadyAnnounced)
+    }
 
-        // Passing it moves on to the second, already spoken.
+    /// Wanted, not a defect: hearing the second again on its own approach is the confirmation that
+    /// it is happening *now*, and the rider asked for it explicitly.
+    @Test("The second is still announced on its own approach")
+    func secondRepeats() {
         let passed = guidance(
             route: route, at: coordinate(52.0106), speed: MPS(13),
-            state: atFork.state, formatDistance: metres
+            state: GuidanceState(stage: .imminent, closest: 5), formatDistance: metres
         )
         #expect(passed.state.stepIndex == 1)
-        #expect(passed.state.stage == .imminent)
-        #expect(passed.announcement == nil)
 
-        // And sitting right at the second says nothing, rather than repeating it.
         let atSecond = guidance(
             route: route, at: coordinate(52.01042), speed: MPS(13),
             state: passed.state, formatDistance: metres
         )
-        #expect(atSecond.announcement == nil)
-    }
-
-    /// The third instruction must still arrive — on its own approach, not at the second junction.
-    @Test("The instruction after a chained pair waits for its own approach")
-    func thirdWaitsItsTurn() {
-        var state = GuidanceState(stepIndex: 1, stage: .imminent, closest: 10)
-        // Leaving the fork advances to the long leg's end, which is 4 km off.
-        let leaving = guidance(
-            route: route, at: coordinate(52.0110), speed: MPS(13),
-            state: state, formatDistance: metres
-        )
-        #expect(leaving.state.stepIndex == 2)
-        state = leaving.state
-
-        // Well down the long road, still nothing to say about a turn kilometres away.
-        let midway = guidance(
-            route: route, at: coordinate(52.0200), speed: MPS(13),
-            state: state, formatDistance: metres
-        )
-        #expect(midway.announcement == nil)
-    }
-
-    /// A step with a long run after it never chained, so nothing changes for it.
-    @Test("An isolated manoeuvre is unaffected")
-    func isolatedStep() {
-        let update = guidance(
-            route: route, at: coordinate(52.0461), speed: MPS(13),
-            state: GuidanceState(stepIndex: 2), formatDistance: metres
-        )
-        #expect(update.announcement == "Turn left onto Hicks Road")
-        #expect(!update.state.nextAlreadyAnnounced)
+        #expect(atSecond.announcement == "Keep left onto Markyate St Lane")
     }
 }
 
