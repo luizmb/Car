@@ -413,6 +413,80 @@ struct GuidanceBannerTests {
     }
 }
 
+@Suite("Map orientation while navigating")
+struct RouteBearingTests {
+    /// A line running due north.
+    private var north: [Coordinate] {
+        (0..<50).map {
+            Coordinate(latitude: Latitude(52 + Double($0) / 1_000), longitude: Longitude(-0.46))
+        }
+    }
+
+    @Test("The heading follows the route, not the rider")
+    func pointsAlongTheRoute() {
+        let heading = routeBearing(
+            shape: north,
+            from: Coordinate(latitude: Latitude(52.0), longitude: Longitude(-0.46))
+        )
+        #expect(heading != nil)
+        // Due north, give or take the projection.
+        #expect(abs((heading ?? 0) - 0) < 5 || abs((heading ?? 0) - 360) < 5)
+    }
+
+    /// The reason this exists rather than using the GPS course: a rider stopped at the junction they
+    /// are about to turn at has no course at all, and would otherwise watch the map swing around
+    /// them on every jittery fix.
+    @Test("Standing still still gives a heading")
+    func stableWhenStopped() {
+        let first = routeBearing(
+            shape: north,
+            from: Coordinate(latitude: Latitude(52.01), longitude: Longitude(-0.46))
+        )
+        let second = routeBearing(
+            shape: north,
+            from: Coordinate(latitude: Latitude(52.010001), longitude: Longitude(-0.46))
+        )
+        #expect(first != nil)
+        #expect(second != nil)
+        #expect(abs((first ?? 0) - (second ?? 0)) < 1)
+    }
+
+    @Test("At the very end there is nowhere further along to look")
+    func noneAtTheEnd() {
+        #expect(routeBearing(
+            shape: north,
+            from: Coordinate(latitude: Latitude(52.049), longitude: Longitude(-0.46))
+        ) == nil)
+    }
+
+    @Test("A route with one point or none has no direction")
+    func degenerate() {
+        let point = Coordinate(latitude: Latitude(52), longitude: Longitude(-0.46))
+        #expect(routeBearing(shape: [], from: point) == nil)
+        #expect(routeBearing(shape: [point], from: point) == nil)
+    }
+}
+
+@Suite("Aiming the camera")
+struct CameraOffsetTests {
+    /// Centring on the rider wastes half the screen on road already travelled.
+    @Test("A point ahead is genuinely ahead")
+    func offsetNorth() {
+        let here = Coordinate(latitude: Latitude(52), longitude: Longitude(-0.46))
+        let ahead = coordinate(from: here, bearing: 0, metres: 111)
+        #expect(ahead.latitude.rawValue > here.latitude.rawValue)
+        #expect(abs(distanceMetres(from: here.pair, to: ahead.pair) - 111) < 2)
+    }
+
+    @Test("East is east, and scaled for the latitude")
+    func offsetEast() {
+        let here = Coordinate(latitude: Latitude(52), longitude: Longitude(-0.46))
+        let ahead = coordinate(from: here, bearing: 90, metres: 111)
+        #expect(ahead.longitude.rawValue > here.longitude.rawValue)
+        #expect(abs(distanceMetres(from: here.pair, to: ahead.pair) - 111) < 2)
+    }
+}
+
 // MARK: - Badges
 
 @Suite("Route labels")

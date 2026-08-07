@@ -212,9 +212,36 @@ public enum SpeedMonitorFeature {
         /// Carried alongside `Display` rather than inside it, because it changes once per journey
         /// while `Display` is rebuilt on every fix.
         public var routeShape: [Coordinate]
+        /// Where the camera looks, how far back it sits and how far it leans.
+        ///
+        /// Two modes. Idle, it hovers over the rider — fine for "where am I". Following a route it
+        /// drops closer, leans over, and aims at a point ahead so the rider sits low on screen with
+        /// the road they are about to ride filling it, which is the only part that can still be
+        /// acted on.
+        public var cameraCentre: Coordinate
+        public var cameraDistance: Double
+        public var cameraPitch: Double
+        /// Which way is up. Following a route this is the route's own direction rather than the GPS
+        /// course, which is undefined when stopped and jitters at walking pace.
+        public var cameraHeading: Double
 
         init(display: State.Display, routeShape: [Coordinate]) {
             self.routeShape     = routeShape
+            let here = Coordinate(
+                latitude: Latitude(display.mapLatitude), longitude: Longitude(display.mapLongitude)
+            )
+            if routeShape.isEmpty {
+                cameraCentre   = here
+                cameraDistance = display.mapDistance
+                cameraPitch    = 45
+                cameraHeading  = display.mapHeading
+            } else {
+                let along = routeBearing(shape: routeShape, from: here) ?? display.mapHeading
+                cameraCentre   = coordinate(from: here, bearing: along, metres: 110)
+                cameraDistance = 420
+                cameraPitch    = 68
+                cameraHeading  = along
+            }
             mapLatitude         = display.mapLatitude
             mapLongitude        = display.mapLongitude
             mapDistance         = display.mapDistance

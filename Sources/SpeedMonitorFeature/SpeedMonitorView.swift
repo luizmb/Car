@@ -6,10 +6,11 @@ import SwiftUI
 public struct SpeedMonitorView: View {
     public var body: some View {
         SpeedMonitorContent(
-            mapLatitude:        viewStore.state.mapLatitude,
-            mapLongitude:       viewStore.state.mapLongitude,
-            mapDistance:        viewStore.state.mapDistance,
-            mapHeading:         viewStore.state.mapHeading,
+            mapLatitude:        viewStore.state.cameraCentre.latitude.rawValue,
+            mapLongitude:       viewStore.state.cameraCentre.longitude.rawValue,
+            mapDistance:        viewStore.state.cameraDistance,
+            mapHeading:         viewStore.state.cameraHeading,
+            mapPitch:           viewStore.state.cameraPitch,
             speedText:          viewStore.state.speedText,
             speedValue:         viewStore.state.speedValue,
             speedAccuracyText:  viewStore.state.speedAccuracyText,

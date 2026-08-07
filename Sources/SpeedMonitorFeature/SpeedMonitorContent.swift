@@ -7,6 +7,7 @@ public struct SpeedMonitorContent: View {
     public let mapLongitude: Double
     public let mapDistance: Double
     public let mapHeading: Double
+    public let mapPitch: Double
     // Speed
     public let speedText: String
     public let speedValue: Double
@@ -36,9 +37,15 @@ public struct SpeedMonitorContent: View {
                         .padding(.top, 8)
                 }
                 Spacer()
-                footerPanel
             }
         }
+        // The instruments float over the map rather than insetting it.
+        //
+        // The old arrangement was a full-width panel with a material background eating the bottom
+        // quarter of the screen — a third of the map gone to show one number. On a bike the map is
+        // the instrument: it is what tells you which lane and which exit.
+        .overlay(alignment: .bottomTrailing) { speedBubble }
+        .overlay(alignment: .bottom) { positionStrip }
         // **No `ignoresSafeArea` here.** The map has its own, which is what lets it run edge to edge;
         // putting one on the stack pushed everything else out with it — the limit sign behind the
         // Dynamic Island, the footer under the home indicator, and the road-name bubble (attached as
@@ -56,7 +63,7 @@ public struct SpeedMonitorContent: View {
                 centerCoordinate: .init(latitude: mapLatitude, longitude: mapLongitude),
                 distance: mapDistance,
                 heading: mapHeading,
-                pitch: 45
+                pitch: mapPitch
             ))),
             interactionModes: []
         ) {
@@ -140,56 +147,51 @@ public struct SpeedMonitorContent: View {
         }
     }
 
-    // MARK: - Footer panel (bottom)
+    // MARK: - Speed (bottom-right, floating)
 
-    private var footerPanel: some View {
-        VStack(spacing: 0) {
-            // Small info bar: direction · coordinates · altitude
-            HStack(spacing: 8) {
-                Text(directionText)
-                Spacer()
-                Text(coordinatesText)
-                    .monospacedDigit()
-                Spacer()
-                Text(altitudeText)
-            }
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 6)
-
-            Divider().opacity(0.3)
-
-            // Speed dashboard
-            speedDashboard
-                .padding(.top, 12)
-                .padding(.bottom, 28)
-        }
-        .background(.ultraThinMaterial)
-    }
-
-    // MARK: - Speed dashboard (centered)
-
-    private var speedDashboard: some View {
-        VStack(spacing: 2) {
+    /// The number, in a glass bubble in the corner.
+    ///
+    /// Deliberately outside the safe area at the bottom. There is nothing under it to avoid — the
+    /// home indicator is a line, not a control — and on a phone clamped to handlebars the corner is
+    /// the easiest place for an eye to find without hunting.
+    private var speedBubble: some View {
+        VStack(spacing: -2) {
             Text(speedText)
-                .font(.system(size: 90, weight: .black, design: .monospaced))
+                .font(.system(size: 54, weight: .black, design: .rounded))
                 .monospacedDigit()
                 .contentTransition(.numericText(value: speedValue))
                 .animation(.spring(response: 0.22, dampingFraction: 0.82), value: speedValue)
-                .frame(maxWidth: .infinity, alignment: .center)
-
             Text("mph")
-                .font(.system(size: 16, weight: .semibold))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 10)
+        .glassEffect(.regular, in: .rect(cornerRadius: 26))
+        .padding(.trailing, 14)
+        .padding(.bottom, 2)
+    }
 
+    /// Heading, position and altitude, as small as they can usefully be.
+    ///
+    /// These are diagnostics, not instruments — nobody rides by their latitude. They keep their place
+    /// so the data is there when something needs checking, with no background of their own, because
+    /// a bar across the bottom is a bar across the map.
+    private var positionStrip: some View {
+        HStack(spacing: 10) {
+            Text(directionText)
+            Text(coordinatesText).monospacedDigit()
+            Text(altitudeText)
             if !speedAccuracyText.isEmpty {
-                Text(speedAccuracyText)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.tertiary)
-                    .padding(.top, 2)
+                Text(speedAccuracyText).monospacedDigit()
             }
         }
+        .font(.system(size: 10))
+        .foregroundStyle(.secondary)
+        .shadow(color: .black.opacity(0.5), radius: 2)
+        .padding(.bottom, 2)
+        .padding(.leading, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

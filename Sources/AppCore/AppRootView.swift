@@ -46,10 +46,17 @@ public struct AppRootView: View, Routable {
                     VStack(alignment: .leading, spacing: 6) {
                         roadBubble
                         fuelBubble
-                        router.statusBubbles()
+                        // Hidden while following a route. Seven diagnostic pills down the left of
+                        // the screen are a pre-ride check, not something to read at a junction —
+                        // and stacked under the guidance banner they were simply in the way of the
+                        // one thing that has a deadline.
+                        if viewStore.state.activeRoute == nil {
+                            router.statusBubbles()
+                        }
                     }
                     .padding(.leading, 12)
-                    .padding(.top, 6)
+                    .padding(.top, viewStore.state.activeRoute == nil ? 6 : 76)
+                    .animation(.easeInOut(duration: 0.2), value: viewStore.state.activeRoute == nil)
                 }
                 // The next manoeuvre, across the top, only while a route is being followed.
                 //
@@ -142,8 +149,12 @@ public struct AppRootView: View, Routable {
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .glassEffect(.regular, in: .rect(cornerRadius: 16))
-            .padding(.horizontal, 12)
+            // Stops short of the trailing edge so it never covers the speed limit sign, which is
+            // the one thing on this screen that must always be readable.
+            .padding(.leading, 12)
+            .padding(.trailing, 88)
             .padding(.top, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 

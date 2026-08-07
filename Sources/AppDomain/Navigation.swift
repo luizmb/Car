@@ -262,6 +262,64 @@ public func badgeAnchor(_ route: RouteOption, index: Int, of count: Int) -> Coor
     return route.shape[max(0, min(route.shape.count - 1, position))]
 }
 
+/// A point `metres` away on a bearing.
+///
+/// Used to aim the map camera *ahead* of the rider rather than at them. Centring on the rider puts
+/// them in the middle of the screen with half the view showing road already travelled — which is
+/// the one half that cannot matter. Navigation mode centres ahead so the rider sits low and the
+/// road they are about to ride fills the screen.
+public func coordinate(
+    from origin: Coordinate, bearing degrees: Double, metres: Double
+) -> Coordinate {
+    let radians = degrees * .pi / 180
+    let latitude = origin.latitude.rawValue + (metres * cos(radians)) / 111_320
+    let scale = cos(origin.latitude.rawValue * .pi / 180)
+    // At the poles a metre of longitude is unbounded degrees; guard rather than divide by zero.
+    let longitude = abs(scale) < 0.000_001
+        ? origin.longitude.rawValue
+        : origin.longitude.rawValue + (metres * sin(radians)) / (111_320 * scale)
+    return Coordinate(latitude: Latitude(latitude), longitude: Longitude(longitude))
+}
+
+/// Which way the route goes from here.
+///
+/// The map's heading while navigating, and **not** the GPS course. Course is the direction the
+/// receiver last observed movement in: it is undefined when stopped, and jitters badly at walking
+/// pace — so a rider waiting at the junction they are about to turn at would watch the whole map
+/// swing around them. The route does not move, so taking the bearing from here to a point a little
+/// further along it is steady whether the bike is doing seventy or nothing at all.
+///
+/// `nil` when there is no route or nowhere further along it to look, in which case the caller keeps
+/// whatever heading it was using.
+public func routeBearing(
+    shape: [Coordinate], from position: Coordinate, lookahead: Double = 120
+) -> Double? {
+    guard shape.count > 1 else { return nil }
+
+    // The nearest vertex is where we are on the line. Nearest rather than "next unvisited", because
+    // this is recomputed from scratch each fix and carries no memory of progress.
+    var nearest = 0
+    var best = Double.greatestFiniteMagnitude
+    for (index, point) in shape.enumerated() {
+        let distance = distanceMetres(from: position.pair, to: point.pair)
+        if distance < best {
+            best = distance
+            nearest = index
+        }
+    }
+
+    // Walk forward until far enough ahead to give a stable bearing. Too close and every wobble in
+    // the polyline becomes a turn of the map.
+    var travelled = 0.0
+    var index = nearest
+    while index + 1 < shape.count, travelled < lookahead {
+        travelled += distanceMetres(from: shape[index].pair, to: shape[index + 1].pair)
+        index += 1
+    }
+    guard index > nearest else { return nil }
+    return bearing(from: position.pair, to: shape[index].pair)
+}
+
 // MARK: - Following it
 
 /// How far from a manoeuvre each of the two calls is made.
