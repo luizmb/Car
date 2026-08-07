@@ -44,15 +44,10 @@ public enum NavigationFeature {
 
         public var isRouting: Bool = false
         public var outcome: RouteSearchOutcome?
-        /// The one highlighted on the planner's map. Choosing is not yet following.
+        /// The one highlighted on the planner's map. Choosing is not yet following: the route being
+        /// *followed* lives in app state, because a journey outlives the screen that started it —
+        /// this whole feature's state is a stack element and disappears the moment GO pops it.
         public var chosen: RouteOption?
-        /// The one actually being followed, and the guidance position along it.
-        ///
-        /// Separate from `chosen` because they are different commitments: tapping a route to look at
-        /// it must not start talking, and re-routing after a preference change must not swap the
-        /// route under a rider already following one.
-        public var following: RouteOption?
-        public var guidanceState: GuidanceState = GuidanceState()
 
         /// Where the rider is, pushed in from the location stream. Routing needs an origin, and the
         /// bike's own position is the only origin that makes sense.
@@ -92,14 +87,9 @@ public enum NavigationFeature {
         case route
         case routesLoaded(Result<[RouteOption], RouteError>)
         case select(RouteOption)
-        /// Begin following the selected route.
-        case start
-        case stop
-        /// A fix, while following. Drives the turn-by-turn.
-        case advance(Coordinate, MPS)
-        /// The guidance position that followed from a fix. Separate because working it out needs the
-        /// distance formatter, which lives in the environment and is only reachable from an effect.
-        case guidanceAdvanced(GuidanceState)
+        /// Begin following a route. Carries it, because the app-level handler that takes over cannot
+        /// reach into a stack element that is about to be popped.
+        case start(RouteOption, String?)
         case clear
         case setPosition(Latitude, Longitude)
     }
@@ -276,65 +266,17 @@ public enum NavigationFeature {
                 // following it — tapping through the options to compare them must not start talking.
                 return .reduce { $0.chosen = route }
 
+            // Handled at app level: it sets the session going and pops this screen. Nothing to do
+            // here, and deliberately so — a planner that also drove the ride would keep the ride
+            // alive only as long as the planner was on the stack.
             case .start:
-                guard let state = context.stateBefore, let route = state.chosen else {
-                    return .doNothing
-                }
-                let destination = state.destination?.searchText
-                return .reduce {
-                    $0.following = route
-                    $0.guidanceState = GuidanceState()
-                }
-                .produce { ctx in
-                    guard let destination else { return .empty }
-                    return ctx.environment.speak(routeChosenAnnouncement(
-                        route,
-                        to: destination,
-                        formatDistance: ctx.environment.formatDistance,
-                        formatDuration: ctx.environment.formatDuration
-                    )) |> Effect<Action>.fireAndForget
-                }
-
-            case .stop:
-                return .reduce {
-                    $0.following = nil
-                    $0.guidanceState = GuidanceState()
-                }
-                .produce { ctx in
-                    ctx.environment.speak("Navigation stopped.") |> Effect<Action>.fireAndForget
-                }
-
-            case let .advance(position, speed):
-                guard
-                    let state = context.stateBefore,
-                    let route = state.following
-                else { return .doNothing }
-                let current = state.guidanceState
-                return .produce { ctx in
-                    let update = guidance(
-                        route: route,
-                        at: position,
-                        speed: speed,
-                        state: current,
-                        formatDistance: ctx.environment.formatDistance
-                    )
-                    let spoken = update.announcement.map {
-                        ctx.environment.speak($0) |> Effect<Action>.fireAndForget
-                    } ?? .empty
-                    guard update.state != current else { return spoken }
-                    return Effect.just(.guidanceAdvanced(update.state)) <> spoken
-                }
-
-            case let .guidanceAdvanced(guidanceState):
-                return .reduce { $0.guidanceState = guidanceState }
+                return .doNothing
 
             case .clear:
                 return .reduce {
                     $0.destination = nil
                     $0.outcome = nil
                     $0.chosen = nil
-                    $0.following = nil
-                    $0.guidanceState = GuidanceState()
                     $0.query = ""
                     $0.suggestions = []
                 }

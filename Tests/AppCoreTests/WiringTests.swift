@@ -172,16 +172,22 @@ struct WiringTests {
         let shape = (0..<10).map {
             Coordinate(latitude: Latitude(52 + Double($0) / 1_000), longitude: Longitude(-0.46))
         }
+        // `.select` only highlights; `.start` is the commitment, and it is what draws the route on
+        // the home map — the one carrying the speed, the limit sign and the status bubbles.
         store.dispatch(
-            .navigate(.select(RouteOption(
+            .navigate(.start(RouteOption(
                 name: "A421", distance: Meters(1_000), travelTime: 120,
                 hasTolls: false, hasMotorways: false, steps: [], shape: shape
-            ))),
+            ), "Bedford")),
             source: .init(file: #file, function: #function, line: #line)
         )
         for _ in 0..<10 { await Task.yield() }
 
         #expect(store.state.speedMonitor.routeShape == shape)
+        #expect(store.state.activeRoute != nil)
+        // And it puts the rider back on the home map rather than leaving them on a preview of a
+        // route they have already committed to.
+        #expect(store.state.path.isEmpty)
     }
 
     /// A destination chosen before the first fix cannot be routed — the screen says "waiting for a
@@ -234,27 +240,28 @@ struct WiringTests {
 
     /// Otherwise the planner forgets where you were going while the map carries on drawing the route
     /// there, and the only way to be rid of it is to navigate somewhere else.
-    @Test("clearing the destination rubs the route off the map")
+    @Test("stopping rubs the route off the map")
     func clearingRemovesTheRoute() async {
         let store = MainStore.app(world: .stub)
         store.dispatch(.navigation(.push(.navigate)), source: .init(file: #file, function: #function, line: #line))
         store.dispatch(
-            .navigate(.select(RouteOption(
+            .navigate(.start(RouteOption(
                 name: "A421", distance: Meters(1_000), travelTime: 120,
                 hasTolls: false, hasMotorways: false, steps: [],
                 shape: [
                     Coordinate(latitude: Latitude(52), longitude: Longitude(-0.46)),
                     Coordinate(latitude: Latitude(52.1), longitude: Longitude(-0.46))
                 ]
-            ))),
+            ), "Bedford")),
             source: .init(file: #file, function: #function, line: #line)
         )
         for _ in 0..<10 { await Task.yield() }
         #expect(!store.state.speedMonitor.routeShape.isEmpty)
 
-        store.dispatch(.navigate(.clear), source: .init(file: #file, function: #function, line: #line))
+        store.dispatch(.stopNavigation, source: .init(file: #file, function: #function, line: #line))
         for _ in 0..<10 { await Task.yield() }
         #expect(store.state.speedMonitor.routeShape.isEmpty)
+        #expect(store.state.activeRoute == nil)
     }
 }
 

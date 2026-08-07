@@ -125,15 +125,29 @@ public struct RouteOption: Sendable, Equatable, Identifiable {
         self.shape = shape
     }
 
-    /// Distance and time, quantised.
+    /// The road it takes, sampled.
     ///
     /// Two requests are issued per search — one asking for the exclusions, one unconstrained — and
-    /// the same road very often comes back from both. Comparing whole polylines would be exact and
-    /// pointless: the routes are identical to the metre when they are the same route, so 100 m and
-    /// 30 s is enough to recognise a duplicate without ever merging two genuinely different ways
-    /// round.
+    /// the same road comes back from both. Quantised distance and time were tried first and were not
+    /// enough: Apple returns the *same* road from the two requests with figures that differ slightly,
+    /// so a route 150 m apart in two buckets survived as a duplicate and the list showed it twice.
+    ///
+    /// The geometry does not drift that way. Eight points along the line, rounded to about a hundred
+    /// metres, identify the road taken rather than the numbers attached to it — and two genuinely
+    /// different ways round diverge by far more than that somewhere among eight samples.
     var signature: String {
-        "\(Int(distance.rawValue / 100))|\(Int(travelTime / 30))"
+        // A route with no geometry has nothing to identify it by, so it falls back to its figures.
+        // Both of them: distance alone made two different routes of the same length one route.
+        guard shape.count > 1 else {
+            return "\(Int(distance.rawValue / 100))|\(Int(travelTime / 30))"
+        }
+        let samples = 8
+        return (0..<samples).map { index in
+            let position = Int((Double(shape.count - 1) * Double(index) / Double(samples - 1)).rounded())
+            let point = shape[max(0, min(shape.count - 1, position))]
+            return "\(Int(point.latitude.rawValue * 1_000)),\(Int(point.longitude.rawValue * 1_000))"
+        }
+        .joined(separator: "|")
     }
 }
 
@@ -227,8 +241,10 @@ public func acceptableRoutes(
 /// `nil` when there is nothing to distinguish — a middling route needs no label, and inventing one
 /// would make three identical badges.
 public func routeBadge(_ route: RouteOption, among routes: [RouteOption]) -> String? {
-    let fastest = routes.min { $0.travelTime < $1.travelTime }
-    if route.id == fastest?.id { return "Fastest" }
+    // Compared on time rather than identity: identity is the geometry, and asking whether *this*
+    // route is the fastest object is a subtly different question from whether it takes the least
+    // time — which is the one a rider is asking.
+    if route.travelTime == routes.map(\.travelTime).min() { return "Fastest" }
     if !route.hasMotorways, routes.contains(where: \.hasMotorways) { return "Avoids motorways" }
     if !route.hasTolls, routes.contains(where: \.hasTolls) { return "Avoids tolls" }
     return nil
@@ -299,6 +315,40 @@ public struct GuidanceUpdate: Sendable, Equatable {
         self.announcement = announcement
         self.state = state
     }
+}
+
+/// The next manoeuvre, as something to keep on screen.
+///
+/// Distinct from the spoken calls, which happen twice and then stop: a banner is *always* showing
+/// the current answer to "what am I doing next", counting down as the junction approaches. On a bike
+/// that is what replaces glancing at a phone.
+public struct GuidanceBanner: Sendable, Equatable {
+    public let instruction: String
+    /// Already formatted. The root view deliberately holds no `World` — it knows a view store and a
+    /// router and nothing else — so the distance arrives as text rather than as something the view
+    /// would need a formatter to render.
+    public let distanceText: String
+
+    public init(instruction: String, distanceText: String) {
+        self.instruction = instruction
+        self.distanceText = distanceText
+    }
+}
+
+/// What to display for a fix, independent of what has been said about it.
+public func guidanceBanner(
+    route: RouteOption, at position: Coordinate, state: GuidanceState,
+    formatDistance: (Meters) -> String
+) -> GuidanceBanner? {
+    guard !state.arrived else { return nil }
+    let steps = route.steps.filter { $0.start != nil }
+    guard state.stepIndex < steps.count, let start = steps[state.stepIndex].start else {
+        return nil
+    }
+    return GuidanceBanner(
+        instruction: steps[state.stepIndex].instructions,
+        distanceText: formatDistance(Meters(distanceMetres(from: position.pair, to: start.pair)))
+    )
 }
 
 /// Advances guidance for one position fix.

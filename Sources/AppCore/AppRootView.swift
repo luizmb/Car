@@ -51,6 +51,12 @@ public struct AppRootView: View, Routable {
                     .padding(.leading, 12)
                     .padding(.top, 6)
                 }
+                // The next manoeuvre, across the top, only while a route is being followed.
+                //
+                // Top-trailing rather than in the left column: the left column is a stack of
+                // *status* — things that are true — and this is an instruction, which is a
+                // different kind of thing and the only one with a deadline.
+                .overlay(alignment: .top) { guidanceBanner }
                 // The first thing to actually use the navigation machinery — until now every
                 // route enum was uninhabited.
                 .overlay(alignment: .bottomTrailing) {
@@ -105,6 +111,42 @@ public struct AppRootView: View, Routable {
     ///
     /// Shown always, not only when low. Every other bubble reports a device that can be assumed fine
     /// when silent; this one reports a quantity the bike has no instrument for at all — no gauge, no
+    /// The next turn, and how far to it.
+    ///
+    /// Shown continuously rather than only when spoken. The two spoken calls happen and stop; this
+    /// keeps answering "what am I doing next" for the whole approach, which is what replaces
+    /// glancing at a phone on a bike.
+    @ViewBuilder
+    private var guidanceBanner: some View {
+        if let banner = viewStore.state.guidanceBanner {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.triangle.turn.up.right.diamond.fill")
+                    .font(.title3)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(banner.distanceText)
+                        .font(.headline.monospacedDigit())
+                    Text(banner.instruction)
+                        .font(.subheadline)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 8)
+                Button {
+                    viewStore.dispatch(.stopNavigation)
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .glassEffect(.regular, in: .rect(cornerRadius: 16))
+            .padding(.horizontal, 12)
+            .padding(.top, 4)
+        }
+    }
+
     /// low-fuel light — so silence would mean the rider is guessing, which is the state the fuel
     /// feature exists to end.
     @ViewBuilder

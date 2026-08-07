@@ -102,10 +102,45 @@ struct RouteFilteringTests {
 @Suite("What the rider is offered")
 struct RouteOfferingTests {
     /// Two requests are issued per search and they overlap heavily, so the same road arrives twice.
-    @Test("The same route from both requests is offered once")
+    /// Quantised distance and time were tried first and were not enough: Apple returns the same road
+    /// from the constrained and unconstrained requests with figures that differ slightly, so the list
+    /// showed it twice. Identity is the geometry, which does not drift that way.
+    @Test("The same road from both requests is offered once, even with different figures")
     func deduplicates() {
-        let same = route(name: "A421", miles: 12, minutes: 24)
-        #expect(routes(acceptableRoutes([same, same], preferences: .none)).count == 1)
+        let shape = (0..<200).map {
+            Coordinate(latitude: Latitude(52 + Double($0) / 10_000), longitude: Longitude(-0.46))
+        }
+        let a = RouteOption(
+            name: "A421", distance: Meters(19_312), travelTime: 1_440,
+            hasTolls: false, hasMotorways: false, steps: [], shape: shape
+        )
+        // Same road, figures a little different — which is exactly what was slipping through.
+        let b = RouteOption(
+            name: "A421", distance: Meters(19_460), travelTime: 1_475,
+            hasTolls: false, hasMotorways: false, steps: [], shape: shape
+        )
+        #expect(routes(acceptableRoutes([a, b], preferences: .none)).count == 1)
+    }
+
+    /// The counterpart: identity must not be so coarse that two real alternatives collapse into one,
+    /// which would hide the very choice this screen exists to offer.
+    @Test("Two genuinely different ways round are both kept")
+    func distinctShapes() {
+        let north = (0..<200).map {
+            Coordinate(latitude: Latitude(52 + Double($0) / 10_000), longitude: Longitude(-0.46))
+        }
+        let east = (0..<200).map {
+            Coordinate(latitude: Latitude(52), longitude: Longitude(-0.46 + Double($0) / 10_000))
+        }
+        let a = RouteOption(
+            name: "A421", distance: Meters(19_000), travelTime: 1_400,
+            hasTolls: false, hasMotorways: false, steps: [], shape: north
+        )
+        let b = RouteOption(
+            name: "A6", distance: Meters(19_000), travelTime: 1_400,
+            hasTolls: false, hasMotorways: false, steps: [], shape: east
+        )
+        #expect(routes(acceptableRoutes([a, b], preferences: .none)).count == 2)
     }
 
     /// Quantised, not exact: the two requests return byte-identical geometry for the same road, and
@@ -318,6 +353,63 @@ struct GuidanceTests {
     @Test("Only the first character is lowercased, so road names survive")
     func sentenceJoining() {
         #expect(lowercasedFirst("Turn left onto A421") == "turn left onto A421")
+    }
+}
+
+@Suite("The guidance banner")
+struct GuidanceBannerTests {
+    private func metres(_ m: Meters) -> String { "\(Int(m.rawValue)) m" }
+
+    private var route: RouteOption {
+        RouteOption(
+            name: "A421", distance: Meters(2_000), travelTime: 300,
+            hasTolls: false, hasMotorways: false,
+            steps: [
+                RouteStep(
+                    instructions: "Turn left onto Road 1", distance: Meters(1_000), notice: nil,
+                    start: Coordinate(latitude: Latitude(52.01), longitude: Longitude(-0.46))
+                )
+            ],
+            shape: [
+                Coordinate(latitude: Latitude(52.0), longitude: Longitude(-0.46)),
+                Coordinate(latitude: Latitude(52.01), longitude: Longitude(-0.46))
+            ]
+        )
+    }
+
+    /// Shown continuously, unlike the two spoken calls — it is what replaces glancing at a phone.
+    @Test("The banner shows the next turn and counts down")
+    func countsDown() {
+        let far = guidanceBanner(
+            route: route,
+            at: Coordinate(latitude: Latitude(52.0), longitude: Longitude(-0.46)),
+            state: GuidanceState(), formatDistance: metres
+        )
+        let near = guidanceBanner(
+            route: route,
+            at: Coordinate(latitude: Latitude(52.008), longitude: Longitude(-0.46)),
+            state: GuidanceState(), formatDistance: metres
+        )
+        #expect(far?.instruction == "Turn left onto Road 1")
+        #expect(far != nil && near != nil && far != near)
+    }
+
+    @Test("Once arrived there is nothing left to show")
+    func clearedOnArrival() {
+        #expect(guidanceBanner(
+            route: route,
+            at: Coordinate(latitude: Latitude(52.01), longitude: Longitude(-0.46)),
+            state: GuidanceState(arrived: true), formatDistance: metres
+        ) == nil)
+    }
+
+    @Test("Past the last step there is nothing to point at")
+    func pastLastStep() {
+        #expect(guidanceBanner(
+            route: route,
+            at: Coordinate(latitude: Latitude(52.01), longitude: Longitude(-0.46)),
+            state: GuidanceState(stepIndex: 9), formatDistance: metres
+        ) == nil)
     }
 }
 

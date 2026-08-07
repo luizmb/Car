@@ -90,9 +90,12 @@ struct RoutePlannerView: View {
             .ignoresSafeArea(edges: .bottom)
             .sheet(isPresented: .constant(true)) {
                 routeSheet
-                    .presentationDetents([.height(220), .medium, .large])
-                    // The map is the point of this screen, so the sheet must not black it out or
-                    // swallow taps meant for it.
+                    // No `.large`. The map is the point of this screen, and a sheet that can be
+                    // pulled over all of it defeats the comparison it exists to support.
+                    .presentationDetents([.height(260), .medium])
+                    // Scrolling the list must scroll the list, not grow the sheet — which is what
+                    // was swallowing the map as soon as there were more routes than fitted.
+                    .presentationContentInteraction(.scrolls)
                     .presentationBackgroundInteraction(.enabled(upThrough: .medium))
                     .presentationDragIndicator(.visible)
                     // Dismissing would leave a map with no way back to the options.
@@ -210,13 +213,9 @@ struct RoutePlannerView: View {
                     Button("Change") { viewStore.dispatch(.clear) }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    if viewStore.state.following == nil {
-                        Button("Go") { viewStore.dispatch(.start) }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(viewStore.state.chosen == nil)
-                    } else {
-                        Button("Stop", role: .destructive) { viewStore.dispatch(.stop) }
-                    }
+                    // Every row carries its own GO, so there is nothing left for a toolbar button
+                    // to do that is not already one tap closer to the route it applies to.
+                    EmptyView()
                 }
             }
         }
@@ -248,7 +247,6 @@ struct RoutePlannerView: View {
     @ViewBuilder
     private func routeRow(_ route: RouteOption) -> some View {
         let isChosen = viewStore.state.chosen?.id == route.id
-        let isFollowing = viewStore.state.following?.id == route.id
         HStack(alignment: .center) {
             Button {
                 viewStore.dispatch(.select(route))
@@ -273,14 +271,12 @@ struct RoutePlannerView: View {
             // gesture when you already know which one you want, and a rider in gloves should not
             // have to tap twice in two different places.
             Button {
-                viewStore.dispatch(.select(route))
-                viewStore.dispatch(.start)
+                viewStore.dispatch(.start(route, viewStore.state.destination?.title))
             } label: {
-                Text(isFollowing ? "Going" : "GO").font(.headline)
+                Text("GO").font(.headline)
             }
             .buttonStyle(.borderedProminent)
-            .tint(isFollowing ? .gray : .green)
-            .disabled(isFollowing)
+            .tint(.green)
         }
     }
 
