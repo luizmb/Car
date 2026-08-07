@@ -1,4 +1,5 @@
 import AppDomain
+import Charts
 import SwiftRex
 import SwiftRexArchitecture
 import SwiftRexSwiftUI
@@ -30,6 +31,8 @@ struct FuelView: View {
             case .reserve:
                 reserveTab
                 reserveHistory
+            case .stats:
+                statsTab
             }
         }
         .navigationTitle("Fuel")
@@ -197,6 +200,115 @@ struct FuelView: View {
                     )
                     .font(.caption.monospacedDigit())
                 }
+            }
+        }
+    }
+}
+
+// MARK: - Consumption history
+
+private extension FuelView {
+    /// Consumption leg by leg — the reason the other two tabs collect what they collect.
+    ///
+    /// A leg closes where consumption becomes computable: a brim fill or a reserve switch. The
+    /// average drawn through them is total distance over total litres, weighted by distance, so a
+    /// short town hop cannot drag the baseline the way a mean-of-ratios would let it.
+    @ViewBuilder
+    var statsTab: some View {
+        let legs = viewStore.state.log.consumptionLegs(spec: .vt400)
+        let average = averageKilometresPerLitre(legs)
+
+        Section {
+            Picker("", selection: viewStore.binding(
+                .state(\.consumptionDisplay), dispatch: .action(\.setConsumptionDisplay)
+            )) {
+                ForEach(ConsumptionDisplay.allCases, id: \.self) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .listRowBackground(Color.clear)
+        }
+
+        if legs.isEmpty {
+            Section {
+                Label(
+                    "Consumption needs two brim fills, or a reserve switch. Keep filling to the brim.",
+                    systemImage: "fuelpump"
+                )
+                .foregroundStyle(.secondary)
+                .font(.callout)
+            }
+        } else {
+            switch viewStore.state.consumptionDisplay {
+            case .chart: consumptionChart(legs, average: average)
+            case .table: consumptionTable(legs, average: average)
+            }
+        }
+    }
+
+    @ViewBuilder
+    func consumptionChart(_ legs: [ConsumptionLeg], average: Double?) -> some View {
+        Section("mpg per leg") {
+            Chart {
+                ForEach(legs) { leg in
+                    LineMark(
+                        x: .value("Date", leg.date),
+                        y: .value("mpg", leg.milesPerGallon)
+                    )
+                    .interpolationMethod(.monotone)
+                    PointMark(
+                        x: .value("Date", leg.date),
+                        y: .value("mpg", leg.milesPerGallon)
+                    )
+                    // A reserve-ended leg is the better calibration point — pinned to the tank's
+                    // actual bottom rather than a brim judged by eye — and worth distinguishing.
+                    .foregroundStyle(leg.endedBy == .reserve ? Color.orange : Color.blue)
+                }
+                if let average {
+                    let mpg = average * 4.546_09 / 1.609_344
+                    RuleMark(y: .value("Average", mpg))
+                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                        .foregroundStyle(.secondary)
+                        .annotation(position: .top, alignment: .trailing) {
+                            Text("avg \(String(format: "%.0f", mpg)) mpg")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                }
+            }
+            .frame(height: 200)
+        }
+    }
+
+    @ViewBuilder
+    func consumptionTable(_ legs: [ConsumptionLeg], average: Double?) -> some View {
+        Section {
+            // Newest first: the leg you just closed is the one you came to check.
+            ForEach(legs.reversed()) { leg in
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(leg.date.formatted(date: .abbreviated, time: .omitted))
+                        Text(
+                            "\(String(format: "%.0f", leg.kilometres)) km · "
+                                + "\(String(format: "%.1f", leg.litres)) L · "
+                                + (leg.endedBy == .reserve ? "to reserve" : "brim to brim")
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text("\(String(format: "%.0f", leg.milesPerGallon)) mpg")
+                        .font(.body.monospacedDigit())
+                        .foregroundStyle(leg.endedBy == .reserve ? .orange : .primary)
+                }
+            }
+        } header: {
+            Text("Legs · \(legs.count)")
+        } footer: {
+            if let average {
+                Text(String(
+                    format: "Average %.0f mpg · %.1f km/L · %.1f L/100km — weighted by distance.",
+                    average * 4.546_09 / 1.609_344, average, 100 / average
+                ))
             }
         }
     }
