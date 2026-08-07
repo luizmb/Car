@@ -87,13 +87,13 @@ public struct RouteStep: Sendable, Equatable {
     /// This is what makes guidance possible at all: an instruction without a position can be
     /// listed but never spoken at the right moment.
     public let start: Coordinate?
-    /// The step's own stretch of road, exactly as MapKit segments it.
+    /// The step's approach, exactly as MapKit segments it.
     ///
-    /// **This is the structure the first guidance engine threw away.** A step's polyline begins at
-    /// the manoeuvre its instruction names and ends at the next one — "Turn right onto Tennyson
-    /// Road" with a 65 m polyline *is* the 65 m of Tennyson Road you ride after turning. Which
-    /// means MapKit already answers the question every distance heuristic kept getting wrong:
-    /// an instruction is completed exactly when the rider's position lies on this path.
+    /// **The polyline leads up to the manoeuvre; the instruction applies at its end.** Read the
+    /// other way — as the road ridden after the turn — every announcement keys one junction early,
+    /// which a side-by-side ride against Apple Maps showed as a consistent off-by-one, down to
+    /// "you have arrived" firing at Apple's final turn call. So: the rider is *approaching* this
+    /// step's manoeuvre while on this path, and has *completed* it when riding the next step's.
     public let path: [Coordinate]
 
     public init(
@@ -519,13 +519,13 @@ public func chainedInstruction(
 ) -> String {
     guard let step = steps[safe: index] else { return "" }
     let instruction = step.instructions
-    // The step's own length *is* the gap to the next manoeuvre: a step runs from one turn to the
-    // next, so no geometry is needed to measure it.
+    // The gap between this manoeuvre and the next is the *next* step's approach length — its
+    // polyline runs from this junction to that one, so no geometry is needed to measure it.
     guard
-        step.distance.rawValue <= within,
-        let following = steps[safe: index + 1]
+        let following = steps[safe: index + 1],
+        following.distance.rawValue <= within
     else { return instruction }
-    let gap = formatGap(step.distance)
+    let gap = formatGap(following.distance)
     return "\(instruction), then in \(gap) \(lowercasedFirst(following.instructions))"
 }
 
@@ -606,31 +606,32 @@ func pathFix(_ path: [Coordinate], at position: Coordinate, heading: Course?) ->
     return best
 }
 
-/// Whether the rider is riding this step's road — on its path, past the junction mouth, going its
-/// way. This is the *visited* test: deterministic, local to one step, immune to how close any
-/// other part of the route happens to pass.
-func riding(_ step: RouteStep, at position: Coordinate, heading: Course?) -> Bool {
-    guard let fix = pathFix(step.path, at: position, heading: heading) else { return false }
+/// Whether the rider is on this path, past its first point, going its way.
+///
+/// The *visited* test for the manoeuvre this path follows: a step's path begins where the previous
+/// instruction happens, so being twenty metres into it means that turn was taken. Deterministic,
+/// local to one path, immune to how close any other part of the route passes.
+func riding(_ path: [Coordinate], at position: Coordinate, heading: Course?) -> Bool {
+    guard let fix = pathFix(path, at: position, heading: heading) else { return false }
     return fix.offset <= stepMatchCorridorMetres && fix.aligned && fix.along >= stepEntryMetres
 }
 
 /// Metres still to ride before the manoeuvre at `steps[index]`.
 ///
-/// Measured along the *previous* step's path where possible — the road the rider is on ends at the
-/// junction, so its remaining length is the honest distance, immune to bends. Falls back to the
-/// straight line for the first step or when the rider cannot be placed on the path.
+/// The step's own path *is* the approach, so the remaining length of it is the honest distance —
+/// measured along the road, immune to bends. Falls back to the straight line to the manoeuvre
+/// point when the rider cannot be placed on the path.
 func distanceToManoeuvre(
     _ steps: [RouteStep], index: Int, at position: Coordinate, heading: Course?
 ) -> Double? {
     guard let step = steps[safe: index] else { return nil }
     if
-        let previous = steps[safe: index - 1],
-        previous.path.count > 1,
-        let fix = pathFix(previous.path, at: position, heading: heading),
+        step.path.count > 1,
+        let fix = pathFix(step.path, at: position, heading: heading),
         fix.offset <= stepMatchCorridorMetres {
         var length = 0.0
-        for i in 0..<(previous.path.count - 1) {
-            guard let a = previous.path[safe: i], let b = previous.path[safe: i + 1] else { continue }
+        for i in 0..<(step.path.count - 1) {
+            guard let a = step.path[safe: i], let b = step.path[safe: i + 1] else { continue }
             length += distanceMetres(from: a.pair, to: b.pair)
         }
         return max(0, length - fix.along)
@@ -696,24 +697,38 @@ public func guidance(
 
     var next = state
 
-    // Visited: the rider is riding the road this instruction named.
-    if riding(step, at: position, heading: heading) {
+    // Visited: the road entered by taking this manoeuvre is the *next* step's approach path, which
+    // begins exactly at this junction. Twenty metres into it, going its way, and the turn was
+    // demonstrably taken. For the final step there is no next path, and arrival below owns it.
+    if
+        let entered = steps[safe: state.stepIndex + 1],
+        riding(entered.path, at: position, heading: heading) {
         next.stepIndex += 1
         next.stage = .none
         return GuidanceUpdate(announcement: nil, state: next)
     }
 
-    // A step short enough to be jumped between two fixes: if the rider is already riding the road
-    // *after* it, both were completed — and both were announced together as a chain, so nothing
-    // was skipped unheard. Bounded to one step, and only a short one; anything more is the reroute
-    // machinery's business.
+    // Two manoeuvres close enough to be jumped between two fixes: if the rider is already on the
+    // road after the *second*, both were completed — and both were announced together as a chain,
+    // so nothing was skipped unheard. Bounded to one extra step, and only a short one; anything
+    // more is the reroute machinery's business.
     if
-        step.distance.rawValue <= shortStepSkipMetres,
-        let following = steps[safe: state.stepIndex + 1],
-        riding(following, at: position, heading: heading) {
+        let between = steps[safe: state.stepIndex + 1],
+        between.distance.rawValue <= shortStepSkipMetres,
+        let afterBoth = steps[safe: state.stepIndex + 2],
+        riding(afterBoth.path, at: position, heading: heading) {
         next.stepIndex += 2
         next.stage = .none
         return GuidanceUpdate(announcement: nil, state: next)
+    }
+
+    // The last manoeuvre is arrival itself: no next path can confirm it, so proximity does.
+    if
+        state.stepIndex == steps.count - 1,
+        let destination = step.start ?? route.shape.last,
+        distanceMetres(from: position.pair, to: destination.pair) <= 30 {
+        next.arrived = true
+        return GuidanceUpdate(announcement: "You have arrived.", state: next)
     }
 
     // Not visited — so the only thing speakable is this instruction (with its successor attached
