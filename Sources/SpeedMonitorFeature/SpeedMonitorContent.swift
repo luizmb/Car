@@ -56,6 +56,7 @@ public struct SpeedMonitorContent: View {
         // the instrument: it is what tells you which lane and which exit.
         .overlay(alignment: .bottomTrailing) { speedBubble }
         .overlay(alignment: .bottom) { positionStrip }
+        .overlay(alignment: .bottomLeading) { recentreButton }
         // **No `ignoresSafeArea` here.** The map has its own, which is what lets it run edge to edge;
         // putting one on the stack pushed everything else out with it — the limit sign behind the
         // Dynamic Island, the footer under the home indicator, and the road-name bubble (attached as
@@ -125,6 +126,33 @@ public struct SpeedMonitorContent: View {
         .onDisappear { returnTask?.cancel() }
     }
 
+    /// Back to the followed camera, now.
+    ///
+    /// The automatic return only fires above 5 mph, which is right — a rider stopped and studying
+    /// the next few junctions should be left alone. But that leaves someone stationary with a map
+    /// they have panned to Luton and no way home, which is exactly the state this button exists
+    /// for. It appears only while the map is being held.
+    @ViewBuilder
+    private var recentreButton: some View {
+        if isBrowsing {
+            Button {
+                returnTask?.cancel()
+                returnTask = nil
+                isBrowsing = false
+                withAnimation(.easeInOut(duration: 0.45)) { camera = followingCamera }
+            } label: {
+                Image(systemName: isNavigating ? "location.north.line.fill" : "location.fill")
+                    .font(.title3)
+                    .padding(12)
+                    .glassEffect(.regular, in: .circle)
+            }
+            .buttonStyle(.plain)
+            .padding(.leading, 14)
+            .padding(.bottom, 22)
+            .transition(.opacity)
+        }
+    }
+
     // MARK: - Browsing
 
     /// The rider has the map. Stop moving it under them — nothing is more disorienting than a map
@@ -132,7 +160,7 @@ public struct SpeedMonitorContent: View {
     private func beginBrowsing() {
         returnTask?.cancel()
         returnTask = nil
-        isBrowsing = true
+        withAnimation(.easeInOut(duration: 0.2)) { isBrowsing = true }
     }
 
     /// Fingers off. Come back to the followed camera two seconds later — but **only once moving**.
@@ -182,21 +210,21 @@ public struct SpeedMonitorContent: View {
         case .none:
             EmptyView()
         case .unknown:
-            SpeedSignUnknown(size: 68)
+            SpeedSignUnknown(size: 56)
         case .known(let text, let value):
-            SpeedSignKnown(text: text, value: value, size: 68)
+            SpeedSignKnown(text: text, value: value, size: 56)
         case .national(let text, let value):
             HStack(spacing: 6) {
-                SpeedSignNational(size: 60)
-                SpeedSignKnown(text: text, value: value, size: 60)
+                SpeedSignNational(size: 50)
+                SpeedSignKnown(text: text, value: value, size: 50)
             }
         case .nationalOnly:
-            SpeedSignNational(size: 68)
+            SpeedSignNational(size: 56)
         case let .assumed(text, value):
             // No NSL sign — that sign means 60 or 70, and this is the built-up default. Labelled
             // instead, so the figure is never mistaken for one read off a real sign.
             VStack(spacing: 2) {
-                SpeedSignKnown(text: text, value: value, size: 60)
+                SpeedSignKnown(text: text, value: value, size: 50)
                 Text("ASSUMED")
                     .font(.system(size: 9, weight: .black, design: .rounded))
                     .foregroundStyle(.white)
@@ -208,9 +236,9 @@ public struct SpeedMonitorContent: View {
             // showing. Displaying it unqualified would assert something we cannot know.
             VStack(spacing: 2) {
                 if let text {
-                    SpeedSignKnown(text: text, value: value, size: 60)
+                    SpeedSignKnown(text: text, value: value, size: 50)
                 } else {
-                    SpeedSignNational(size: 60)
+                    SpeedSignNational(size: 50)
                 }
                 Text("VAR")
                     .font(.system(size: 10, weight: .black, design: .rounded))
@@ -231,17 +259,17 @@ public struct SpeedMonitorContent: View {
     private var speedBubble: some View {
         VStack(spacing: -2) {
             Text(speedText)
-                .font(.system(size: 54, weight: .black, design: .rounded))
+                .font(.system(size: 32, weight: .black, design: .rounded))
                 .monospacedDigit()
                 .contentTransition(.numericText(value: speedValue))
                 .animation(.spring(response: 0.22, dampingFraction: 0.82), value: speedValue)
             Text("mph")
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 10)
-        .glassEffect(.regular, in: .rect(cornerRadius: 26))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+        .glassEffect(.regular, in: .rect(cornerRadius: 20))
         .padding(.trailing, 14)
         .padding(.bottom, 2)
     }

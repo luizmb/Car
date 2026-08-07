@@ -147,12 +147,10 @@ public struct AppRootView: View, Routable {
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .glassEffect(.regular, in: .rect(cornerRadius: 16))
-            // Stops short of the trailing edge so it never covers the speed limit sign, which is
-            // the one thing on this screen that must always be readable.
-            .padding(.leading, 12)
-            .padding(.trailing, 88)
+            // Full width. It used to stop short of the trailing edge to clear the speed limit
+            // sign; the sign now sits below it instead, so there is nothing left to avoid.
+            .padding(.horizontal, 12)
             .padding(.top, 4)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
