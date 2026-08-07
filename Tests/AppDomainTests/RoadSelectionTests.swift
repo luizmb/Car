@@ -405,3 +405,49 @@ struct BorrowedLampTests {
         #expect(info.limit == .value(MPH(60)))
     }
 }
+
+/// OSM carries a road's identity unevenly across its segments: `ref=A505 name=Dunstable Road`
+/// beside plain `name=Dunstable Road`. A missing field is silence, not disagreement — only a field
+/// both sides carry can separate two ways into different roads.
+@Suite("Uneven road identity")
+struct UnevenIdentityTests {
+    private func candidate(
+        name: String?, ref: String?, maxspeed: String? = nil, lit: String? = nil, lat: Double
+    ) -> RoadCandidate {
+        RoadCandidate(
+            tags: OverpassResponse.Element.Tags(
+                maxspeed: maxspeed, name: name, ref: ref, highway: "primary",
+                maxspeedType: nil, maxspeedVariable: nil, lit: lit
+            ),
+            points: [(Latitude(lat), Longitude(-0.48)), (Latitude(lat), Longitude(-0.47))]
+        )
+    }
+
+    @Test("A ref-less segment borrows lamps from its ref-carrying sibling")
+    func refSilenceStillBorrows() {
+        // The rider's 18:58:07 fix, reconstructed: name-only Dunstable Road, beside the tagged one.
+        let own = candidate(name: "Dunstable Road", ref: nil, lat: 51.886)
+        let tagged = candidate(name: "Dunstable Road", ref: "A505", lit: "yes", lat: 51.8865)
+        let info = roadInfo(from: own, among: [own, tagged])
+        #expect(info.limit == .value(MPH(30)))
+        #expect(info.origin == .builtUpArea)
+    }
+
+    @Test("A name-less segment borrows a limit through its shared ref")
+    func nameSilenceStillBorrows() {
+        // Markyate's A5183: ref-only segments beside ref-and-name ones carrying the signed 40.
+        let own = candidate(name: nil, ref: "A5183", lat: 51.838)
+        let signed = candidate(name: "London Road", ref: "A5183", maxspeed: "40 mph", lat: 51.8385)
+        let info = roadInfo(from: own, among: [own, signed])
+        #expect(info.limit == .value(MPH(40)))
+        #expect(info.origin == .signed)
+    }
+
+    @Test("A ref both sides carry still separates roads")
+    func realDisagreementSeparates() {
+        let own = candidate(name: "Dunstable Road", ref: "A505", lat: 51.886)
+        let other = candidate(name: "Dunstable Road", ref: "A6", lit: "yes", lat: 51.8865)
+        let info = roadInfo(from: own, among: [own, other])
+        #expect(info.limit == .value(MPH(60)))   // no borrowing across a genuine ref difference
+    }
+}
