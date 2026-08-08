@@ -528,8 +528,10 @@ extension World {
             logAction: { line in
                 Publisher.future { rideLog.append(line) }
             },
-            loadJourneyRecords: {
-                Publisher.future { appDatabase?.journeyRecords() ?? [] }
+            loadRecentDestinations: {
+                Publisher.future {
+                    recentDestinations(from: appDatabase?.recentDestinationRecords() ?? [])
+                }
             },
             loadRideSummaries: {
                 Publisher.future { appDatabase?.rideSummaries() ?? [] }

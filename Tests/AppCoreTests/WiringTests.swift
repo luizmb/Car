@@ -491,7 +491,7 @@ struct RefuelRecordingTests {
             now: world.now,
             newID: world.newID,
             logAction: world.logAction,
-            loadJourneyRecords: world.loadJourneyRecords,
+            loadRecentDestinations: world.loadRecentDestinations,
             loadRideSummaries: world.loadRideSummaries,
             loadRideRecords: world.loadRideRecords,
             writeShareFile: world.writeShareFile,
@@ -701,7 +701,7 @@ struct WatchLinkWiringTests {
             now: world.now,
             newID: world.newID,
             logAction: world.logAction,
-            loadJourneyRecords: world.loadJourneyRecords,
+            loadRecentDestinations: world.loadRecentDestinations,
             loadRideSummaries: world.loadRideSummaries,
             loadRideRecords: world.loadRideRecords,
             writeShareFile: world.writeShareFile,
@@ -752,6 +752,32 @@ struct WatchLinkWiringTests {
         #expect(last != nil)
         #expect(last?.latitude == 51.88)
         #expect(last.flatMap(\.mph).map { Int($0.rounded()) } == 30)
+    }
+
+    /// While a tape runs, the wrist mirrors it: the snapshot composes from the replay's monitor,
+    /// not the live one — and the desk's stationary fix never reaches the watch mid-film.
+    @Test("the wrist mirrors the tape during a replay")
+    func wristMirrorsTheTape() async {
+        let spy = LinkSpy()
+        let store = MainStore.app(world: world(spy))
+        let ride = Ride(
+            start: Date(timeIntervalSince1970: 0), end: Date(timeIntervalSince1970: 60),
+            endedCleanly: true, records: []
+        )
+        store.dispatch(.navigation(.push(.replay(ride))), source: .init(file: #file, function: #function, line: #line))
+        store.dispatch(
+            .replay(.event(ReplayStep(delay: 0, position: 1, event: .fix(LocationUpdate(
+                speed: MPS(13.4), speedAccuracy: nil, course: Course(rawValue: 90),
+                latitude: Latitude(51.88), longitude: Longitude(-0.42),
+                altitude: Meters(90), timestamp: Date(timeIntervalSince1970: 1),
+                horizontalAccuracy: Meters(5)
+            ))))),
+            source: .init(file: #file, function: #function, line: #line)
+        )
+        for _ in 0..<20 { await Task.yield() }
+
+        #expect(spy.pushed.last?.latitude == 51.88)
+        #expect(spy.pushed.last.flatMap(\.mph).map { Int($0.rounded()) } == 30)
     }
 
     /// The wrist's one command becomes exactly what the fuel screen writes: a journey record and

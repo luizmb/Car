@@ -49,10 +49,47 @@ struct AppDatabaseJourneyTests {
         let written = JourneyRecord(time: Date(timeIntervalSince1970: 500), payload: sample(type))
         db.append(written)
 
+        // Fuel facts are the store's, not the timeline's: appending is deliberately nothing,
+        // and the expansion test below proves they come back from the store instead.
+        if type == .refuel || type == .reserve {
+            #expect(db.journeyRecords().isEmpty)
+            return
+        }
         let records = db.journeyRecords()
         #expect(records.count == 1)
         #expect(records.first?.time == written.time)
         #expect(records.first.map { $0.payload.isEqual(to: written.payload) } == true)
+    }
+
+    /// The store's rows read back as timeline records — one truth, two readings, and refuels and
+    /// reserves each from their own table with their own fields.
+    @Test("Fuel facts expand into the timeline from the store")
+    func fuelExpansion() throws {
+        let db = try makeDatabase()
+        let fillDate = Date(timeIntervalSince1970: 1_000)
+        let reserveDate = Date(timeIntervalSince1970: 2_000)
+        db.save(FuelLog(
+            refuels: [RefuelRecord(
+                id: UUID(), date: fillDate, litres: Litres(9.2), pricePerLitre: 1.47,
+                grade: .e5, filledToBrim: true, odometer: Kilometres(19_000),
+                latitude: nil, longitude: nil,
+                station: FuelStation(id: 7, brand: "Shell", name: "Shell Luton")
+            )],
+            reserves: [ReserveEvent(
+                id: UUID(), date: reserveDate, odometer: Kilometres(19_200),
+                gpsKilometres: Kilometres(210), latitude: nil, longitude: nil
+            )]
+        ))
+
+        let records = db.journeyRecords()
+        let refuel = records.compactMap { $0.payload as? RefuelPayload }.first
+        #expect(refuel?.litres == 9.2)
+        #expect(refuel?.station == "Shell Luton")
+        #expect(refuel?.stationID == 7)
+        let reserve = records.compactMap { $0.payload as? ReservePayload }.first
+        #expect(reserve?.km == 210)
+        #expect(reserve?.odometer == 19_200)
+        #expect(records.first?.time == fillDate)
     }
 
     /// Optionals must survive as NULL, not as zero — a fix with no speed is not a fix at 0 mph.

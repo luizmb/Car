@@ -1074,7 +1074,7 @@ public enum AppScopes: Rig {
         .action(\.navigate)
         .state(preview: topmost(StackEntry.prism.navigate), set: replacing(StackEntry.prism.navigate))
         .environment(fanout(
-            \.completeAddress, \.loadJourneyRecords, \.resolveAddress, \.routes, \.speakQueued,
+            \.completeAddress, \.loadRecentDestinations, \.resolveAddress, \.routes, \.speakQueued,
             \.formatDistance, \.formatDuration, \.formatTime, \.now
         ) >>> NavigationFeature.Environment.init)
 }

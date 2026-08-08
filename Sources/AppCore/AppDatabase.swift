@@ -127,10 +127,10 @@ final class AppDatabase: @unchecked Sendable {
         .barometer: [("kpa", "REAL"), ("relativeAltitude", "REAL")],
         .activity: [("activity", "TEXT"), ("confidence", "INTEGER")],
         .device: [("device", "TEXT"), ("connected", "INTEGER")],
-        .destination: [("name", "TEXT"), ("lat", "REAL"), ("lon", "REAL")],
-        .refuel: [("litres", "REAL"), ("price", "REAL"), ("odometer", "REAL"),
-                  ("brim", "INTEGER"), ("station", "TEXT"), ("stationID", "INTEGER")],
-        .reserve: [("km", "REAL"), ("odometer", "REAL")]
+        .destination: [("name", "TEXT"), ("lat", "REAL"), ("lon", "REAL")]
+        // No `refuel` or `reserve` here: the fuel store's own tables are the single truth, and
+        // the timeline *expands* them by date — the JSONL era wrote the same fact twice, once
+        // per file, and one relational database has no excuse for that.
     ]
 
     /// `average-zone` the type, `average_zone` the table — SQL identifiers do not hyphenate.
@@ -222,11 +222,10 @@ final class AppDatabase: @unchecked Sendable {
             insert(.device, [t, .text(p.device), .bool(p.connected)])
         case let p as DestinationPayload:
             insert(.destination, [t, .text(p.name), .real(p.lat), .real(p.lon)])
-        case let p as RefuelPayload:
-            insert(.refuel, [t, .real(p.litres), .real(p.price), .real(p.odometer),
-                             .bool(p.brim), .text(p.station), .integer(p.stationID)])
-        case let p as ReservePayload:
-            insert(.reserve, [t, .real(p.km), .real(p.odometer)])
+        case is RefuelPayload, is ReservePayload:
+            // Deliberately nothing: the fuel store's save carries the fact, and the timeline
+            // reads it back from there. Writing it twice was the JSONL era's habit.
+            return
         default:
             return
         }
@@ -266,6 +265,7 @@ final class AppDatabase: @unchecked Sendable {
         } ?? nextJourneyStart(after: start).map { timestamps.string(from: $0) }
 
         var records = journeyLifecycleRecords(where: "start = ?", bind: [.text(lower)])
+        records.append(contentsOf: fuelTimelineRecords(from: lower, to: upper))
         for type in RecordType.allCases {
             guard let schema = Self.journeySchema[type] else { continue }
             let columns = schema.map(\.name).joined(separator: ", ")
@@ -301,6 +301,7 @@ final class AppDatabase: @unchecked Sendable {
     /// the dated files kept by sorting their names, now kept by sorting the union.
     func journeyRecords() -> [JourneyRecord] {
         var records: [JourneyRecord] = journeyLifecycleRecords(where: nil, bind: [])
+        records.append(contentsOf: fuelTimelineRecords(from: nil, to: nil))
         for type in RecordType.allCases {
             guard let schema = Self.journeySchema[type] else { continue }
             let columns = schema.map(\.name).joined(separator: ", ")
@@ -315,6 +316,50 @@ final class AppDatabase: @unchecked Sendable {
             }
         }
         return records.sorted { $0.time < $1.time }
+    }
+
+    /// Refuels and reserve switches, expanded from the store tables into the records the
+    /// timeline speaks — optionally windowed. One truth, two readings.
+    private func fuelTimelineRecords(from lower: String?, to upper: String?) -> [JourneyRecord] {
+        var records: [JourneyRecord] = []
+        var clause = ""
+        var bind: [SQLValue] = []
+        if let lower { clause += " WHERE date >= ?"; bind.append(.text(lower)) }
+        if let upper { clause += (clause.isEmpty ? " WHERE" : " AND") + " date <= ?"; bind.append(.text(upper)) }
+        query("""
+            SELECT r.date, r.litres, r.pricePerLitre, r.odometer, r.filledToBrim,
+                   s.name, s.brand, s.id
+            FROM refuel_record r LEFT JOIN station s ON s.id = r.stationID\(clause)
+            """, bind: bind) { s in
+            guard let date = text(s, 0).flatMap(parseTimestamp) else { return }
+            records.append(JourneyRecord(time: date, payload: RefuelPayload(
+                litres: real(s, 1) ?? 0, price: real(s, 2) ?? 0, odometer: real(s, 3),
+                brim: bool(s, 4), station: text(s, 5) ?? text(s, 6), stationID: integer(s, 7)
+            )))
+        }
+        query("SELECT date, gpsKilometres, odometer FROM reserve_event\(clause)", bind: bind) { s in
+            guard let date = text(s, 0).flatMap(parseTimestamp) else { return }
+            records.append(JourneyRecord(time: date, payload: ReservePayload(
+                km: real(s, 1), odometer: real(s, 2)
+            )))
+        }
+        return records
+    }
+
+    /// The rider's recent destinations, straight off their own table — the search screen's
+    /// completion list without a timeline in sight.
+    func recentDestinationRecords(limit: Int = 30) -> [JourneyRecord] {
+        var records: [JourneyRecord] = []
+        query(
+            "SELECT t, name, lat, lon FROM destination ORDER BY t DESC LIMIT ?",
+            bind: [.integer(limit)]
+        ) { s in
+            guard let time = text(s, 0).flatMap(parseTimestamp) else { return }
+            records.append(JourneyRecord(time: time, payload: DestinationPayload(
+                name: text(s, 1), lat: real(s, 2) ?? 0, lon: real(s, 3) ?? 0
+            )))
+        }
+        return records
     }
 
     /// The `journey` rows, expanded back into the start/end records the domain speaks.
@@ -375,11 +420,9 @@ final class AppDatabase: @unchecked Sendable {
             DevicePayload(device: text(s, 1) ?? "", connected: bool(s, 2))
         case .destination:
             DestinationPayload(name: text(s, 1), lat: real(s, 2) ?? 0, lon: real(s, 3) ?? 0)
-        case .refuel:
-            RefuelPayload(litres: real(s, 1) ?? 0, price: real(s, 2) ?? 0, odometer: real(s, 3),
-                          brim: bool(s, 4), station: text(s, 5), stationID: integer(s, 6))
-        case .reserve:
-            ReservePayload(km: real(s, 1), odometer: real(s, 2))
+        case .refuel, .reserve:
+            // Fuel facts live in the store tables and are expanded from there.
+            nil
         }
     }
 
