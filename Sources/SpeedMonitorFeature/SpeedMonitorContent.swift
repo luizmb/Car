@@ -131,6 +131,26 @@ public struct SpeedMonitorContent: View {
         )
     }
 
+    /// Everything the camera is made of, as one animatable identity. When any of it moves, the
+    /// implicit animation below glides the map there instead of teleporting.
+    private struct CameraFrame: Equatable {
+        let latitude: Double
+        let longitude: Double
+        let distance: Double
+        let heading: Double
+        let pitch: Double
+        let riderLatitude: Double
+        let riderLongitude: Double
+    }
+
+    private var cameraFrame: CameraFrame {
+        CameraFrame(
+            latitude: mapLatitude, longitude: mapLongitude, distance: mapDistance,
+            heading: mapHeading, pitch: mapPitch,
+            riderLatitude: riderLatitude, riderLongitude: riderLongitude
+        )
+    }
+
     private var map: some View {
         Map(position: cameraBinding, interactionModes: .all) {
             // Under the rider marker, so the arrow is never hidden by the line it is following.
@@ -152,6 +172,12 @@ public struct SpeedMonitorContent: View {
             }
         }
         .mapControlVisibility(.hidden)
+        // Fixes arrive once a second, live and on the tape alike, and a camera that teleports
+        // between them is a slideshow. A linear glide of one fix interval turns the jumps into
+        // motion — linear rather than eased, because the bike between two fixes genuinely moves
+        // at constant speed and easing would make it surge. Suspended while the rider holds the
+        // map: an animation must never fight a finger.
+        .animation(browsedCamera == nil ? .linear(duration: 0.95) : nil, value: cameraFrame)
         .ignoresSafeArea()
     }
 
