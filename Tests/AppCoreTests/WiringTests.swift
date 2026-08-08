@@ -478,6 +478,9 @@ struct RefuelRecordingTests {
             saveMaintenanceLog: world.saveMaintenanceLog,
             sendWatchSnapshot: world.sendWatchSnapshot,
             watchRefuels: world.watchRefuels,
+            captureText: world.captureText,
+            stopTextCapture: world.stopTextCapture,
+            cameraPreview: world.cameraPreview,
             phoneBattery: world.phoneBattery,
             isLowPowerMode: world.isLowPowerMode,
             fetchStation: world.fetchStation,
@@ -680,6 +683,9 @@ struct WatchLinkWiringTests {
                 Publisher.future { spy.push(snapshot) }
             },
             watchRefuels: world.watchRefuels,
+            captureText: world.captureText,
+            stopTextCapture: world.stopTextCapture,
+            cameraPreview: world.cameraPreview,
             phoneBattery: world.phoneBattery,
             isLowPowerMode: world.isLowPowerMode,
             fetchStation: world.fetchStation,
@@ -751,5 +757,65 @@ struct WatchLinkWiringTests {
         for _ in 0..<20 { await Task.yield() }
 
         #expect(spy.journalTypes.contains(.refuel))
+    }
+}
+
+@Suite("Pump scan")
+@MainActor
+struct PumpScanWiringTests {
+
+    /// The whole hunt, driven frame by frame: pump frames until the tick, odometer frames until
+    /// the sheet closes itself — and the form holds the values as if they had been typed.
+    @Test("a steady pump then a steady odometer fills the form and closes the camera")
+    func scanFillsTheForm() async {
+        let store = MainStore.app(world: .stub)
+        store.dispatch(.navigation(.push(.fuel)), source: .init(file: #file, function: #function, line: #line))
+        store.dispatch(.fuel(.beginScan), source: .init(file: #file, function: #function, line: #line))
+        for _ in 0..<5 { await Task.yield() }
+
+        let pumpFrame = ["£13.72", "9.43", "1.455"]
+        for _ in 0..<scanStabilityFrames {
+            store.dispatch(.fuel(.scanSaw(pumpFrame)), source: .init(file: #file, function: #function, line: #line))
+            for _ in 0..<3 { await Task.yield() }
+        }
+        guard case let .fuel(mid)? = store.state.path.first else {
+            Issue.record("fuel entry missing"); return
+        }
+        #expect(mid.scan?.phase == .odometer)
+        #expect(mid.scan?.pump == PumpReading(litres: 9.43, pricePerLitre: 1.455))
+
+        for _ in 0..<scanStabilityFrames {
+            store.dispatch(.fuel(.scanSaw(["19432", "231.4"])), source: .init(file: #file, function: #function, line: #line))
+            for _ in 0..<3 { await Task.yield() }
+        }
+        for _ in 0..<10 { await Task.yield() }
+
+        guard case let .fuel(done)? = store.state.path.first else {
+            Issue.record("fuel entry missing"); return
+        }
+        #expect(done.scan == nil)
+        #expect(done.litresValue == 9.43)
+        #expect(done.priceValue == 1.455)
+        #expect(done.odometerValue == 19_432)
+    }
+
+    @Test("an unsteady reading never convinces")
+    func flickerNeverConvinces() async {
+        let store = MainStore.app(world: .stub)
+        store.dispatch(.navigation(.push(.fuel)), source: .init(file: #file, function: #function, line: #line))
+        store.dispatch(.fuel(.beginScan), source: .init(file: #file, function: #function, line: #line))
+        for _ in 0..<5 { await Task.yield() }
+
+        // Alternating readings — a reflection sliding over the display.
+        for index in 0..<10 {
+            let frame = index.isMultiple(of: 2) ? ["£13.72", "9.43", "1.455"] : ["£27.44", "18.86", "1.455"]
+            store.dispatch(.fuel(.scanSaw(frame)), source: .init(file: #file, function: #function, line: #line))
+            for _ in 0..<2 { await Task.yield() }
+        }
+        guard case let .fuel(state)? = store.state.path.first else {
+            Issue.record("fuel entry missing"); return
+        }
+        #expect(state.scan?.phase == .pump)
+        #expect(state.scan?.pump == nil)
     }
 }
