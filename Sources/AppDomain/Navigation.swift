@@ -522,7 +522,10 @@ public func chainedInstruction(
     _ steps: [RouteStep], from index: Int, within: Double = chainWithinMetres
 ) -> String {
     guard let step = steps[safe: index] else { return "" }
-    let instruction = step.instructions
+    // The clock face rides on the instruction — "at 2 o'clock" is the junction's shape, spoken,
+    // which is worth the breath exactly where exit-counting fails a helmet.
+    let instruction = clockSuffix(steps, at: index)
+        .map { "\(step.instructions), \($0)" } ?? step.instructions
     // The gap between this manoeuvre and the next is the *next* step's approach length — its
     // polyline runs from this junction to that one, so no geometry is needed to measure it.
     guard
@@ -531,6 +534,81 @@ public func chainedInstruction(
     else { return instruction }
     let gap = formatGap(following.distance)
     return "\(instruction), then in \(gap) \(lowercasedFirst(following.instructions))"
+}
+
+// MARK: - The clock face
+
+/// A turn's angle as an hour on the clock — the eyes-free description of a junction's shape.
+///
+/// Twelve is straight on, three is a right angle right, nine a right angle left; each hour is
+/// thirty degrees. This is the app's whole point spoken aloud: "second exit" is ambiguous on a
+/// five-way roundabout, but "two o'clock" is a shape the body understands inside a helmet.
+public func clockDirection(incoming: Double, outgoing: Double) -> Int {
+    var relative = (outgoing - incoming).truncatingRemainder(dividingBy: 360)
+    if relative > 180 { relative -= 360 }
+    if relative < -180 { relative += 360 }
+    let hour = Int((relative / 30).rounded())
+    return hour == 0 ? 12 : hour > 0 ? hour : 12 + hour
+}
+
+/// The clock suffix for a manoeuvre, when its geometry can say one.
+///
+/// The incoming bearing is the end of this step's approach; the outgoing is the start of the
+/// *next* step's approach, which begins at this junction. Straight-ish ordinary turns stay
+/// unsuffixed — "continue — 12 o'clock" is noise — but anything naming a roundabout or an exit
+/// always gets its hour, because that is exactly where exit-counting goes wrong.
+public func clockSuffix(_ steps: [RouteStep], at index: Int) -> String? {
+    guard
+        let step = steps[safe: index],
+        let next = steps[safe: index + 1],
+        let incoming = pathBearing(step.path.suffix(8), lastLeg: true),
+        let outgoing = pathBearing(Array(next.path.prefix(8)), lastLeg: false)
+    else { return nil }
+    let hour = clockDirection(incoming: incoming, outgoing: outgoing)
+    let names = step.instructions.lowercased()
+    let junction = names.contains("roundabout") || names.contains("exit")
+    guard junction || abs(hour - 12) >= 1 && hour != 12 else { return nil }
+    return "\(hour) o'clock"
+}
+
+/// The bearing of a short run of path — its first or last resolvable leg of at least ten metres.
+private func pathBearing(_ points: [Coordinate], lastLeg: Bool) -> Double? {
+    let ordered = lastLeg ? points.reversed().map { $0 } : points
+    guard let anchor = ordered.first else { return nil }
+    for candidate in ordered.dropFirst() {
+        let pair = lastLeg ? (candidate, anchor) : (anchor, candidate)
+        if distanceMetres(from: (pair.0.latitude, pair.0.longitude),
+                          to: (pair.1.latitude, pair.1.longitude)) >= 10 {
+            return bearing(from: (pair.0.latitude, pair.0.longitude), to: (pair.1.latitude, pair.1.longitude))
+        }
+    }
+    return nil
+}
+
+// MARK: - Forward bias for replans
+
+/// Metres ahead of the rider a replan's origin is projected — the public routing API cannot be
+/// told a heading, but a router asked from a point in front of the bike has already been told
+/// which way the bike is going.
+public func projectedOrigin(_ position: Coordinate, course: Course?, speed: MPS?) -> Coordinate {
+    guard let course else { return position }
+    let metres = min(40, max(10, (speed?.rawValue ?? 0) * 1.5))
+    return coordinate(from: position, bearing: course.rawValue, metres: metres)
+}
+
+/// Seconds of penalty a candidate route pays for opening against the rider's travel.
+///
+/// This is the difference between Apple's reroute and being summoned back: a route that begins
+/// with a U-turn must be *clearly* faster to win, not merely first in the list. Three minutes is
+/// roughly what a U-turn, the ridden-back leg and the indignity actually cost.
+public func uTurnPenaltySeconds(route: RouteOption, course: Course?) -> TimeInterval {
+    guard
+        let course,
+        let opening = pathBearing(Array(route.shape.prefix(12)), lastLeg: false)
+    else { return 0 }
+    var apart = abs(opening - course.rawValue).truncatingRemainder(dividingBy: 360)
+    if apart > 180 { apart = 360 - apart }
+    return apart > 110 ? 180 : 0
 }
 
 /// One thing to say, and the guidance state that follows from having said it.
@@ -950,150 +1028,6 @@ public func trackingRoute(_ state: RerouteState, distanceOff: Double) -> Reroute
         next.reroutingFixes = 0
     }
     return next
-}
-
-// MARK: - Choosing where to rejoin
-
-/// One place the original route could be rejoined at, and what it would cost to finish from there.
-public struct RejoinCandidate: Sendable, Equatable {
-    /// Index into the route's located steps — the manoeuvre being rejoined at.
-    public let stepIndex: Int
-    public let point: Coordinate
-    /// Time from this manoeuvre to the destination **along the original route**.
-    ///
-    /// Estimated rather than requested: the route already knows its own distance and duration, so
-    /// the remaining distance scaled by its average speed costs nothing and needs no network. It is
-    /// only ever compared against other candidates on the same route, so a systematic error in the
-    /// average cancels out.
-    public let remainingTime: TimeInterval
-}
-
-/// The next few manoeuvres, each as a place the route could be picked up again.
-///
-/// Bounded because each candidate costs a routing request. Four covers the realistic cases — a
-/// missed turn, a deliberate detour of a junction or two — and Apple throttles well before ten.
-public func rejoinCandidates(
-    _ route: RouteOption,
-    from stepIndex: Int,
-    /// Where the rider is, so candidates already behind them can be dropped.
-    at position: Coordinate? = nil,
-    /// Which way they are going, which is the only usable answer to "is that behind me" once too
-    /// far off the route to measure progress along it.
-    heading: Course? = nil,
-    limit: Int = 4
-) -> [RejoinCandidate] {
-    let steps = route.steps.filter { $0.start != nil }
-    // `stepIndex` can be past the end — guidance runs off the last manoeuvre on the approach to the
-    // destination — and `9..<4` is a crash, not an empty range.
-    guard
-        stepIndex < steps.count, stepIndex >= 0,
-        route.travelTime > 0, route.distance.rawValue > 0
-    else { return [] }
-    let metresPerSecond = route.distance.rawValue / route.travelTime
-
-    // How far along the route the rider has got. A manoeuvre behind that is behind *them*, and
-    // rejoining at it means turning round — which is what the rider saw: "turn right onto Luton
-    // Road" while joining Church Road, sending them back the way they came. The time comparison was
-    // supposed to make a U-turn lose, and cannot when the legs it needs are the ones that fail.
-    //
-    // `nil` when too far off the route to place, in which case nothing can be ruled out and every
-    // candidate stands.
-    let progress = position.flatMap { distanceAlongRoute(route.shape, to: $0) }
-
-    return (stepIndex..<min(stepIndex + limit, steps.count)).compactMap { index in
-        guard let point = steps[safe: index]?.start else { return nil }
-        if
-            let progress,
-            let junction = distanceAlongRoute(route.shape, to: point),
-            junction < progress {
-            return nil
-        }
-        // And when progress cannot be measured — more than a couple of hundred metres off the
-        // route, which is exactly when a reroute happens — direction of travel is the only thing
-        // left that says what is behind. Without it the rider was sent back down roads they had
-        // just ridden, one reroute after another.
-        //
-        // A wide cone: rejoining legitimately involves turning, and only something genuinely
-        // behind the shoulder should be ruled out.
-        if
-            progress == nil,
-            let heading,
-            let position,
-            distanceMetres(from: position.pair, to: point.pair) > 100 {
-            var apart = abs(bearing(from: position.pair, to: point.pair) - heading.rawValue)
-                .truncatingRemainder(dividingBy: 360)
-            if apart > 180 { apart = 360 - apart }
-            if apart > 120 { return nil }
-        }
-        // Everything still to drive once back on the route at this manoeuvre.
-        let remaining = steps.dropFirst(index).reduce(0.0) { $0 + $1.distance.rawValue }
-        return RejoinCandidate(
-            stepIndex: index,
-            point: point,
-            remainingTime: remaining / metresPerSecond
-        )
-    }
-}
-
-/// The candidate that gets to the destination soonest.
-///
-/// The whole point of comparing rather than always taking the first: a rider who *deliberately*
-/// went a different way has not made a mistake to be undone. Sending them back to the turn they
-/// skipped is a U-turn plus the leg they just rode, and it loses to simply carrying on and picking
-/// the route up further along — which is what a rider means when they take a road they prefer.
-///
-/// `legTimes` is the time from where the rider is now to each candidate, in the same order. `nil`
-/// means that leg could not be routed, and the candidate is dropped rather than guessed at.
-public func bestRejoin(
-    _ candidates: [RejoinCandidate], legTimes: [TimeInterval?]
-) -> RejoinCandidate? {
-    zip(candidates, legTimes)
-        .compactMap { candidate, leg in leg.map { (candidate, $0 + candidate.remainingTime) } }
-        .min { $0.1 < $1.1 }?
-        .0
-}
-
-// MARK: - Stitching a way back on
-
-/// The rejoin route, followed by whatever was left of the original.
-///
-/// This is what makes ``RerouteDecision/rejoin`` mean what it says. Routing straight to the final
-/// destination after a missed turn is what sends a rider down a completely different road — Apple
-/// answers "best way there from here", which after one wrong turn is frequently a different route
-/// altogether. Splicing keeps the ride the rider actually chose and treats the mistake as a
-/// detour back onto it.
-///
-/// Distance and travel time add; the exclusions are `true` if either half carries them, since a
-/// spliced route uses a motorway if any part of it does.
-public func splice(
-    rejoin: RouteOption, onto original: RouteOption, fromStep index: Int
-) -> RouteOption {
-    let remainingSteps = Array(original.steps.dropFirst(index))
-    // **Drop the way-back's last step.** Every route MapKit returns ends by announcing arrival, and
-    // the way back was routed to a *rejoin point* — so splicing it whole puts "arrive at the
-    // destination" in the middle of the journey. Heard on a replayed ride: "turn left onto Tennyson
-    // Road, then in 10 metres arrive at the destination", ten miles from anywhere.
-    //
-    // Dropping the last one is exact rather than a guess at the wording: the leg's final step is
-    // always the arrival at the join, and the join is where the original route's own step takes
-    // over.
-    let wayBack = rejoin.steps.dropLast()
-    // The tail of the original's geometry, from the manoeuvre being rejoined at. Falls back to the
-    // whole of it when that manoeuvre has no position, which is the same fallback guidance uses.
-    let joinPoint = remainingSteps.first?.start
-    let tail = joinPoint.map { point in
-        Array(original.shape.drop { distanceMetres(from: $0.pair, to: point.pair) > 25 })
-    } ?? []
-
-    return RouteOption(
-        name: original.name,
-        distance: Meters(rejoin.distance.rawValue + original.distance.rawValue),
-        travelTime: rejoin.travelTime + original.travelTime,
-        hasTolls: rejoin.hasTolls || original.hasTolls,
-        hasMotorways: rejoin.hasMotorways || original.hasMotorways,
-        steps: Array(wayBack) + remainingSteps,
-        shape: rejoin.shape + tail
-    )
 }
 
 // MARK: - When the exclusions cannot be kept

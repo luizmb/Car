@@ -701,19 +701,17 @@ public enum AppFeature {
                     // The tone, not a sentence. A reroute is routine and usually follows a turn the
                     // rider knows they missed; being told about it in words is nagging.
                     let tone = ctx.environment.playRerouteTone() |> Effect<AppAction>.fireAndForget
-                    let request = decision == .rejoin
-                        ? rejoinRequest(
-                            from: position, heading: update.course,
-                            original: route, fromStep: stepIndex,
-                            preferences: preferences, chosen: preferences,
-                            finished: finished, world: ctx.environment
-                        )
-                        : rerouteRequest(
-                            from: position, to: destination ?? position,
-                            preferences: preferences, chosen: preferences,
-                            original: route, decision: decision, fromStep: stepIndex,
-                            finished: finished, world: ctx.environment
-                        )
+                    // One response to leaving the route, Apple's: replan to the destination
+                    // from where the rider is and the way they are going. Rejoining the old
+                    // geometry always aimed at points behind a deliberate detour — the constant
+                    // summons back that made deviating feel like disobedience.
+                    let request = rerouteRequest(
+                        from: position, course: update.course, speed: update.speed,
+                        to: destination ?? position,
+                        preferences: preferences, chosen: preferences,
+                        original: route, decision: decision, fromStep: stepIndex,
+                        finished: finished, world: ctx.environment
+                    )
                     return tone <> request.asEffect { $0 }
                 }
         }
