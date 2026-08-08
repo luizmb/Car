@@ -773,7 +773,12 @@ struct PumpScanWiringTests {
         store.dispatch(.fuel(.beginScan), source: .init(file: #file, function: #function, line: #line))
         for _ in 0..<5 { await Task.yield() }
 
-        let pumpFrame = ["£13.72", "9.43", "1.455"]
+        // A pence-scale price with the E5 badge beside it, E10's price further up the display.
+        let pumpFrame = [
+            RecognizedText(text: "E10", x: 0.2, y: 0.8), RecognizedText(text: "139.9", x: 0.35, y: 0.8),
+            RecognizedText(text: "E5", x: 0.2, y: 0.6), RecognizedText(text: "145.5", x: 0.35, y: 0.6),
+            RecognizedText(text: "£13.72", x: 0.5, y: 0.3), RecognizedText(text: "9.43", x: 0.5, y: 0.2)
+        ]
         for _ in 0..<scanStabilityFrames {
             store.dispatch(.fuel(.scanSaw(pumpFrame)), source: .init(file: #file, function: #function, line: #line))
             for _ in 0..<3 { await Task.yield() }
@@ -783,9 +788,11 @@ struct PumpScanWiringTests {
         }
         #expect(mid.scan?.phase == .odometer)
         #expect(mid.scan?.pump == PumpReading(litres: 9.43, pricePerLitre: 1.455))
+        #expect(mid.scan?.grade == "E5")
 
+        let odoFrame = [RecognizedText(text: "19432"), RecognizedText(text: "231.4")]
         for _ in 0..<scanStabilityFrames {
-            store.dispatch(.fuel(.scanSaw(["19432", "231.4"])), source: .init(file: #file, function: #function, line: #line))
+            store.dispatch(.fuel(.scanSaw(odoFrame)), source: .init(file: #file, function: #function, line: #line))
             for _ in 0..<3 { await Task.yield() }
         }
         for _ in 0..<10 { await Task.yield() }
@@ -797,6 +804,7 @@ struct PumpScanWiringTests {
         #expect(done.litresValue == 9.43)
         #expect(done.priceValue == 1.455)
         #expect(done.odometerValue == 19_432)
+        #expect(done.grade == .e5)
     }
 
     @Test("an unsteady reading never convinces")
@@ -808,7 +816,9 @@ struct PumpScanWiringTests {
 
         // Alternating readings — a reflection sliding over the display.
         for index in 0..<10 {
-            let frame = index.isMultiple(of: 2) ? ["£13.72", "9.43", "1.455"] : ["£27.44", "18.86", "1.455"]
+            let frame = (index.isMultiple(of: 2)
+                ? ["£13.72", "9.43", "1.455"] : ["£27.44", "18.86", "1.455"])
+                .map { RecognizedText(text: $0) }
             store.dispatch(.fuel(.scanSaw(frame)), source: .init(file: #file, function: #function, line: #line))
             for _ in 0..<2 { await Task.yield() }
         }

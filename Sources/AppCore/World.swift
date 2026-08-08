@@ -94,7 +94,7 @@ public struct World: Sendable {
     // The scanner
     /// Each analysed camera frame's recognized text. Subscribing opens the camera (permission
     /// included); the stream ending closes it. What the text *means* is the domain's business.
-    public let captureText: @Sendable () -> Publisher<[String], Never>
+    public let captureText: @Sendable () -> Publisher<[RecognizedText], Never>
     /// Ends every capture stream — the deterministic "scan over" switch.
     public let stopTextCapture: @Sendable () -> Publisher<Void, Never>
     /// The live viewfinder for the scan screen. View-layer plumbing on the main actor — a
