@@ -7,116 +7,77 @@ import SwiftRexArchitecture
 import SwiftRexSwiftUI
 import SwiftUI
 
-/// The ride list, and a detail sheet per ride.
+/// The ride list, and a detail sheet per ride — bound **granularly**, and decomposed to make the
+/// granularity real: SwiftUI tracks observation per `body`, so a `@ViewBuilder` helper's reads
+/// accrue to its caller and only a separate view struct opens a new invalidation boundary. Each
+/// piece below is therefore its own struct with its own `body` and its own narrow set of tracked
+/// fields — the same `TrackedViewStore` passed down, because the granularity lives in the mirror's
+/// per-field observation, not in how small a projection is.
 ///
-/// A sheet rather than a second pushed screen: the app's routes are payload-free by design, and a
-/// detail screen as a route would need the selection smuggled through navigation. The selection is
-/// feature state; the sheet is its visibility.
-struct RideReviewView: View {
-    let viewStore: ViewStore<RideReviewFeature.State, RideReviewFeature.Action>
-    let formatDistance: @Sendable (Meters) -> String
-    let formatDuration: @Sendable (TimeInterval) -> String
-    let formatTime: @Sendable (Date) -> String
-    let formatSpeed: @Sendable (MPH) -> String
+/// Nothing here computes. The rows arrive worded, the series arrive cut and downsampled, the ball
+/// finds its place by binary search — the screen is a reader of prepared values, which is both the
+/// performance fix and the honest division of labour.
+public struct RideReviewView: View {
+    let viewStore: TrackedViewStore<RideReviewFeature.State, RideReviewFeature.Action>
 
-    var body: some View {
+    public var body: some View {
         List {
-            if viewStore.state.isLoading && viewStore.state.rides.isEmpty {
+            if viewStore.state.isLoading && viewStore.state.rows.isEmpty {
                 HStack {
                     ProgressView()
                     Text("Reading the journey log…").foregroundStyle(.secondary)
                 }
-            } else if viewStore.state.rides.isEmpty {
+            } else if viewStore.state.rows.isEmpty {
                 Label("No rides recorded yet.", systemImage: "road.lanes")
                     .foregroundStyle(.secondary)
             }
 
-            ForEach(viewStore.state.rides) { ride in
+            ForEach(viewStore.state.rows) { row in
                 Button {
-                    viewStore.dispatch(.select(ride.id))
+                    viewStore.dispatch(.select(row.id))
                 } label: {
-                    row(ride)
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack {
+                            Text(row.title).foregroundStyle(.primary)
+                            if !row.endedCleanly {
+                                Image(systemName: "bolt.slash")
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                                    .help("The app was killed mid-ride; the end time is the last record.")
+                            }
+                        }
+                        Text(row.subtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
         }
         .navigationTitle("Rides")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { viewStore.dispatch(.appeared) }
-        .sheet(item: Binding(
-            get: { viewStore.state.selectedRide.map { Selected(ride: $0) } },
-            set: { if $0 == nil { viewStore.dispatch(.select(nil)) } }
-        )) { selected in
-            RideDetailView(
-                ride: selected.ride,
-                viewStore: viewStore,
-                formatDistance: formatDistance,
-                formatDuration: formatDuration,
-                formatTime: formatTime,
-                formatSpeed: formatSpeed
-            )
-        }
-    }
-
-    /// `sheet(item:)` wants `Identifiable`; a ride already is, and the wrapper only exists so the
-    /// binding's value type is local to the view.
-    private struct Selected: Identifiable {
-        let ride: Ride
-        var id: Date { ride.id }
-    }
-
-    @ViewBuilder
-    private func row(_ ride: Ride) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack {
-                Text(formatTime(ride.start))
-                    .foregroundStyle(.primary)
-                if !ride.endedCleanly {
-                    Image(systemName: "bolt.slash")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                        .help("The app was killed mid-ride; the end time is the last record.")
-                }
-            }
-            Text(
-                "\(formatDuration(ride.duration)) · "
-                    + formatDistance(Meters(ride.distanceMetres))
-            )
-            .font(.caption)
-            .foregroundStyle(.secondary)
+        .sheet(isPresented: Binding(
+            get: { viewStore.state.selected != nil },
+            set: { if !$0 { viewStore.dispatch(.select(nil)) } }
+        )) {
+            RideDetailSheet(viewStore: viewStore)
         }
     }
 }
 
 // MARK: - Detail
 
-/// One ride, examined.
-///
-/// The map is pinned above the charts rather than being a row among them: a finger over any chart
-/// names a moment, and the ball on the map answers *where that was* — which only works if the map
-/// is still on screen while the charts are being touched.
-///
-/// The charts share one time window. Zooming any of them zooms them all and scrolling any scrolls
-/// them all, because they are four views of the same ride and a reader comparing speed against
-/// gradient needs the columns to line up. The map's zoom is its own — it answers "where", not
-/// "when".
-private struct RideDetailView: View {
-    let ride: Ride
-    let viewStore: ViewStore<RideReviewFeature.State, RideReviewFeature.Action>
-    let formatDistance: @Sendable (Meters) -> String
-    let formatDuration: @Sendable (TimeInterval) -> String
-    let formatTime: @Sendable (Date) -> String
-    let formatSpeed: @Sendable (MPH) -> String
-
-    // No view state at all: the scrub, the window and the pinch anchor live in the store, arrive
-    // as actions, and come back as state — so the same numbers that drive these pixels are
-    // inspectable in the log and shared by every chart and the map without a second copy.
+/// The sheet's chrome and worded sections. Reads `words` and `exportURL`; a scrub tick or a chart
+/// window change never re-evaluates this body.
+private struct RideDetailSheet: View {
+    let viewStore: TrackedViewStore<RideReviewFeature.State, RideReviewFeature.Action>
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                rideMap
+                RideMap(viewStore: viewStore)
                     .frame(height: 230)
-                charts
+                detailList
             }
             .navigationTitle("Ride")
             .navigationBarTitleDisplayMode(.inline)
@@ -128,56 +89,13 @@ private struct RideDetailView: View {
         }
     }
 
-    // MARK: Map
-
-    private var rideMap: some View {
-        let coordinates = ride.track.map {
-            CLLocationCoordinate2D(latitude: $0.fix.lat, longitude: $0.fix.lon)
-        }
-        return Map {
-            if coordinates.count > 1 {
-                MapPolyline(coordinates: coordinates)
-                    .stroke(.blue, style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
-            }
-            if let first = coordinates.first {
-                Marker("Start", systemImage: "flag", coordinate: first)
-                    .tint(.green)
-            }
-            if let last = coordinates.last, coordinates.count > 1 {
-                Marker("End", systemImage: "flag.checkered", coordinate: last)
-                    .tint(.red)
-            }
-            // The ball: where the finger's moment happened.
-            if let scrubTime = viewStore.state.scrubTime, let place = ride.position(at: scrubTime) {
-                Annotation("", coordinate: CLLocationCoordinate2D(
-                    latitude: place.latitude.rawValue, longitude: place.longitude.rawValue
-                )) {
-                    Circle()
-                        .fill(.orange)
-                        .stroke(.white, lineWidth: 2)
-                        .frame(width: 14, height: 14)
-                        .shadow(radius: 2)
-                }
-            }
-        }
-        .mapControlVisibility(.hidden)
-    }
-
-    // MARK: Charts
-
-    private var charts: some View {
+    private var detailList: some View {
         List {
             Section("Ride") {
-                LabeledContent("Started", value: formatTime(ride.start))
-                LabeledContent("Duration", value: formatDuration(ride.duration))
-                LabeledContent("Distance", value: formatDistance(Meters(ride.distanceMetres)))
-                if let average = ride.averageMovingMPH {
-                    LabeledContent("Average moving", value: formatSpeed(MPH(average)))
+                ForEach(viewStore.state.words.facts) { fact in
+                    LabeledContent(fact.label, value: fact.value)
                 }
-                if let top = ride.maxMPH {
-                    LabeledContent("Top speed", value: formatSpeed(MPH(top)))
-                }
-                if !ride.endedCleanly {
+                if !viewStore.state.words.endedCleanly {
                     Label(
                         "The app was killed mid-ride — the end time is the last record.",
                         systemImage: "bolt.slash"
@@ -187,31 +105,27 @@ private struct RideDetailView: View {
                 }
             }
 
-            speedChart
-            altitudeChart
-            gradientChart
-            indicatorChart
+            RideCharts(viewStore: viewStore)
 
-            if ride.cameraEventCount > 0 {
+            if let warnings = viewStore.state.words.cameraWarnings {
                 Section("Enforcement") {
-                    LabeledContent("Warnings given", value: "\(ride.cameraEventCount)")
+                    LabeledContent("Warnings given", value: warnings)
                 }
             }
 
-            let roads = ride.roadsVisited
-            if !roads.isEmpty {
-                Section("Roads · \(roads.count)") {
-                    ForEach(Array(roads.enumerated()), id: \.offset) { _, road in
-                        LabeledContent(road.label) {
-                            Text(road.mph.map { "\(Int($0)) mph" } ?? "—")
-                        }
+            if !viewStore.state.words.roads.isEmpty {
+                Section("Roads · \(viewStore.state.words.roads.count)") {
+                    ForEach(viewStore.state.words.roads) { road in
+                        LabeledContent(road.label) { Text(road.value) }
                     }
                 }
             }
 
             Section {
                 Button {
-                    viewStore.dispatch(.replayRide(ride.id))
+                    if let id = viewStore.state.selected {
+                        viewStore.dispatch(.replayRide(id))
+                    }
                 } label: {
                     Label("Replay this ride", systemImage: "play.circle")
                 }
@@ -219,15 +133,13 @@ private struct RideDetailView: View {
                 Text("The home screen plays the ride back in real time, announcements included.")
             }
 
-            if let destination = ride.destination {
+            if let destination = viewStore.state.words.destination,
+               let label = viewStore.state.words.destinationLabel {
                 Section {
                     Button {
                         viewStore.dispatch(.navigateAgain(destination))
                     } label: {
-                        Label(
-                            "Ride there again" + (destination.name.map { " · \($0)" } ?? ""),
-                            systemImage: "arrow.triangle.turn.up.right.diamond"
-                        )
+                        Label(label, systemImage: "arrow.triangle.turn.up.right.diamond")
                     }
                 } footer: {
                     Text("Routes are computed fresh — same destination, today's roads.")
@@ -251,100 +163,129 @@ private struct RideDetailView: View {
             }
         }
     }
+}
 
-    @ViewBuilder
-    private var speedChart: some View {
-        let series = ride.track.compactMap { point in
-            point.fix.mph.map { (time: point.time, mph: $0) }
-        }
-        if series.count > 1 {
-            Section("Speed · mph") {
-                sharedChart {
-                    ForEach(Array(series.enumerated()), id: \.offset) { _, point in
-                        LineMark(
-                            x: .value("Time", point.time),
-                            y: .value("mph", point.mph)
-                        )
-                        .interpolationMethod(.monotone)
-                    }
+// MARK: - The map
+
+/// The pinned map with the scrub ball. Its own body on purpose: it reads `detail` and
+/// `scrubTime`, so a scrub tick re-renders the ball — and only the ball's map.
+private struct RideMap: View {
+    let viewStore: TrackedViewStore<RideReviewFeature.State, RideReviewFeature.Action>
+
+    var body: some View {
+        let detail = viewStore.state.detail
+        Map {
+            if let track = detail?.track, track.count > 1 {
+                MapPolyline(coordinates: track.map {
+                    CLLocationCoordinate2D(latitude: $0.latitude.rawValue, longitude: $0.longitude.rawValue)
+                })
+                .stroke(.blue, style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
+            }
+            if let first = detail?.track.first {
+                Marker("Start", systemImage: "flag", coordinate: CLLocationCoordinate2D(
+                    latitude: first.latitude.rawValue, longitude: first.longitude.rawValue
+                ))
+                .tint(.green)
+            }
+            if let last = detail?.track.last, (detail?.track.count ?? 0) > 1 {
+                Marker("End", systemImage: "flag.checkered", coordinate: CLLocationCoordinate2D(
+                    latitude: last.latitude.rawValue, longitude: last.longitude.rawValue
+                ))
+                .tint(.red)
+            }
+            // The ball: where the finger's moment happened, found by binary search over the
+            // precomputed timeline rather than a walk over the ride.
+            if
+                let detail,
+                let scrubTime = viewStore.state.scrubTime,
+                let place = trackPosition(
+                    at: scrubTime, times: detail.fixTimes, coordinates: detail.fixCoordinates
+                ) {
+                Annotation("", coordinate: CLLocationCoordinate2D(
+                    latitude: place.latitude.rawValue, longitude: place.longitude.rawValue
+                )) {
+                    Circle()
+                        .fill(.orange)
+                        .stroke(.white, lineWidth: 2)
+                        .frame(width: 14, height: 14)
+                        .shadow(radius: 2)
                 }
             }
         }
+        .mapControlVisibility(.hidden)
     }
+}
 
-    @ViewBuilder
-    private var altitudeChart: some View {
-        let series = ride.track.compactMap { point in
-            point.fix.alt.map { (time: point.time, metres: $0) }
-        }
-        if series.count > 1 {
-            Section("Altitude · m") {
-                sharedChart {
-                    ForEach(Array(series.enumerated()), id: \.offset) { _, point in
-                        LineMark(
-                            x: .value("Time", point.time),
-                            y: .value("m", point.metres)
-                        )
-                        .interpolationMethod(.monotone)
-                        .foregroundStyle(.teal)
+// MARK: - The charts
+
+/// The four synced charts, in one body: they deliberately share a dependency set — window, anchor,
+/// scrub — because a pinch or a scroll *must* move all four together. What keeps them cheap is the
+/// data, not the boundary: each draws a few hundred downsampled points that never change while a
+/// finger is on them.
+private struct RideCharts: View {
+    let viewStore: TrackedViewStore<RideReviewFeature.State, RideReviewFeature.Action>
+
+    var body: some View {
+        let detail = viewStore.state.detail
+        Group {
+            if let speed = detail?.speed, speed.count > 1 {
+                Section("Speed · mph") {
+                    sharedChart {
+                        ForEach(Array(speed.enumerated()), id: \.offset) { _, point in
+                            LineMark(x: .value("Time", point.time), y: .value("mph", point.value))
+                                .interpolationMethod(.monotone)
+                        }
                     }
                 }
             }
-        }
-    }
-
-    @ViewBuilder
-    private var gradientChart: some View {
-        let series = ride.gradients
-        if series.count > 1 {
-            Section("Gradient · %") {
-                sharedChart {
-                    ForEach(Array(series.enumerated()), id: \.offset) { _, point in
-                        LineMark(
-                            x: .value("Time", point.time),
-                            y: .value("%", point.percent)
-                        )
-                        .interpolationMethod(.monotone)
-                        .foregroundStyle(.purple)
+            if let altitude = detail?.altitude, altitude.count > 1 {
+                Section("Altitude · m") {
+                    sharedChart {
+                        ForEach(Array(altitude.enumerated()), id: \.offset) { _, point in
+                            LineMark(x: .value("Time", point.time), y: .value("m", point.value))
+                                .interpolationMethod(.monotone)
+                                .foregroundStyle(.teal)
+                        }
                     }
-                    RuleMark(y: .value("level", 0))
-                        .lineStyle(StrokeStyle(lineWidth: 0.5))
+                }
+            }
+            if let gradient = detail?.gradient, gradient.count > 1 {
+                Section("Gradient · %") {
+                    sharedChart {
+                        ForEach(Array(gradient.enumerated()), id: \.offset) { _, point in
+                            LineMark(x: .value("Time", point.time), y: .value("%", point.value))
+                                .interpolationMethod(.monotone)
+                                .foregroundStyle(.purple)
+                        }
+                        RuleMark(y: .value("level", 0))
+                            .lineStyle(StrokeStyle(lineWidth: 0.5))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            Section("Indicators · \(viewStore.state.words.indicatorSummary)") {
+                if detail?.indicators.isEmpty != false {
+                    Text("No indicator use recorded.")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var indicatorChart: some View {
-        let intervals = ride.indicatorIntervals
-        let counts = ride.indicatorCounts
-        Section("Indicators · \(counts.left) left, \(counts.right) right") {
-            if intervals.isEmpty {
-                Text("No indicator use recorded.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                sharedChart(height: 90) {
-                    ForEach(Array(intervals.enumerated()), id: \.offset) { _, interval in
-                        RectangleMark(
-                            xStart: .value("From", interval.start),
-                            xEnd: .value("To", interval.end),
-                            y: .value("Side", interval.side == "left" ? "L" : "R")
-                        )
-                        .foregroundStyle(interval.side == "left" ? .teal : .orange)
-                        .cornerRadius(3)
+                } else {
+                    sharedChart(height: 90) {
+                        ForEach(Array((detail?.indicators ?? []).enumerated()), id: \.offset) { _, interval in
+                            RectangleMark(
+                                xStart: .value("From", interval.start),
+                                xEnd: .value("To", interval.end),
+                                y: .value("Side", interval.side == "left" ? "L" : "R")
+                            )
+                            .foregroundStyle(interval.side == "left" ? .teal : .orange)
+                            .cornerRadius(3)
+                        }
                     }
                 }
             }
         }
     }
 
-    /// One chart, wearing the shared window.
-    ///
-    /// Every chart gets the same visible-domain length and the same scrub selection, which is what
-    /// keeps four views of one ride in step: zoom or scroll any of them and the others follow,
-    /// touch any of them and the same rule appears on all — and the ball lands on the map.
+    /// One chart, wearing the shared window: same visible domain, same scrub rule, same gestures.
     private func sharedChart<Content: ChartContent>(
         height: CGFloat = 150,
         @ChartContentBuilder content: () -> Content
@@ -357,7 +298,7 @@ private struct RideDetailView: View {
                     .foregroundStyle(.orange)
             }
         }
-        .chartXScale(domain: ride.start...max(ride.end, ride.start.addingTimeInterval(60)))
+        .chartXScale(domain: viewStore.state.words.start...viewStore.state.words.end)
         .chartScrollableAxes(.horizontal)
         .chartXVisibleDomain(length: viewStore.state.chartWindowSeconds)
         .chartScrollPosition(x: viewStore.binding(
@@ -371,22 +312,6 @@ private struct RideDetailView: View {
                     viewStore.dispatch(.chartPinchChanged(value.magnification))
                 }
                 .onEnded { _ in viewStore.dispatch(.chartPinchEnded) }
-        )
-    }
-}
-
-extension RideReviewFeature: ViewFactory {
-    @MainActor
-    public static func view(
-        store: any StoreType<Action, State>,
-        environment: Environment
-    ) -> some View {
-        RideReviewView(
-            viewStore: ViewStore(store),
-            formatDistance: environment.formatDistance,
-            formatDuration: environment.formatDuration,
-            formatTime: environment.formatTime,
-            formatSpeed: environment.formatSpeed
         )
     }
 }

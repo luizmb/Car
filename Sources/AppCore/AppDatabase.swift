@@ -92,6 +92,12 @@ final class AppDatabase: @unchecked Sendable {
             CREATE TABLE IF NOT EXISTS trip (
                 id INTEGER PRIMARY KEY CHECK (id = 1), metres REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS journey (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                start TEXT NOT NULL, via TEXT,
+                end TEXT, seconds INTEGER, metres REAL
+            );
+            CREATE INDEX IF NOT EXISTS journey_start_time ON journey(start);
             """, nil, nil, nil)
         ensureJourneySchema()
     }
@@ -105,9 +111,10 @@ final class AppDatabase: @unchecked Sendable {
     /// Column names are the payloads' own coding keys, so a row reads like the record it stores —
     /// including `camera`'s historical `cameraType`, which the flat JSON format needed and renaming
     /// now would only make old and new records disagree.
+    /// The journey's start and end are **not** two event tables: they are the lifecycle of one
+    /// entity, so they live as one `journey` row — a start inserts it, its end updates it. Every
+    /// other record type keeps a table of its own.
     private static let journeySchema: [RecordType: [(name: String, type: String)]] = [
-        .journeyStart: [("via", "TEXT")],
-        .journeyEnd: [("seconds", "INTEGER"), ("started", "TEXT")],
         .fix: [("lat", "REAL"), ("lon", "REAL"), ("mph", "REAL"),
                ("course", "REAL"), ("alt", "REAL"), ("acc", "REAL")],
         .road: [("mph", "REAL"), ("origin", "TEXT"), ("label", "TEXT"), ("variable", "INTEGER")],
@@ -120,10 +127,10 @@ final class AppDatabase: @unchecked Sendable {
         .barometer: [("kpa", "REAL"), ("relativeAltitude", "REAL")],
         .activity: [("activity", "TEXT"), ("confidence", "INTEGER")],
         .device: [("device", "TEXT"), ("connected", "INTEGER")],
-        .destination: [("name", "TEXT"), ("lat", "REAL"), ("lon", "REAL")],
-        .refuel: [("litres", "REAL"), ("price", "REAL"), ("odometer", "REAL"),
-                  ("brim", "INTEGER"), ("station", "TEXT"), ("stationID", "INTEGER")],
-        .reserve: [("km", "REAL"), ("odometer", "REAL")]
+        .destination: [("name", "TEXT"), ("lat", "REAL"), ("lon", "REAL")]
+        // No `refuel` or `reserve` here: the fuel store's own tables are the single truth, and
+        // the timeline *expands* them by date — the JSONL era wrote the same fact twice, once
+        // per file, and one relational database has no excuse for that.
     ]
 
     /// `average-zone` the type, `average_zone` the table — SQL identifiers do not hyphenate.
@@ -137,8 +144,8 @@ final class AppDatabase: @unchecked Sendable {
     /// NULL for it, which is the truth.
     private func ensureJourneySchema() {
         for type in RecordType.allCases {
+            guard let columns = Self.journeySchema[type] else { continue }
             let table = Self.table(type)
-            let columns = Self.journeySchema[type] ?? []
             let definitions = columns.map { ", \($0.name) \($0.type)" }.joined()
             sqlite3_exec(handle, """
                 CREATE TABLE IF NOT EXISTS \(table) (
@@ -168,9 +175,29 @@ final class AppDatabase: @unchecked Sendable {
         let t = SQLValue.text(timestamps.string(from: record.time))
         switch record.payload {
         case let p as JourneyStartPayload:
-            insert(.journeyStart, [t, .text(p.via)])
+            query(
+                "INSERT INTO journey (start, via) VALUES (?, ?)",
+                bind: [t, .text(p.via)]
+            ) { _ in }
         case let p as JourneyEndPayload:
-            insert(.journeyEnd, [t, .integer(p.seconds), .text(timestamps.string(from: p.started))])
+            // The end completes its start's row; an end whose start was never written — possible
+            // only if the log opened mid-ride — still records the whole journey.
+            let started = timestamps.string(from: p.started)
+            var exists = false
+            query("SELECT id FROM journey WHERE start = ? LIMIT 1", bind: [.text(started)]) { _ in
+                exists = true
+            }
+            if exists {
+                query(
+                    "UPDATE journey SET end = ?, seconds = ?, metres = ? WHERE start = ?",
+                    bind: [t, .integer(p.seconds), .real(p.metres), .text(started)]
+                ) { _ in }
+            } else {
+                query(
+                    "INSERT INTO journey (start, end, seconds, metres) VALUES (?, ?, ?, ?)",
+                    bind: [.text(started), t, .integer(p.seconds), .real(p.metres)]
+                ) { _ in }
+            }
         case let p as FixPayload:
             insert(.fix, [t, .real(p.lat), .real(p.lon), .real(p.mph),
                           .real(p.course), .real(p.alt), .real(p.acc)])
@@ -195,11 +222,10 @@ final class AppDatabase: @unchecked Sendable {
             insert(.device, [t, .text(p.device), .bool(p.connected)])
         case let p as DestinationPayload:
             insert(.destination, [t, .text(p.name), .real(p.lat), .real(p.lon)])
-        case let p as RefuelPayload:
-            insert(.refuel, [t, .real(p.litres), .real(p.price), .real(p.odometer),
-                             .bool(p.brim), .text(p.station), .integer(p.stationID)])
-        case let p as ReservePayload:
-            insert(.reserve, [t, .real(p.km), .real(p.odometer)])
+        case is RefuelPayload, is ReservePayload:
+            // Deliberately nothing: the fuel store's save carries the fact, and the timeline
+            // reads it back from there. Writing it twice was the JSONL era's habit.
+            return
         default:
             return
         }
@@ -212,19 +238,44 @@ final class AppDatabase: @unchecked Sendable {
         query(sql, bind: values) { _ in }
     }
 
-    // MARK: - Reading the timeline
+    // MARK: - The rides list, without the timeline
 
-    /// The whole timeline, reassembled across the tables and ordered by time — the same promise
-    /// the dated files kept by sorting their names, now kept by sorting the union.
-    func journeyRecords() -> [JourneyRecord] {
-        var records: [JourneyRecord] = []
+    /// The list's three columns, straight off `journey_start` joined to its end — a dozen rows
+    /// read as a dozen rows. The timeline is never walked here; that is the entire point.
+    func rideSummaries() -> [RideSummary] {
+        var summaries: [RideSummary] = []
+        query("SELECT start, seconds, metres, end FROM journey ORDER BY start DESC") { s in
+            guard let start = text(s, 0).flatMap(parseTimestamp) else { return }
+            summaries.append(RideSummary(
+                start: start, seconds: integer(s, 1), metres: real(s, 2),
+                endedCleanly: text(s, 3) != nil
+            ))
+        }
+        return summaries
+    }
+
+    /// One ride's records, by its own time window — the detail's data, loaded when a detail
+    /// opens and never before. `end` is `nil` for a ride the app was killed inside; the window
+    /// then runs to the next journey's start or the end of the record.
+    func rideRecords(from start: Date, seconds: Int?) -> [JourneyRecord] {
+        let lower = timestamps.string(from: start)
+        // A minute of slack after the recorded end: the closing records themselves.
+        let upper = seconds.map {
+            timestamps.string(from: start.addingTimeInterval(Double($0) + 60))
+        } ?? nextJourneyStart(after: start).map { timestamps.string(from: $0) }
+
+        var records = journeyLifecycleRecords(where: "start = ?", bind: [.text(lower)])
+        records.append(contentsOf: fuelTimelineRecords(from: lower, to: upper))
         for type in RecordType.allCases {
-            let columns = (Self.journeySchema[type] ?? []).map(\.name).joined(separator: ", ")
-            query("SELECT t\(columns.isEmpty ? "" : ", " + columns) FROM \(Self.table(type))") {
+            guard let schema = Self.journeySchema[type] else { continue }
+            let columns = schema.map(\.name).joined(separator: ", ")
+            let sql = "SELECT t\(columns.isEmpty ? "" : ", " + columns) FROM \(Self.table(type))"
+                + " WHERE t >= ?" + (upper.map { _ in " AND t <= ?" } ?? "")
+            query(sql, bind: [SQLValue.text(lower)] + (upper.map { [SQLValue.text($0)] } ?? [])) {
                 statement in
                 guard
                     let stamp = text(statement, 0),
-                    let time = timestamps.date(from: stamp),
+                    let time = parseTimestamp(stamp),
                     let payload = payload(of: type, from: statement)
                 else { return }
                 records.append(JourneyRecord(time: time, payload: payload))
@@ -233,18 +284,115 @@ final class AppDatabase: @unchecked Sendable {
         return records.sorted { $0.time < $1.time }
     }
 
+    private func nextJourneyStart(after start: Date) -> Date? {
+        var next: Date?
+        query(
+            "SELECT start FROM journey WHERE start > ? ORDER BY start ASC LIMIT 1",
+            bind: [.text(timestamps.string(from: start))]
+        ) { s in
+            next = text(s, 0).flatMap(parseTimestamp)
+        }
+        return next
+    }
+
+    // MARK: - Reading the timeline
+
+    /// The whole timeline, reassembled across the tables and ordered by time — the same promise
+    /// the dated files kept by sorting their names, now kept by sorting the union.
+    func journeyRecords() -> [JourneyRecord] {
+        var records: [JourneyRecord] = journeyLifecycleRecords(where: nil, bind: [])
+        records.append(contentsOf: fuelTimelineRecords(from: nil, to: nil))
+        for type in RecordType.allCases {
+            guard let schema = Self.journeySchema[type] else { continue }
+            let columns = schema.map(\.name).joined(separator: ", ")
+            query("SELECT t\(columns.isEmpty ? "" : ", " + columns) FROM \(Self.table(type))") {
+                statement in
+                guard
+                    let stamp = text(statement, 0),
+                    let time = parseTimestamp(stamp),
+                    let payload = payload(of: type, from: statement)
+                else { return }
+                records.append(JourneyRecord(time: time, payload: payload))
+            }
+        }
+        return records.sorted { $0.time < $1.time }
+    }
+
+    /// Refuels and reserve switches, expanded from the store tables into the records the
+    /// timeline speaks — optionally windowed. One truth, two readings.
+    private func fuelTimelineRecords(from lower: String?, to upper: String?) -> [JourneyRecord] {
+        var records: [JourneyRecord] = []
+        var clause = ""
+        var bind: [SQLValue] = []
+        if let lower { clause += " WHERE date >= ?"; bind.append(.text(lower)) }
+        if let upper { clause += (clause.isEmpty ? " WHERE" : " AND") + " date <= ?"; bind.append(.text(upper)) }
+        query("""
+            SELECT r.date, r.litres, r.pricePerLitre, r.odometer, r.filledToBrim,
+                   s.name, s.brand, s.id
+            FROM refuel_record r LEFT JOIN station s ON s.id = r.stationID\(clause)
+            """, bind: bind) { s in
+            guard let date = text(s, 0).flatMap(parseTimestamp) else { return }
+            records.append(JourneyRecord(time: date, payload: RefuelPayload(
+                litres: real(s, 1) ?? 0, price: real(s, 2) ?? 0, odometer: real(s, 3),
+                brim: bool(s, 4), station: text(s, 5) ?? text(s, 6), stationID: integer(s, 7)
+            )))
+        }
+        query("SELECT date, gpsKilometres, odometer FROM reserve_event\(clause)", bind: bind) { s in
+            guard let date = text(s, 0).flatMap(parseTimestamp) else { return }
+            records.append(JourneyRecord(time: date, payload: ReservePayload(
+                km: real(s, 1), odometer: real(s, 2)
+            )))
+        }
+        return records
+    }
+
+    /// The rider's recent destinations, straight off their own table — the search screen's
+    /// completion list without a timeline in sight.
+    func recentDestinationRecords(limit: Int = 30) -> [JourneyRecord] {
+        var records: [JourneyRecord] = []
+        query(
+            "SELECT t, name, lat, lon FROM destination ORDER BY t DESC LIMIT ?",
+            bind: [.integer(limit)]
+        ) { s in
+            guard let time = text(s, 0).flatMap(parseTimestamp) else { return }
+            records.append(JourneyRecord(time: time, payload: DestinationPayload(
+                name: text(s, 1), lat: real(s, 2) ?? 0, lon: real(s, 3) ?? 0
+            )))
+        }
+        return records
+    }
+
+    /// The `journey` rows, expanded back into the start/end records the domain speaks.
+    private func journeyLifecycleRecords(where clause: String?, bind: [SQLValue]) -> [JourneyRecord] {
+        var records: [JourneyRecord] = []
+        query(
+            "SELECT start, via, end, seconds, metres FROM journey" + (clause.map { " WHERE " + $0 } ?? ""),
+            bind: bind
+        ) { s in
+            guard let start = text(s, 0).flatMap(parseTimestamp) else { return }
+            // `via` is written by every witnessed start; a row created by an orphan end has none,
+            // and inventing a start record for it would be testimony nobody gave.
+            if let via = text(s, 1) {
+                records.append(JourneyRecord(time: start, payload: JourneyStartPayload(via: via)))
+            }
+            if let end = text(s, 2).flatMap(parseTimestamp) {
+                records.append(JourneyRecord(time: end, payload: JourneyEndPayload(
+                    seconds: integer(s, 3) ?? 0, started: start, metres: real(s, 4)
+                )))
+            }
+        }
+        return records
+    }
+
     /// Columns back into the payload struct — the inverse of `append`, held to it by the same
     /// exhaustive test. Column 0 is always `t`; payload columns start at 1 in schema order.
     private func payload(
         of type: RecordType, from s: OpaquePointer
     ) -> (any JourneyPayloadType)? {
         switch type {
-        case .journeyStart:
-            JourneyStartPayload(via: text(s, 1) ?? "")
-        case .journeyEnd:
-            text(s, 2).flatMap { timestamps.date(from: $0) }.map {
-                JourneyEndPayload(seconds: integer(s, 1) ?? 0, started: $0)
-            }
+        case .journeyStart, .journeyEnd:
+            // Lifecycle records live in the `journey` table and are expanded elsewhere.
+            nil
         case .fix:
             FixPayload(lat: real(s, 1) ?? 0, lon: real(s, 2) ?? 0, mph: real(s, 3),
                        course: real(s, 4), alt: real(s, 5), acc: real(s, 6))
@@ -272,11 +420,9 @@ final class AppDatabase: @unchecked Sendable {
             DevicePayload(device: text(s, 1) ?? "", connected: bool(s, 2))
         case .destination:
             DestinationPayload(name: text(s, 1), lat: real(s, 2) ?? 0, lon: real(s, 3) ?? 0)
-        case .refuel:
-            RefuelPayload(litres: real(s, 1) ?? 0, price: real(s, 2) ?? 0, odometer: real(s, 3),
-                          brim: bool(s, 4), station: text(s, 5), stationID: integer(s, 6))
-        case .reserve:
-            ReservePayload(km: real(s, 1), odometer: real(s, 2))
+        case .refuel, .reserve:
+            // Fuel facts live in the store tables and are expanded from there.
+            nil
         }
     }
 
@@ -293,7 +439,7 @@ final class AppDatabase: @unchecked Sendable {
             """) { s in
             guard
                 let id = text(s, 0).flatMap(UUID.init(uuidString:)),
-                let date = text(s, 1).flatMap({ self.timestamps.date(from: $0) }),
+                let date = text(s, 1).flatMap(parseTimestamp),
                 let grade = text(s, 4).flatMap(FuelGrade.init(rawValue:))
             else { return }
             refuels.append(RefuelRecord(
@@ -314,7 +460,7 @@ final class AppDatabase: @unchecked Sendable {
         query("SELECT id, date, odometer, gpsKilometres, lat, lon FROM reserve_event ORDER BY date") { s in
             guard
                 let id = text(s, 0).flatMap(UUID.init(uuidString:)),
-                let date = text(s, 1).flatMap({ self.timestamps.date(from: $0) })
+                let date = text(s, 1).flatMap(parseTimestamp)
             else { return }
             reserves.append(ReserveEvent(
                 id: id, date: date,
@@ -376,7 +522,7 @@ final class AppDatabase: @unchecked Sendable {
             guard
                 let itemID = text(s, 0),
                 let id = text(s, 1).flatMap(UUID.init(uuidString:)),
-                let date = text(s, 2).flatMap({ self.timestamps.date(from: $0) })
+                let date = text(s, 2).flatMap(parseTimestamp)
             else { return }
             events[itemID, default: []].append(MaintenanceEvent(
                 id: id, date: date,
@@ -397,7 +543,7 @@ final class AppDatabase: @unchecked Sendable {
                 let id = UUID(uuidString: idText),
                 let due = self.due(
                     rule: text(s, 2),
-                    date: text(s, 3).flatMap { self.timestamps.date(from: $0) },
+                    date: text(s, 3).flatMap(parseTimestamp),
                     odometer: real(s, 4)
                 )
             else { return }

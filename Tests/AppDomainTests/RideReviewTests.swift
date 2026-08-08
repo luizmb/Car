@@ -236,3 +236,68 @@ struct RecentDestinationTests {
         #expect(ride?.destination == nil)
     }
 }
+
+@Suite("Ride detail precompute")
+struct RideDetailTests {
+    private func ride(fixes: Int) -> Ride {
+        let records = (0..<fixes).map { (second: Int) -> JourneyRecord in
+            let lat: Double = 52.0 + Double(second) / 10_000.0
+            let mph: Double = Double(second % 60)
+            let alt: Double = 90.0 + Double(second % 10)
+            return JourneyRecord(
+                time: Date(timeIntervalSince1970: Double(second)),
+                payload: FixPayload(lat: lat, lon: -0.4, mph: mph, course: nil, alt: alt, acc: 5)
+            )
+        }
+        return Ride(
+            start: Date(timeIntervalSince1970: 0),
+            end: Date(timeIntervalSince1970: Double(fixes)),
+            endedCleanly: true, records: records
+        )
+    }
+
+    @Test("Charts are downsampled; the track and timeline stay full resolution")
+    func downsampling() {
+        let detail = rideDetail(for: ride(fixes: 2_400))
+        #expect(detail.track.count == 2_400)
+        #expect(detail.fixTimes.count == 2_400)
+        #expect(detail.speed.count <= 320)          // 160 buckets, two extremes each
+        #expect(detail.speed.count >= 160)
+        // The extremes survive: the top speed in the data is still in the series.
+        #expect(detail.speed.map(\.value).max() == 59)
+    }
+
+    @Test("A short ride passes through untouched")
+    func shortRideUntouched() {
+        let detail = rideDetail(for: ride(fixes: 50))
+        #expect(detail.speed.count == 50)
+    }
+
+    @Test("The ball's binary search matches the ride")
+    func ballLookup() {
+        let detail = rideDetail(for: ride(fixes: 100))
+        let place = trackPosition(
+            at: Date(timeIntervalSince1970: 50.5),
+            times: detail.fixTimes, coordinates: detail.fixCoordinates
+        )
+        #expect(place != nil)
+        // Halfway between fixes 50 and 51, interpolated.
+        #expect(abs((place?.latitude.rawValue ?? 0) - (52 + 50.5 / 10_000)) < 0.000_01)
+        // Clamped at the ends rather than extrapolated.
+        #expect(trackPosition(
+            at: Date(timeIntervalSince1970: -10),
+            times: detail.fixTimes, coordinates: detail.fixCoordinates
+        )?.latitude == Latitude(52))
+    }
+
+    @Test("Downsampling keeps extremes and order")
+    func minMaxBuckets() {
+        let points = (0..<1_000).map {
+            ChartPoint(time: Date(timeIntervalSince1970: Double($0)), value: $0 == 500 ? 99 : 10)
+        }
+        let thinned = downsampled(points, buckets: 50)
+        #expect(thinned.count <= 100)
+        #expect(thinned.map(\.value).contains(99))
+        #expect(thinned == thinned.sorted { $0.time < $1.time })
+    }
+}

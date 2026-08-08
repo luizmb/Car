@@ -128,10 +128,13 @@ public struct World: Sendable {
     /// Appends a line to the ride log. Temporary raw capture until the journey recorder lands.
     /// The firehose: every action, on or off journey. Useful for a week, not for a year.
     public let logAction: @Sendable (String) -> Publisher<Void, Never>
-    /// Every record the journey log holds, across every day's file. The review feature's whole
-    /// input: rides are reassembled from these, never stored separately, so the screens cannot
-    /// disagree with the log.
-    public let loadJourneyRecords: @Sendable () -> Publisher<[JourneyRecord], Never>
+    /// The rider's recent destinations, off their own table — the search screen's completion
+    /// list without a timeline in sight.
+    public let loadRecentDestinations: @Sendable () -> Publisher<[AddressSuggestion], Never>
+    /// The rides list's three columns — a dozen rows read as a dozen rows, the timeline untouched.
+    public let loadRideSummaries: @Sendable () -> Publisher<[RideSummary], Never>
+    /// One ride's records by its time window, for the detail that actually opened.
+    public let loadRideRecords: @Sendable (Date, Int?) -> Publisher<[JourneyRecord], Never>
     /// Writes a shareable file and hands back its URL. Exists so exporting a GPX is a value
     /// through a boundary rather than a view writing to disk.
     public let writeShareFile: @Sendable (String, String) -> Publisher<URL?, Never>
@@ -185,6 +188,9 @@ public struct World: Sendable {
     /// A time of day, for an arrival estimate. Locale-aware, so it follows the rider's 12/24-hour
     /// setting rather than this app having an opinion about it.
     public let formatTime: @Sendable (Date) -> String
+    /// A moment with its day — "Fri 7 Aug, 21:03" — for lists that span days, where a bare time
+    /// makes Thursday's ride indistinguishable from Friday's.
+    public let formatDayTime: @Sendable (Date) -> String
     public let formatBearing: @Sendable (Course) -> String
     public let formatCoordinate: @Sendable (Latitude, Longitude) -> String
 }

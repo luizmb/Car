@@ -62,9 +62,16 @@ public struct JourneyEndPayload: JourneyPayloadType, Equatable {
     /// Repeated here so one line is the whole journey, even if the file rotated at UTC midnight or
     /// the app was relaunched mid-ride.
     public let started: Date
-    public init(seconds: Int, started: Date) {
+    /// Metres ridden, accumulated fix by fix while the journey ran and written down **once**,
+    /// here — deliberately denormalised, because recomputing it means walking every fix of the
+    /// ride and the list screen exists to *not* do that. `nil` on records written before the
+    /// column existed.
+    public let metres: Double?
+
+    public init(seconds: Int, started: Date, metres: Double? = nil) {
         self.seconds = seconds
         self.started = started
+        self.metres = metres
     }
 }
 

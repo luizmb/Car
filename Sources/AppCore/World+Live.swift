@@ -528,8 +528,16 @@ extension World {
             logAction: { line in
                 Publisher.future { rideLog.append(line) }
             },
-            loadJourneyRecords: {
-                Publisher.future { appDatabase?.journeyRecords() ?? [] }
+            loadRecentDestinations: {
+                Publisher.future {
+                    recentDestinations(from: appDatabase?.recentDestinationRecords() ?? [])
+                }
+            },
+            loadRideSummaries: {
+                Publisher.future { appDatabase?.rideSummaries() ?? [] }
+            },
+            loadRideRecords: { start, seconds in
+                Publisher.future { appDatabase?.rideRecords(from: start, seconds: seconds) ?? [] }
             },
             writeShareFile: { name, contents in
                 Publisher.future {
@@ -606,6 +614,12 @@ extension World {
             },
             formatTime: { date in
                 date.formatted(.dateTime.hour().minute().locale(locale))
+            },
+            formatDayTime: { date in
+                date.formatted(
+                    .dateTime.weekday(.abbreviated).day().month(.abbreviated)
+                        .hour().minute().locale(locale)
+                )
             },
             formatBearing: { @Sendable course in numFmt1dp.format(course.rawValue) },
             formatCoordinate: { lat, lon in

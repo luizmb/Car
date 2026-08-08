@@ -105,7 +105,7 @@ public enum NavigationFeature {
         public let completeAddress: @Sendable (String, Latitude?, Longitude?)
             -> Publisher<[AddressSuggestion], Never>
         /// The journey log, for the recent-destinations list.
-        public let loadJourneyRecords: @Sendable () -> Publisher<[JourneyRecord], Never>
+        public let loadRecentDestinations: @Sendable () -> Publisher<[AddressSuggestion], Never>
         /// A completion turned into a position. Costs a request, so it runs once, for the one picked.
         public let resolveAddress: @Sendable (AddressSuggestion) -> Publisher<AddressSuggestion?, Never>
         public let routes: @Sendable (Coordinate, Coordinate, RoutePreferences)
@@ -123,7 +123,7 @@ public enum NavigationFeature {
         public init(
             completeAddress: @escaping @Sendable (String, Latitude?, Longitude?)
                 -> Publisher<[AddressSuggestion], Never>,
-            loadJourneyRecords: @escaping @Sendable () -> Publisher<[JourneyRecord], Never>,
+            loadRecentDestinations: @escaping @Sendable () -> Publisher<[AddressSuggestion], Never>,
             resolveAddress: @escaping @Sendable (AddressSuggestion) -> Publisher<AddressSuggestion?, Never>,
             routes: @escaping @Sendable (Coordinate, Coordinate, RoutePreferences)
                 -> Publisher<Result<[RouteOption], RouteError>, Never>,
@@ -134,7 +134,7 @@ public enum NavigationFeature {
             now: @escaping @Sendable () -> Date
         ) {
             self.completeAddress = completeAddress
-            self.loadJourneyRecords = loadJourneyRecords
+            self.loadRecentDestinations = loadRecentDestinations
             self.resolveAddress = resolveAddress
             self.routes = routes
             self.speak = speak
@@ -154,8 +154,7 @@ public enum NavigationFeature {
             switch action {
             case .appeared:
                 return .produce { ctx in
-                    ctx.environment.loadJourneyRecords()
-                        .asEffect { Action.recentsLoaded(recentDestinations(from: $0)) }
+                    ctx.environment.loadRecentDestinations().asEffect(Action.recentsLoaded)
                 }
 
             case let .recentsLoaded(recents):

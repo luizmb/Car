@@ -14,6 +14,35 @@ import SwiftRexArchitecture
 /// from raw feeds, because the phone is the only party that has resolved the road, run the speed
 /// zone arithmetic and thinned the route.
 func watchSnapshot(of state: AppState) -> WatchSnapshot {
+    // While a tape is running, the wrist mirrors the tape: the replay hosts a second monitor,
+    // and its display *is* the ride being watched — speed, limit, road, position, blinker. The
+    // moment the replay screen goes, the wrist snaps back to the live world.
+    if let replay = state.path.compactMap(StackEntry.prism.replay.preview).last {
+        return watchSnapshot(
+            monitor: replay.monitor,
+            indicator: replay.indicator,
+            sinceFillKm: nil,
+            journeyActive: !replay.finished,
+            fuelLogEmpty: true
+        )
+    }
+    return watchSnapshot(
+        monitor: state.speedMonitor,
+        indicator: state.indicator.side,
+        sinceFillKm: state.trip.kilometresSinceFill.rawValue,
+        journeyActive: JourneyPhase.prism.active.preview(state.journey) != nil,
+        fuelLogEmpty: state.fuelLog.refuels.isEmpty
+    )
+}
+
+private func watchSnapshot(
+    monitor: SpeedMonitorFeature.State,
+    indicator: Side?,
+    sinceFillKm: Double?,
+    journeyActive: Bool,
+    fuelLogEmpty: Bool
+) -> WatchSnapshot {
+    let state = (speedMonitor: monitor, indicator: indicator)
     let display = state.speedMonitor.display
     let mph = state.speedMonitor.lastLocation?.speed
         .map { Iso<MPS, MPH>.convert.get($0).rawValue }
@@ -42,16 +71,15 @@ func watchSnapshot(of state: AppState) -> WatchSnapshot {
         limitIsAssumed: assumed,
         overLimit: over,
         roadLabel: display.roadRef ?? display.roadName,
-        indicator: state.indicator.side.map { $0 == .left ? "left" : "right" },
+        indicator: state.indicator.map { $0 == .left ? "left" : "right" },
         latitude: state.speedMonitor.lastLocation?.latitude.rawValue,
         longitude: state.speedMonitor.lastLocation?.longitude.rawValue,
         headingDegrees: display.mapHeading,
         routeLatitudes: route.latitudes,
         routeLongitudes: route.longitudes,
         nextTurnMetres: state.speedMonitor.nextTurn?.rawValue,
-        sinceFillKm: state.fuelLog.refuels.isEmpty
-            ? nil : state.trip.kilometresSinceFill.rawValue,
-        journeyActive: JourneyPhase.prism.active.preview(state.journey) != nil
+        sinceFillKm: fuelLogEmpty ? nil : sinceFillKm,
+        journeyActive: journeyActive
     )
 }
 
@@ -90,6 +118,10 @@ func watchSyncBehavior() -> Behavior<AppAction, AppState, World> {
             || AppAction.prism.indicator.preview(action) != nil
             || AppAction.prism.guidanceUpdated.preview(action) != nil
             || AppAction.prism.journeyChanged.preview(action) != nil
+            // The tape moves the wrist too: replayed fixes, roads and blinker all repaint the
+            // watch exactly as the live world's would.
+            || AppAction.prism.replay.preview(action) != nil
+            || AppAction.prism.navigation.preview(action) != nil
         guard moves else { return .doNothing }
         return .produce { ctx in
             ctx.readLiveState()

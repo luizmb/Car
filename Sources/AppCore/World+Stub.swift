@@ -55,7 +55,9 @@ public extension World {
             // directly, so there is no parse to fail.
             newID: { UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)) },
             logAction: { _ in .empty() },
-            loadJourneyRecords: { .just([]) },
+            loadRecentDestinations: { .just([]) },
+            loadRideSummaries: { .just([]) },
+            loadRideRecords: { _, _ in .just([]) },
             writeShareFile: { _, _ in .just(nil) },
             logJourney: { _ in .empty() },
             speak: { _ in .empty() },
@@ -75,6 +77,7 @@ public extension World {
             formatDistance: { "\($0.rawValue)" },
             formatDuration: { "\($0)" },
             formatTime: { "\($0)" },
+            formatDayTime: { "\($0)" },
             formatBearing: { "\($0.rawValue)" },
             formatCoordinate: { _, _ in "" }
         )

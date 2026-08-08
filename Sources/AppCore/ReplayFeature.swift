@@ -195,8 +195,8 @@ func replayBehavior() -> Behavior<AppAction, AppState, World> {
             let rides = AppAction.prism.rides.preview(action),
             let rideID = RideReviewFeature.Action.prism.replayRide.preview(rides),
             let ride = context.stateBefore?.path
-                .compactMap(StackEntry.prism.rides.preview).last?
-                .rides.first(where: { $0.id == rideID })
+                .compactMap(StackEntry.prism.rides.preview).last?.detailRide,
+            ride.id == rideID
         else { return .doNothing }
         return .produce { _ in
             Effect.just(.rides(.select(nil)))

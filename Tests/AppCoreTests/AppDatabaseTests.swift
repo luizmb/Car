@@ -49,10 +49,47 @@ struct AppDatabaseJourneyTests {
         let written = JourneyRecord(time: Date(timeIntervalSince1970: 500), payload: sample(type))
         db.append(written)
 
+        // Fuel facts are the store's, not the timeline's: appending is deliberately nothing,
+        // and the expansion test below proves they come back from the store instead.
+        if type == .refuel || type == .reserve {
+            #expect(db.journeyRecords().isEmpty)
+            return
+        }
         let records = db.journeyRecords()
         #expect(records.count == 1)
         #expect(records.first?.time == written.time)
         #expect(records.first.map { $0.payload.isEqual(to: written.payload) } == true)
+    }
+
+    /// The store's rows read back as timeline records — one truth, two readings, and refuels and
+    /// reserves each from their own table with their own fields.
+    @Test("Fuel facts expand into the timeline from the store")
+    func fuelExpansion() throws {
+        let db = try makeDatabase()
+        let fillDate = Date(timeIntervalSince1970: 1_000)
+        let reserveDate = Date(timeIntervalSince1970: 2_000)
+        db.save(FuelLog(
+            refuels: [RefuelRecord(
+                id: UUID(), date: fillDate, litres: Litres(9.2), pricePerLitre: 1.47,
+                grade: .e5, filledToBrim: true, odometer: Kilometres(19_000),
+                latitude: nil, longitude: nil,
+                station: FuelStation(id: 7, brand: "Shell", name: "Shell Luton")
+            )],
+            reserves: [ReserveEvent(
+                id: UUID(), date: reserveDate, odometer: Kilometres(19_200),
+                gpsKilometres: Kilometres(210), latitude: nil, longitude: nil
+            )]
+        ))
+
+        let records = db.journeyRecords()
+        let refuel = records.compactMap { $0.payload as? RefuelPayload }.first
+        #expect(refuel?.litres == 9.2)
+        #expect(refuel?.station == "Shell Luton")
+        #expect(refuel?.stationID == 7)
+        let reserve = records.compactMap { $0.payload as? ReservePayload }.first
+        #expect(reserve?.km == 210)
+        #expect(reserve?.odometer == 19_200)
+        #expect(records.first?.time == fillDate)
     }
 
     /// Optionals must survive as NULL, not as zero — a fix with no speed is not a fix at 0 mph.
@@ -224,5 +261,46 @@ struct AppDatabaseTripTests {
         db.saveTripDistance(1_234.5)
         db.saveTripDistance(2_000)
         #expect(db.tripDistance() == 2_000)
+    }
+}
+
+@Suite("App database rides list")
+struct AppDatabaseRideListTests {
+    @Test("The list is three columns off the journey table, and the window loads one ride")
+    func summariesAndWindow() throws {
+        let db = try makeDatabase()
+        let start = Date(timeIntervalSince1970: 1_000)
+        db.append(JourneyRecord(time: start, payload: JourneyStartPayload(via: "both")))
+        db.append(JourneyRecord(
+            time: start.addingTimeInterval(60),
+            payload: FixPayload(lat: 52, lon: -0.4, mph: 30, course: nil, alt: nil, acc: nil)
+        ))
+        db.append(JourneyRecord(
+            time: start.addingTimeInterval(600),
+            payload: JourneyEndPayload(seconds: 600, started: start, metres: 4_200)
+        ))
+        // A later journey whose records must stay out of the first one's window.
+        let later = start.addingTimeInterval(10_000)
+        db.append(JourneyRecord(time: later, payload: JourneyStartPayload(via: "ignition")))
+        db.append(JourneyRecord(
+            time: later.addingTimeInterval(30),
+            payload: FixPayload(lat: 53, lon: -0.4, mph: 20, course: nil, alt: nil, acc: nil)
+        ))
+
+        let summaries = db.rideSummaries()
+        #expect(summaries.count == 2)
+        #expect(summaries.first?.endedCleanly == false)   // newest first: the open one
+        #expect(summaries.last?.metres == 4_200)
+        #expect(summaries.last?.seconds == 600)
+
+        let window = db.rideRecords(from: start, seconds: 600)
+        #expect(window.count == 3)   // start, fix, end — not the later journey's records
+        #expect(window.first?.type == .journeyStart)
+        #expect(window.last?.type == .journeyEnd)
+
+        // The open ride's window runs to the next journey's start.
+        let openWindow = db.rideRecords(from: later, seconds: nil)
+        #expect(openWindow.contains { ($0.payload as? FixPayload)?.lat == 53 })
+        #expect(!openWindow.contains { ($0.payload as? FixPayload)?.lat == 52 })
     }
 }
