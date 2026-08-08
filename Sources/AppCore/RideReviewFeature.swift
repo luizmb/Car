@@ -143,6 +143,8 @@ public enum RideReviewFeature {
         public let formatDistance: @Sendable (Meters) -> String
         public let formatDuration: @Sendable (TimeInterval) -> String
         public let formatTime: @Sendable (Date) -> String
+        /// For the list rows, which span days — a bare time hides which day a ride belongs to.
+        public let formatDayTime: @Sendable (Date) -> String
         public let formatSpeed: @Sendable (MPH) -> String
 
         public init(
@@ -151,6 +153,7 @@ public enum RideReviewFeature {
             formatDistance: @escaping @Sendable (Meters) -> String,
             formatDuration: @escaping @Sendable (TimeInterval) -> String,
             formatTime: @escaping @Sendable (Date) -> String,
+            formatDayTime: @escaping @Sendable (Date) -> String,
             formatSpeed: @escaping @Sendable (MPH) -> String
         ) {
             self.loadJourneyRecords = loadJourneyRecords
@@ -158,6 +161,7 @@ public enum RideReviewFeature {
             self.formatDistance = formatDistance
             self.formatDuration = formatDuration
             self.formatTime = formatTime
+            self.formatDayTime = formatDayTime
             self.formatSpeed = formatSpeed
         }
     }
@@ -189,7 +193,7 @@ public enum RideReviewFeature {
                     Effect.just(.rowsPrepared(rides.map { ride in
                         RideRow(
                             id: ride.id,
-                            title: ctx.environment.formatTime(ride.start),
+                            title: ctx.environment.formatDayTime(ride.start),
                             subtitle: ctx.environment.formatDuration(ride.duration) + " · "
                                 + ctx.environment.formatDistance(Meters(ride.distanceMetres)),
                             endedCleanly: ride.endedCleanly
@@ -274,7 +278,7 @@ public enum RideReviewFeature {
         words.endedCleanly = ride.endedCleanly
 
         words.facts = [
-            RideFact(id: "started", label: "Started", value: env.formatTime(ride.start)),
+            RideFact(id: "started", label: "Started", value: env.formatDayTime(ride.start)),
             RideFact(id: "duration", label: "Duration", value: env.formatDuration(ride.duration)),
             RideFact(id: "distance", label: "Distance",
                      value: env.formatDistance(Meters(ride.distanceMetres)))

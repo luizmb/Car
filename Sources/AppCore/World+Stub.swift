@@ -75,6 +75,7 @@ public extension World {
             formatDistance: { "\($0.rawValue)" },
             formatDuration: { "\($0)" },
             formatTime: { "\($0)" },
+            formatDayTime: { "\($0)" },
             formatBearing: { "\($0.rawValue)" },
             formatCoordinate: { _, _ in "" }
         )

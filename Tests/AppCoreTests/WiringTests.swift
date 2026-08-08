@@ -513,6 +513,7 @@ struct RefuelRecordingTests {
             formatDistance: world.formatDistance,
             formatDuration: world.formatDuration,
             formatTime: world.formatTime,
+            formatDayTime: world.formatDayTime,
             formatBearing: world.formatBearing,
             formatCoordinate: world.formatCoordinate
         )
@@ -720,6 +721,7 @@ struct WatchLinkWiringTests {
             formatDistance: world.formatDistance,
             formatDuration: world.formatDuration,
             formatTime: world.formatTime,
+            formatDayTime: world.formatDayTime,
             formatBearing: world.formatBearing,
             formatCoordinate: world.formatCoordinate
         )

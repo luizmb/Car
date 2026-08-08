@@ -607,6 +607,12 @@ extension World {
             formatTime: { date in
                 date.formatted(.dateTime.hour().minute().locale(locale))
             },
+            formatDayTime: { date in
+                date.formatted(
+                    .dateTime.weekday(.abbreviated).day().month(.abbreviated)
+                        .hour().minute().locale(locale)
+                )
+            },
             formatBearing: { @Sendable course in numFmt1dp.format(course.rawValue) },
             formatCoordinate: { lat, lon in
                 CardinalDirection.format(

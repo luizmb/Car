@@ -979,9 +979,10 @@ public enum AppScopes: Rig {
         .action(\.rides)
         .state(preview: topmost(StackEntry.prism.rides), set: replacing(StackEntry.prism.rides))
         .environment(fanout(
-            \.loadJourneyRecords, \.writeShareFile,
-            \.formatDistance, \.formatDuration, \.formatTime, \.formatSpeed
-        ) >>> RideReviewFeature.Environment.init)
+            keypaths: \.loadJourneyRecords, \.writeShareFile,
+                      \.formatDistance, \.formatDuration, \.formatTime, \.formatDayTime, \.formatSpeed,
+            into: RideReviewFeature.Environment.init
+        ))
 
     /// The replay's second monitor: the same feature as the home screen, lifted into the replay
     /// stack entry, with the live inputs unplugged - the tape feeds it actions instead. Roads are

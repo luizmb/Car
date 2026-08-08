@@ -185,6 +185,9 @@ public struct World: Sendable {
     /// A time of day, for an arrival estimate. Locale-aware, so it follows the rider's 12/24-hour
     /// setting rather than this app having an opinion about it.
     public let formatTime: @Sendable (Date) -> String
+    /// A moment with its day — "Fri 7 Aug, 21:03" — for lists that span days, where a bare time
+    /// makes Thursday's ride indistinguishable from Friday's.
+    public let formatDayTime: @Sendable (Date) -> String
     public let formatBearing: @Sendable (Course) -> String
     public let formatCoordinate: @Sendable (Latitude, Longitude) -> String
 }
