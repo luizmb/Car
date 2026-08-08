@@ -18,16 +18,17 @@ import Vision
 final class CameraOCRBox: NSObject, @unchecked Sendable {
     private let lock = NSLock()
     private var session: AVCaptureSession?
-    private var listeners: [UUID: AsyncStream<[String]>.Continuation] = [:]
+    private var listeners: [UUID: AsyncStream<[AppDomain.RecognizedText]>.Continuation] = [:]
     private var lastAnalysis = Date.distantPast
     private let analysisQueue = DispatchQueue(label: "camera-ocr")
 
-    /// The recognized text of each analysed frame, as a cold stream. The first subscriber starts
-    /// the camera; the last one leaving stops it.
-    var recognizedText: Publisher<[String], Never> {
+    /// The recognized text of each analysed frame — string and position both, because "which
+    /// grade label sits beside the winning price" is a geometric question — as a cold stream.
+    /// The first subscriber starts the camera; the last one leaving stops it.
+    var recognizedText: Publisher<[AppDomain.RecognizedText], Never> {
         Publisher { [weak self] continuation in
             guard let self else { return }
-            let (stream, streamContinuation) = AsyncStream<[String]>.makeStream()
+            let (stream, streamContinuation) = AsyncStream<[AppDomain.RecognizedText]>.makeStream()
             let id = UUID()
             let isFirst = self.lock.withLock {
                 self.listeners[id] = streamContinuation
@@ -117,7 +118,17 @@ extension CameraOCRBox: AVCaptureVideoDataOutputSampleBufferDelegate {
         let request = VNRecognizeTextRequest { [weak self] request, _ in
             guard let self else { return }
             let texts = (request.results as? [VNRecognizedTextObservation] ?? [])
-                .compactMap { $0.topCandidates(1).first?.string }
+                .compactMap { observation -> AppDomain.RecognizedText? in
+                    observation.topCandidates(1).first.map {
+                        AppDomain.RecognizedText(
+                            text: $0.string,
+                            x: observation.boundingBox.midX,
+                            y: observation.boundingBox.midY,
+                            width: observation.boundingBox.width,
+                            height: observation.boundingBox.height
+                        )
+                    }
+                }
             let current = self.lock.withLock { Array(self.listeners.values) }
             for listener in current { listener.yield(texts) }
         }

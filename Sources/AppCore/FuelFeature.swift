@@ -101,6 +101,12 @@ public enum FuelFeature {
         /// Set the instant the pump streak convinces — the tick on screen, and the cue to move
         /// the camera to the odometer.
         public var pump: PumpReading?
+        /// The grade label seen beside the winning price. Tracked apart from the streak — a badge
+        /// flickering in and out of OCR must not reset five good frames of arithmetic.
+        public var grade: String?
+        /// Where this frame's believed values sat, for the green boxes on the viewfinder — the
+        /// user's proof the scanner is looking at the right words.
+        public var highlights: [RecognizedText] = []
         public var odometerCandidate: Double?
         public var odometerHits: Int = 0
 
@@ -131,8 +137,8 @@ public enum FuelFeature {
         case stationResolved(FuelStation?)
         /// Open the camera and start hunting for the pump display.
         case beginScan
-        /// One analysed frame's recognized text.
-        case scanSaw([String])
+        /// One analysed frame's recognized text, with positions.
+        case scanSaw([RecognizedText])
         case cancelScan
         case save
         case saved
@@ -162,7 +168,7 @@ public enum FuelFeature {
         /// The forecourt at a position, resolved while the rider types.
         public let fetchStation: @Sendable (Latitude, Longitude) -> Publisher<FuelStation?, Never>
         /// Each analysed camera frame's recognized text; subscribing opens the camera.
-        public let captureText: @Sendable () -> Publisher<[String], Never>
+        public let captureText: @Sendable () -> Publisher<[RecognizedText], Never>
         /// Ends the capture streams — the deterministic "scan over" switch.
         public let stopTextCapture: @Sendable () -> Publisher<Void, Never>
         /// Writing a scanned number the way this device's keyboard would have typed it, so the
@@ -179,7 +185,7 @@ public enum FuelFeature {
             logJourney: @escaping @Sendable (any JourneyPayloadType) -> Publisher<Void, Never>,
             parseNumber: @escaping @Sendable (String) -> Result<Double, NumberError>,
             fetchStation: @escaping @Sendable (Latitude, Longitude) -> Publisher<FuelStation?, Never>,
-            captureText: @escaping @Sendable () -> Publisher<[String], Never>,
+            captureText: @escaping @Sendable () -> Publisher<[RecognizedText], Never>,
             stopTextCapture: @escaping @Sendable () -> Publisher<Void, Never>,
             formatNumber: @escaping @Sendable (Double) -> Result<String, NumberError>,
             cameraPreview: @escaping @MainActor @Sendable () -> CALayer?
@@ -275,25 +281,34 @@ public enum FuelFeature {
                 guard let scan = context.stateBefore?.scan else { return .doNothing }
                 switch scan.phase {
                 case .pump:
+                    let sighting = pumpSighting(fromRecognized: texts)
                     let streak = scanStreak(
                         scan.pumpCandidate.map { ($0, scan.pumpHits) },
-                        saw: pumpReading(fromRecognized: texts)
+                        saw: sighting?.reading
                     )
                     // The positive feedback: the tick appears and the hunt moves to the odometer.
                     let captured = (streak?.count ?? 0) >= scanStabilityFrames
                     return .reduce {
                         $0.scan?.pumpCandidate = streak?.value
                         $0.scan?.pumpHits = streak?.count ?? 0
+                        // The grade rides beside the streak, not inside it: any frame that names
+                        // one updates it, and the latest sighting wins.
+                        if let grade = sighting?.grade { $0.scan?.grade = grade }
+                        // The boxes track the current frame; a blind frame keeps the last ones so
+                        // the highlight breathes rather than strobes.
+                        if let sighting { $0.scan?.highlights = sighting.boxes }
                         if captured, let reading = streak?.value {
                             $0.scan?.pump = reading
                             $0.scan?.phase = .odometer
+                            $0.scan?.highlights = []
                         }
                     }
 
                 case .odometer:
+                    let sighting = odometerSighting(fromRecognized: texts)
                     let streak = scanStreak(
                         scan.odometerCandidate.map { ($0, scan.odometerHits) },
-                        saw: odometerReading(fromRecognized: texts)
+                        saw: sighting?.value
                     )
                     guard
                         (streak?.count ?? 0) >= scanStabilityFrames,
@@ -303,19 +318,25 @@ public enum FuelFeature {
                         return .reduce {
                             $0.scan?.odometerCandidate = streak?.value
                             $0.scan?.odometerHits = streak?.count ?? 0
+                            if let sighting { $0.scan?.highlights = [sighting.at] }
                         }
                     }
                     // Both displays read: the camera closes and the fields fill through the very
                     // same setter actions a keyboard would have produced — same parsing, same
-                    // validation, nothing scanned is trusted more than something typed.
+                    // validation, nothing scanned is trusted more than something typed. The grade,
+                    // when the display named one the app sells, comes along.
+                    let scannedGrade = scan.grade.flatMap(FuelGrade.init(rawValue:))
                     return .reduce { $0.scan = nil }
                         .produce { ctx in
                             let written: (Double) -> String = {
                                 (try? ctx.environment.formatNumber($0).get()) ?? ""
                             }
+                            let grade: Effect<Action> = scannedGrade
+                                .map { Effect.just(.setGrade($0)) } ?? .empty
                             return Effect.just(.setLitres(written(pump.litres)))
                                 <> Effect.just(.setPrice(written(pump.pricePerLitre)))
                                 <> Effect.just(.setOdometer(written(odometer)))
+                                <> grade
                                 <> (ctx.environment.stopTextCapture() |> Effect.fireAndForget)
                         }
                 }

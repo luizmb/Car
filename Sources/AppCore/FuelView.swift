@@ -357,6 +357,24 @@ private struct ScanSheet: View {
             CameraPreviewHost(provider: cameraPreview)
                 .ignoresSafeArea()
 
+            // The happy boxes: one around each value the arithmetic believed, exactly where it
+            // sits on the glass — the user's proof the scanner has the right display.
+            GeometryReader { geometry in
+                ForEach(Array((viewStore.state.scan?.highlights ?? []).enumerated()), id: \.offset) {
+                    _, box in
+                    let frame = screenRect(for: box, in: geometry.size)
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color.green, lineWidth: 3)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6).fill(Color.green.opacity(0.15))
+                        )
+                        .frame(width: frame.width, height: frame.height)
+                        .position(x: frame.midX, y: frame.midY)
+                }
+            }
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+
             VStack {
                 instruction
                     .padding(.top, 24)
@@ -400,7 +418,8 @@ private struct ScanSheet: View {
                 .foregroundStyle(.white)
 
             if let pump = scan?.pump {
-                Text(String(format: "%.2f L @ %.3f", pump.litres, pump.pricePerLitre))
+                Text(String(format: "%.2f L @ %.3f", pump.litres, pump.pricePerLitre)
+                     + (scan?.grade.map { "  \($0)" } ?? ""))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.green)
             }
@@ -417,6 +436,26 @@ private struct ScanSheet: View {
         }
         .padding(14)
         .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    /// Vision's normalized box (origin bottom-left, upright-image space) onto the screen, through
+    /// the same aspect-fill the preview layer applies: scale to cover, centre, crop. The camera
+    /// feed is 720×1280 upright; a highlight a few points adrift is invisible around a word, so
+    /// the constant aspect is fine where a resolvable session handle would be plumbing for nothing.
+    private func screenRect(for box: RecognizedText, in size: CGSize) -> CGRect {
+        let image = CGSize(width: 720, height: 1_280)
+        let scale = max(size.width / image.width, size.height / image.height)
+        let shown = CGSize(width: image.width * scale, height: image.height * scale)
+        let offsetX = (size.width - shown.width) / 2
+        let offsetY = (size.height - shown.height) / 2
+        let width = box.width * shown.width
+        let height = box.height * shown.height
+        return CGRect(
+            x: offsetX + (box.x - box.width / 2) * shown.width,
+            y: offsetY + (1 - box.y - box.height / 2) * shown.height,
+            width: max(width, 24),
+            height: max(height, 16)
+        )
     }
 
     private func phaseBadge(done: Bool, active: Bool, label: String) -> some View {
