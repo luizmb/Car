@@ -484,11 +484,7 @@ extension World {
                 Publisher.future { rideLog.append(line) }
             },
             loadJourneyRecords: {
-                Publisher.future {
-                    // Every row is exactly the line the JSONL files used to hold, so the parser -
-                    // and its tolerance for one bad record - carries over unchanged.
-                    JourneyLog.records(fromLines: appDatabase?.journeyLines() ?? [])
-                }
+                Publisher.future { appDatabase?.journeyRecords() ?? [] }
             },
             writeShareFile: { name, contents in
                 Publisher.future {
@@ -501,19 +497,7 @@ extension World {
             },
             logJourney: { event in
                 Publisher.future {
-                    // Encoded through the same coder the reader uses, exactly as the file writer
-                    // was - a shape that fails to decode fails here, not in a year.
-                    let date = Date()
-                    guard
-                        let data = try? JourneyLog.encoder.encode(
-                            JourneyRecord(time: date, payload: event)
-                        )
-                    else { return }
-                    appDatabase?.appendJourney(
-                        time: JourneyLog.timestamp(date),
-                        type: Swift.type(of: event).recordType.rawValue,
-                        json: String(decoding: data, as: UTF8.self)
-                    )
+                    appDatabase?.append(JourneyRecord(time: Date(), payload: event))
                 }
             },
             speak: { text in
