@@ -369,14 +369,6 @@ public enum JourneyLog {
         return decoder
     }
 
-    /// A record's time in the same ISO-8601 form its `t` field carries — for storage that lifts
-    /// the timestamp out beside the JSON, where the two must never disagree about format.
-    public static func timestamp(_ date: Date) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        return formatter.string(from: date)
-    }
-
     /// The whole file, from its lines.
     ///
     /// Joining and wrapping is exactly as intended — and it is safe precisely *because* each line is

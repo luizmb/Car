@@ -13,6 +13,105 @@ private func makeDatabase() throws -> AppDatabase {
     return try #require(AppDatabase(url: url))
 }
 
+/// One representative payload per record type, every optional populated — the write mapping and
+/// the read mapping are hand-written inverses, and this is what holds them together. A new
+/// `RecordType` without a sample fails to compile the switch; a payload field without a column
+/// fails the equality below.
+private func sample(_ type: RecordType) -> any JourneyPayloadType {
+    switch type {
+    case .journeyStart: JourneyStartPayload(via: "both")
+    case .journeyEnd: JourneyEndPayload(seconds: 900, started: Date(timeIntervalSince1970: 1_000))
+    case .fix: FixPayload(lat: 51.87, lon: -0.41, mph: 31.5, course: 182, alt: 91.2, acc: 4.5)
+    case .road: RoadPayload(mph: 30, origin: "signed", label: "A505", variable: true)
+    case .camera: CameraPayload(type: "fixed", mph: 40, atMPH: 43.2)
+    case .averageZone: AverageZonePayload(entered: true, mph: 50)
+    case .indicator: IndicatorPayload(side: "left")
+    case .tyre: TyrePayload(position: "front", psi: 33.1, celsius: 21.4, moving: true)
+    case .weather: WeatherPayload(celsius: 19, humidity: 54, kpa: 100.4, windMPS: 1.5, windDegrees: 108)
+    case .barometer: BarometerPayload(kpa: 100.1, relativeAltitude: 12.5)
+    case .activity: ActivityPayload(activity: "automotive", confidence: 2)
+    case .device: DevicePayload(device: "indimate", connected: true)
+    case .destination: DestinationPayload(name: "Home", lat: 51.869, lon: -0.416)
+    case .refuel: RefuelPayload(litres: 9.2, price: 1.49, odometer: 19_420, brim: true,
+                                station: "Shell", stationID: 42)
+    case .reserve: ReservePayload(km: 231.4, odometer: 19_650)
+    }
+}
+
+@Suite("App database journey timeline")
+struct AppDatabaseJourneyTests {
+    /// Every record type, written to its table and read back identical. This is the drift alarm:
+    /// a payload that grows a field without its column — or a mapper that misorders two columns —
+    /// fails here, not in a year of records.
+    @Test("Every record type round-trips its table", arguments: RecordType.allCases)
+    func roundTripsEveryType(type: RecordType) throws {
+        let db = try makeDatabase()
+        let written = JourneyRecord(time: Date(timeIntervalSince1970: 500), payload: sample(type))
+        db.append(written)
+
+        let records = db.journeyRecords()
+        #expect(records.count == 1)
+        #expect(records.first?.time == written.time)
+        #expect(records.first.map { $0.payload.isEqual(to: written.payload) } == true)
+    }
+
+    /// Optionals must survive as NULL, not as zero — a fix with no speed is not a fix at 0 mph.
+    @Test("Absent optionals come back absent")
+    func nullFidelity() throws {
+        let db = try makeDatabase()
+        db.append(JourneyRecord(
+            time: Date(timeIntervalSince1970: 10),
+            payload: FixPayload(lat: 52, lon: -0.4, mph: nil, course: nil, alt: nil, acc: nil)
+        ))
+        db.append(JourneyRecord(
+            time: Date(timeIntervalSince1970: 11),
+            payload: IndicatorPayload(side: nil)
+        ))
+
+        let records = db.journeyRecords()
+        #expect((records.first?.payload as? FixPayload)?.mph == nil)
+        #expect((records.last?.payload as? IndicatorPayload)?.side == nil)
+    }
+
+    @Test("The timeline comes back time-ordered across tables")
+    func orderedAcrossTables() throws {
+        let db = try makeDatabase()
+        db.append(JourneyRecord(
+            time: Date(timeIntervalSince1970: 300),
+            payload: RoadPayload(mph: 30, origin: "signed", label: "A505", variable: false)
+        ))
+        db.append(JourneyRecord(
+            time: Date(timeIntervalSince1970: 100),
+            payload: JourneyStartPayload(via: "ignition")
+        ))
+        db.append(JourneyRecord(
+            time: Date(timeIntervalSince1970: 200),
+            payload: FixPayload(lat: 52, lon: -0.4, mph: 30, course: nil, alt: nil, acc: nil)
+        ))
+
+        let types = db.journeyRecords().map(\.type)
+        #expect(types == [.journeyStart, .fix, .road])
+    }
+
+    /// The app's normal ending is being killed; the database's promise is that reopening finds
+    /// everything that was ever appended — and that re-ensuring the schema on open changes nothing.
+    @Test("A reopened database still holds its rows")
+    func survivesReopen() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("appdb-\(UUID().uuidString).sqlite")
+        do {
+            let db = try #require(AppDatabase(url: url))
+            db.append(JourneyRecord(
+                time: Date(timeIntervalSince1970: 42), payload: JourneyStartPayload(via: "both")
+            ))
+            db.saveDocument("fuel-log", json: "{}")
+        }
+        let reopened = try #require(AppDatabase(url: url))
+        #expect(reopened.journeyRecords().count == 1)
+        #expect(reopened.document("fuel-log") == "{}")
+    }
+}
+
 @Suite("App database documents")
 struct AppDatabaseDocumentTests {
     @Test("A document round-trips whole")
@@ -50,56 +149,5 @@ struct AppDatabaseDocumentTests {
             Issue.record("a shape change must be loud, got \(String(describing: result))")
             return
         }
-    }
-}
-
-@Suite("App database journey timeline")
-struct AppDatabaseJourneyTests {
-    @Test("Rows come back in insertion order, decoded by the same parser as the files")
-    func journeyRoundTrip() throws {
-        let db = try makeDatabase()
-        let times = [Date(timeIntervalSince1970: 100), Date(timeIntervalSince1970: 200)]
-        for (index, time) in times.enumerated() {
-            let record = JourneyRecord(
-                time: time,
-                payload: FixPayload(lat: 52.0 + Double(index), lon: -0.4, mph: 30, course: nil, alt: 90, acc: 5)
-            )
-            let json = String(decoding: (try? JourneyLog.encoder.encode(record)) ?? Data(), as: UTF8.self)
-            db.appendJourney(time: JourneyLog.timestamp(time), type: "fix", json: json)
-        }
-
-        let records = JourneyLog.records(fromLines: db.journeyLines())
-        #expect(records.map(\.time) == times)
-        #expect((records.first?.payload as? FixPayload)?.lat == 52.0)
-    }
-
-    /// The app's normal ending is being killed; the database's promise is that reopening finds
-    /// everything that was ever appended.
-    @Test("A reopened database still holds its rows")
-    func survivesReopen() throws {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("appdb-\(UUID().uuidString).sqlite")
-        do {
-            let db = try #require(AppDatabase(url: url))
-            db.appendJourney(time: "2026-08-08T10:00:00Z", type: "fix", json: #"{"t":"2026-08-08T10:00:00Z","type":"fix"}"#)
-            db.saveDocument("fuel-log", json: "{}")
-        }
-        let reopened = try #require(AppDatabase(url: url))
-        #expect(reopened.journeyLines().count == 1)
-        #expect(reopened.document("fuel-log") == "{}")
-    }
-
-    @Test("One undecodable row costs itself, not the ride")
-    func badRowIsDropped() throws {
-        let db = try makeDatabase()
-        let record = JourneyRecord(
-            time: Date(timeIntervalSince1970: 100),
-            payload: FixPayload(lat: 52, lon: -0.4, mph: 30, course: nil, alt: 90, acc: 5)
-        )
-        let json = String(decoding: (try? JourneyLog.encoder.encode(record)) ?? Data(), as: UTF8.self)
-        db.appendJourney(time: JourneyLog.timestamp(record.time), type: "fix", json: json)
-        db.appendJourney(time: "2026-08-08T10:00:01Z", type: "fix", json: "{\"half\":")
-
-        #expect(JourneyLog.records(fromLines: db.journeyLines()).count == 1)
     }
 }
