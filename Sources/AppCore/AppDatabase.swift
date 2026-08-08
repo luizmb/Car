@@ -224,7 +224,7 @@ final class AppDatabase: @unchecked Sendable {
                 statement in
                 guard
                     let stamp = text(statement, 0),
-                    let time = timestamps.date(from: stamp),
+                    let time = parseTimestamp(stamp),
                     let payload = payload(of: type, from: statement)
                 else { return }
                 records.append(JourneyRecord(time: time, payload: payload))
@@ -242,7 +242,7 @@ final class AppDatabase: @unchecked Sendable {
         case .journeyStart:
             JourneyStartPayload(via: text(s, 1) ?? "")
         case .journeyEnd:
-            text(s, 2).flatMap { timestamps.date(from: $0) }.map {
+            text(s, 2).flatMap(parseTimestamp).map {
                 JourneyEndPayload(seconds: integer(s, 1) ?? 0, started: $0)
             }
         case .fix:
@@ -293,7 +293,7 @@ final class AppDatabase: @unchecked Sendable {
             """) { s in
             guard
                 let id = text(s, 0).flatMap(UUID.init(uuidString:)),
-                let date = text(s, 1).flatMap({ self.timestamps.date(from: $0) }),
+                let date = text(s, 1).flatMap(parseTimestamp),
                 let grade = text(s, 4).flatMap(FuelGrade.init(rawValue:))
             else { return }
             refuels.append(RefuelRecord(
@@ -314,7 +314,7 @@ final class AppDatabase: @unchecked Sendable {
         query("SELECT id, date, odometer, gpsKilometres, lat, lon FROM reserve_event ORDER BY date") { s in
             guard
                 let id = text(s, 0).flatMap(UUID.init(uuidString:)),
-                let date = text(s, 1).flatMap({ self.timestamps.date(from: $0) })
+                let date = text(s, 1).flatMap(parseTimestamp)
             else { return }
             reserves.append(ReserveEvent(
                 id: id, date: date,
@@ -376,7 +376,7 @@ final class AppDatabase: @unchecked Sendable {
             guard
                 let itemID = text(s, 0),
                 let id = text(s, 1).flatMap(UUID.init(uuidString:)),
-                let date = text(s, 2).flatMap({ self.timestamps.date(from: $0) })
+                let date = text(s, 2).flatMap(parseTimestamp)
             else { return }
             events[itemID, default: []].append(MaintenanceEvent(
                 id: id, date: date,
@@ -397,7 +397,7 @@ final class AppDatabase: @unchecked Sendable {
                 let id = UUID(uuidString: idText),
                 let due = self.due(
                     rule: text(s, 2),
-                    date: text(s, 3).flatMap { self.timestamps.date(from: $0) },
+                    date: text(s, 3).flatMap(parseTimestamp),
                     odometer: real(s, 4)
                 )
             else { return }
