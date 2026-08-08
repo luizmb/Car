@@ -105,6 +105,7 @@ jobs:
           CODE_SIGN_STYLE = Manual
           CODE_SIGN_IDENTITY = Apple Distribution
           PROVISIONING_PROFILE_SPECIFIER = SpeedJarvis AppStore Distribution
+          WATCH_PROVISIONING_PROFILE_SPECIFIER = SpeedJarvis AppStore watchOS Distribution
           XCCONFIG
 
       # A device-generic (not simulator) build, since simulator builds never need real
