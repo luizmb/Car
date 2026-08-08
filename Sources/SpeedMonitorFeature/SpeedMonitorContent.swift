@@ -8,6 +8,13 @@ public struct SpeedMonitorContent: View {
     public let mapDistance: Double
     public let mapHeading: Double
     public let mapPitch: Double
+    /// Where the rider actually is — distinct from the camera centre, which looks *ahead* of the
+    /// rider while navigating. The marker is drawn from state rather than MapKit's device dot,
+    /// which is what lets a replayed ride carry its rider along the tape instead of pinning the
+    /// blue dot to the desk the phone is sitting on.
+    public let riderLatitude: Double
+    public let riderLongitude: Double
+    public let riderCourseDegrees: Double
     // Speed
     public let speedText: String
     public let speedValue: Double
@@ -134,11 +141,14 @@ public struct SpeedMonitorContent: View {
                     ))
             }
 
-            UserAnnotation {
+            Annotation("", coordinate: .init(latitude: riderLatitude, longitude: riderLongitude)) {
                 Image(systemName: "location.north.circle.fill")
                     .font(.title2)
                     .foregroundStyle(.blue)
                     .shadow(color: .black.opacity(0.3), radius: 2)
+                    // Screen-aligned annotations do not turn with the camera; pointing the arrow
+                    // along the course therefore means subtracting the camera's own heading.
+                    .rotationEffect(.degrees(riderCourseDegrees - mapHeading))
             }
         }
         .mapControlVisibility(.hidden)

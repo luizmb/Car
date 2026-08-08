@@ -51,6 +51,20 @@ struct ReplayView: View {
             .glassEffect(.regular, in: Capsule())
             .padding(.top, 4)
         }
+        .overlay(alignment: .topLeading) {
+            // The road bubble, as the home screen wears it — the replayed road, not the desk's.
+            if let road = SpeedMonitorContent.roadDisplayText(
+                ref: replay?.monitor.display.roadRef, name: replay?.monitor.display.roadName
+            ) {
+                Text(road)
+                    .font(.system(size: 13, weight: .bold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .glassEffect(.regular, in: Capsule())
+                    .padding(.leading, 12)
+                    .padding(.top, 40)
+            }
+        }
         .overlay(alignment: .bottomTrailing) {
             Button {
                 viewStore.dispatch(.replay(.cancel))
