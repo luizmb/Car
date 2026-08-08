@@ -373,6 +373,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = App/Info.plist;
+				INFOPLIST_KEY_NSCameraUsageDescription = "To read the pump display and odometer when logging a fill";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "To alert about speed";
 				INFOPLIST_KEY_NSLocationAlwaysUsageDescription = "To alert about speed";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "To alert about speed";
@@ -406,6 +407,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = App/Info.plist;
+				INFOPLIST_KEY_NSCameraUsageDescription = "To read the pump display and odometer when logging a fill";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "To alert about speed";
 				INFOPLIST_KEY_NSLocationAlwaysUsageDescription = "To alert about speed";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "To alert about speed";

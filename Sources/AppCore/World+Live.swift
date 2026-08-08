@@ -250,6 +250,7 @@ extension World {
         // temporary, deleted-weekly dump - remains a text file, because grep is its query engine.
         let appDatabase = AppDatabase()
         let watchLink = PhoneWatchBox()
+        let cameraOCR = CameraOCRBox()
         let motionBox = MotionBox()
         let device    = DeviceBox()
         let ticks     = IndicatorAudioBox()
@@ -475,6 +476,9 @@ extension World {
                 Publisher.future { watchLink.send(snapshot) }
             },
             watchRefuels: { watchLink.refuels },
+            captureText: { cameraOCR.recognizedText },
+            stopTextCapture: { Publisher.future { cameraOCR.finishAll() } },
+            cameraPreview: { cameraOCR.previewLayer() },
             phoneBattery: { device.batteryLevel },
             isLowPowerMode: { ProcessInfo.processInfo.isLowPowerModeEnabled },
             fetchStation: { latitude, longitude in

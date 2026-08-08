@@ -56,6 +56,12 @@ public enum FuelFeature {
         public var log: FuelLog = .empty
         public var saveError: String?
 
+        /// The camera scan, while one is running; `nil` is the plain form. Two phases in fill
+        /// order: the pump display first (litres and price prove themselves by arithmetic — the
+        /// two numbers and their product must agree), then the odometer. Each needs the same
+        /// value read from several consecutive frames before it is believed.
+        public var scan: ScanState?
+
         public init() {}
 
         // The parsed values, kept beside the text they came from.
@@ -80,6 +86,27 @@ public enum FuelFeature {
         }
     }
 
+    /// The scanner's whole state: which display it is hunting, the current streak, and what has
+    /// been captured so far. Pure bookkeeping over `pumpReading`/`odometerReading` — the camera
+    /// itself lives behind the World and only ever contributes strings.
+    public struct ScanState: Sendable, Equatable {
+        public enum Phase: Sendable, Equatable {
+            case pump
+            case odometer
+        }
+
+        public var phase: Phase = .pump
+        public var pumpCandidate: PumpReading?
+        public var pumpHits: Int = 0
+        /// Set the instant the pump streak convinces — the tick on screen, and the cue to move
+        /// the camera to the odometer.
+        public var pump: PumpReading?
+        public var odometerCandidate: Double?
+        public var odometerHits: Int = 0
+
+        public init() {}
+    }
+
     // MARK: Action
 
     @Prisms
@@ -102,6 +129,11 @@ public enum FuelFeature {
         /// The forecourt for the captured position. `nil` means Overpass had nothing or could not
         /// be reached — a fill with no station is worth far more than no fill.
         case stationResolved(FuelStation?)
+        /// Open the camera and start hunting for the pump display.
+        case beginScan
+        /// One analysed frame's recognized text.
+        case scanSaw([String])
+        case cancelScan
         case save
         case saved
         case saveFailed(String)
@@ -129,6 +161,15 @@ public enum FuelFeature {
         public let parseNumber: @Sendable (String) -> Result<Double, NumberError>
         /// The forecourt at a position, resolved while the rider types.
         public let fetchStation: @Sendable (Latitude, Longitude) -> Publisher<FuelStation?, Never>
+        /// Each analysed camera frame's recognized text; subscribing opens the camera.
+        public let captureText: @Sendable () -> Publisher<[String], Never>
+        /// Ends the capture streams — the deterministic "scan over" switch.
+        public let stopTextCapture: @Sendable () -> Publisher<Void, Never>
+        /// Writing a scanned number the way this device's keyboard would have typed it, so the
+        /// populated field re-parses exactly as if the rider had entered it.
+        public let formatNumber: @Sendable (Double) -> Result<String, NumberError>
+        /// The live viewfinder for the scan sheet. View plumbing, main-actor by nature.
+        public let cameraPreview: @MainActor @Sendable () -> CALayer?
 
         public init(
             loadFuelLog: @escaping @Sendable () -> Publisher<Result<FuelLog, FileError>, Never>,
@@ -137,7 +178,11 @@ public enum FuelFeature {
             newID: @escaping @Sendable () -> UUID,
             logJourney: @escaping @Sendable (any JourneyPayloadType) -> Publisher<Void, Never>,
             parseNumber: @escaping @Sendable (String) -> Result<Double, NumberError>,
-            fetchStation: @escaping @Sendable (Latitude, Longitude) -> Publisher<FuelStation?, Never>
+            fetchStation: @escaping @Sendable (Latitude, Longitude) -> Publisher<FuelStation?, Never>,
+            captureText: @escaping @Sendable () -> Publisher<[String], Never>,
+            stopTextCapture: @escaping @Sendable () -> Publisher<Void, Never>,
+            formatNumber: @escaping @Sendable (Double) -> Result<String, NumberError>,
+            cameraPreview: @escaping @MainActor @Sendable () -> CALayer?
         ) {
             self.loadFuelLog = loadFuelLog
             self.saveFuelLog = saveFuelLog
@@ -146,6 +191,10 @@ public enum FuelFeature {
             self.logJourney = logJourney
             self.parseNumber = parseNumber
             self.fetchStation = fetchStation
+            self.captureText = captureText
+            self.stopTextCapture = stopTextCapture
+            self.formatNumber = formatNumber
+            self.cameraPreview = cameraPreview
         }
     }
 
@@ -215,6 +264,67 @@ public enum FuelFeature {
                     return ctx.environment.fetchStation(lat, lon)
                         .asEffect(Action.stationResolved)
                 }
+
+            case .beginScan:
+                return .reduce { $0.scan = ScanState() }
+                    .produce { ctx in
+                        ctx.environment.captureText().asEffect(Action.scanSaw)
+                    }
+
+            case let .scanSaw(texts):
+                guard let scan = context.stateBefore?.scan else { return .doNothing }
+                switch scan.phase {
+                case .pump:
+                    let streak = scanStreak(
+                        scan.pumpCandidate.map { ($0, scan.pumpHits) },
+                        saw: pumpReading(fromRecognized: texts)
+                    )
+                    // The positive feedback: the tick appears and the hunt moves to the odometer.
+                    let captured = (streak?.count ?? 0) >= scanStabilityFrames
+                    return .reduce {
+                        $0.scan?.pumpCandidate = streak?.value
+                        $0.scan?.pumpHits = streak?.count ?? 0
+                        if captured, let reading = streak?.value {
+                            $0.scan?.pump = reading
+                            $0.scan?.phase = .odometer
+                        }
+                    }
+
+                case .odometer:
+                    let streak = scanStreak(
+                        scan.odometerCandidate.map { ($0, scan.odometerHits) },
+                        saw: odometerReading(fromRecognized: texts)
+                    )
+                    guard
+                        (streak?.count ?? 0) >= scanStabilityFrames,
+                        let odometer = streak?.value,
+                        let pump = scan.pump
+                    else {
+                        return .reduce {
+                            $0.scan?.odometerCandidate = streak?.value
+                            $0.scan?.odometerHits = streak?.count ?? 0
+                        }
+                    }
+                    // Both displays read: the camera closes and the fields fill through the very
+                    // same setter actions a keyboard would have produced — same parsing, same
+                    // validation, nothing scanned is trusted more than something typed.
+                    return .reduce { $0.scan = nil }
+                        .produce { ctx in
+                            let written: (Double) -> String = {
+                                (try? ctx.environment.formatNumber($0).get()) ?? ""
+                            }
+                            return Effect.just(.setLitres(written(pump.litres)))
+                                <> Effect.just(.setPrice(written(pump.pricePerLitre)))
+                                <> Effect.just(.setOdometer(written(odometer)))
+                                <> (ctx.environment.stopTextCapture() |> Effect.fireAndForget)
+                        }
+                }
+
+            case .cancelScan:
+                return .reduce { $0.scan = nil }
+                    .produce { ctx in
+                        ctx.environment.stopTextCapture() |> Effect.fireAndForget
+                    }
 
             case .save:
                 guard let state = context.stateBefore, state.isValid else { return .doNothing }

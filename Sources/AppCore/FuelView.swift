@@ -1,5 +1,6 @@
 import AppDomain
 import Charts
+import QuartzCore
 import SwiftRex
 import SwiftRexArchitecture
 import SwiftRexSwiftUI
@@ -12,6 +13,9 @@ import SwiftUI
 /// that refuses to save is a form that loses the record entirely.
 struct FuelView: View {
     let viewStore: ViewStore<FuelFeature.State, FuelFeature.Action>
+    /// The viewfinder, handed down from the World through the factory — the only view-layer
+    /// plumbing the scanner needs.
+    let cameraPreview: @MainActor @Sendable () -> CALayer?
 
     var body: some View {
         Form {
@@ -38,6 +42,12 @@ struct FuelView: View {
         .navigationTitle("Fuel")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { viewStore.dispatch(.appeared) }
+        .fullScreenCover(isPresented: Binding(
+            get: { viewStore.state.scan != nil },
+            set: { if !$0 { viewStore.dispatch(.cancelScan) } }
+        )) {
+            ScanSheet(viewStore: viewStore, cameraPreview: cameraPreview)
+        }
     }
 
     // MARK: - Refuel
@@ -46,6 +56,12 @@ struct FuelView: View {
     private var refuelTab: some View {
         Group {
             Section("This fill") {
+                Button {
+                    viewStore.dispatch(.beginScan)
+                } label: {
+                    Label("Scan pump and odometer", systemImage: "camera.viewfinder")
+                }
+
                 field("Litres", text: viewStore.binding(.state(\.litres), dispatch: .action(\.setLitres)))
                 field("£ / litre", text: viewStore.binding(.state(\.pricePerLitre), dispatch: .action(\.setPrice)))
 
@@ -320,6 +336,136 @@ extension FuelFeature: ViewFactory {
         store: any StoreType<Action, State>,
         environment: Environment
     ) -> some View {
-        FuelView(viewStore: ViewStore(store))
+        FuelView(viewStore: ViewStore(store), cameraPreview: environment.cameraPreview)
+    }
+}
+
+// MARK: - The scan sheet
+
+/// The camera, full screen, with the hunt's progress over it.
+///
+/// Two phases in fill order: film the pump display until the tick (litres and price prove
+/// themselves by arithmetic — the two numbers and their product must agree across several
+/// consecutive frames), then swing to the odometer; when it holds steady too, the sheet closes
+/// itself and the form is already filled. Cancelling at any point costs nothing.
+private struct ScanSheet: View {
+    let viewStore: ViewStore<FuelFeature.State, FuelFeature.Action>
+    let cameraPreview: @MainActor @Sendable () -> CALayer?
+
+    var body: some View {
+        ZStack {
+            CameraPreviewHost(provider: cameraPreview)
+                .ignoresSafeArea()
+
+            VStack {
+                instruction
+                    .padding(.top, 24)
+                Spacer()
+                Button(role: .cancel) {
+                    viewStore.dispatch(.cancelScan)
+                } label: {
+                    Text("Cancel")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(.white)
+                .padding(.horizontal, 40)
+                .padding(.bottom, 30)
+            }
+        }
+        .background(.black)
+    }
+
+    @ViewBuilder
+    private var instruction: some View {
+        let scan = viewStore.state.scan
+        VStack(spacing: 10) {
+            HStack(spacing: 8) {
+                phaseBadge(
+                    done: scan?.pump != nil,
+                    active: scan?.phase == .pump,
+                    label: "Pump"
+                )
+                phaseBadge(
+                    done: false,
+                    active: scan?.phase == .odometer,
+                    label: "Odometer"
+                )
+            }
+
+            Text(scan?.phase == .odometer
+                 ? "Now film the odometer"
+                 : "Film the pump display — litres and price")
+                .font(.headline)
+                .foregroundStyle(.white)
+
+            if let pump = scan?.pump {
+                Text(String(format: "%.2f L @ %.3f", pump.litres, pump.pricePerLitre))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.green)
+            }
+            // The hunt's heartbeat: dots fill as consecutive frames agree, so holding steady
+            // visibly *does something* even before the tick.
+            let hits = scan?.phase == .odometer ? (scan?.odometerHits ?? 0) : (scan?.pumpHits ?? 0)
+            HStack(spacing: 5) {
+                ForEach(0..<scanStabilityFrames, id: \.self) { index in
+                    Circle()
+                        .fill(index < hits ? Color.green : Color.white.opacity(0.3))
+                        .frame(width: 8, height: 8)
+                }
+            }
+        }
+        .padding(14)
+        .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func phaseBadge(done: Bool, active: Bool, label: String) -> some View {
+        Label(label, systemImage: done ? "checkmark.circle.fill" : "circle")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(done ? .green : active ? .white : .gray)
+    }
+}
+
+// MARK: - The viewfinder host
+
+/// Hosts the World's preview layer inside SwiftUI.
+///
+/// The session starts asynchronously after the permission dialog, so the layer may not exist on
+/// first render; every update retries the attach, and updates arrive with every analysed frame's
+/// action, which makes the retry loop free.
+private struct CameraPreviewHost: UIViewRepresentable {
+    let provider: @MainActor @Sendable () -> CALayer?
+
+    func makeUIView(context _: Context) -> PreviewHostView {
+        PreviewHostView(provider: provider)
+    }
+
+    func updateUIView(_ view: PreviewHostView, context _: Context) {
+        view.attachIfNeeded()
+    }
+}
+
+final class PreviewHostView: UIView {
+    private let provider: @MainActor @Sendable () -> CALayer?
+    private var attached: CALayer?
+
+    init(provider: @escaping @MainActor @Sendable () -> CALayer?) {
+        self.provider = provider
+        super.init(frame: .zero)
+    }
+
+    required init?(coder _: NSCoder) { nil }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        attachIfNeeded()
+        attached?.frame = bounds
+    }
+
+    func attachIfNeeded() {
+        guard attached == nil, let preview = provider() else { return }
+        layer.addSublayer(preview)
+        preview.frame = bounds
+        attached = preview
     }
 }

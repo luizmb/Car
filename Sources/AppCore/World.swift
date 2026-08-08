@@ -3,6 +3,7 @@ import ReactiveConcurrency
 import AppDomain
 import FP
 import Foundation
+import QuartzCore
 import NetworkClient
 import SpeedMonitorFeature
 
@@ -90,6 +91,15 @@ public struct World: Sendable {
     public let sendWatchSnapshot: @Sendable (WatchSnapshot) -> Publisher<Void, Never>
     /// Refuel asks arriving from the watch. The one command the wrist may send.
     public let watchRefuels: @Sendable () -> Publisher<WatchRefuel, Never>
+    // The scanner
+    /// Each analysed camera frame's recognized text. Subscribing opens the camera (permission
+    /// included); the stream ending closes it. What the text *means* is the domain's business.
+    public let captureText: @Sendable () -> Publisher<[String], Never>
+    /// Ends every capture stream — the deterministic "scan over" switch.
+    public let stopTextCapture: @Sendable () -> Publisher<Void, Never>
+    /// The live viewfinder for the scan screen. View-layer plumbing on the main actor — a
+    /// viewfinder is pixels, and this is the one closure that hands a layer out.
+    public let cameraPreview: @MainActor @Sendable () -> CALayer?
     /// The phone is the instrument cluster, so its battery is a pre-ride check. Low Power Mode
     /// matters more than the percentage: it throttles the background work location and Bluetooth
     /// depend on, and can silently disable most of the app mid-ride.

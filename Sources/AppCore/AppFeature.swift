@@ -958,8 +958,10 @@ public enum AppScopes: Rig {
         .action(\.fuel)
         .state(preview: topmost(StackEntry.prism.fuel), set: replacing(StackEntry.prism.fuel))
         .environment(fanout(
-            \.loadFuelLog, \.saveFuelLog, \.now, \.newID, \.logJourney, \.parseNumber, \.fetchStation
-        ) >>> FuelFeature.Environment.init)
+            keypaths: \.loadFuelLog, \.saveFuelLog, \.now, \.newID, \.logJourney, \.parseNumber,
+                      \.fetchStation, \.captureText, \.stopTextCapture, \.formatNumber, \.cameraPreview,
+            into: FuelFeature.Environment.init
+        ))
 
     /// The route planner — affine for the same reason the fuel screen is, and narrowed the same way.
     ///
