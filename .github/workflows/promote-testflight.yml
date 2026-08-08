@@ -136,6 +136,8 @@ jobs:
               <dict>
                   <key>lu.ios.speed-jarvis</key>
                   <string>SpeedJarvis AppStore Distribution</string>
+                  <key>lu.ios.speed-jarvis.watchkitapp</key>
+                  <string>SpeedJarvis AppStore watchOS Distribution</string>
               </dict>
           </dict>
           </plist>
