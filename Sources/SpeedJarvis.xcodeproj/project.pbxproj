@@ -15,6 +15,7 @@
 		D7B100B200000000000000B2 /* WatchWorldLive.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7B100A200000000000000A2 /* WatchWorldLive.swift */; };
 		D7B100B300000000000000B3 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = D7B100A300000000000000A3 /* Assets.xcassets */; };
 		D7B100B400000000000000B4 /* WatchCore in Frameworks */ = {isa = PBXBuildFile; productRef = D7B100C600000000000000C6 /* WatchCore */; };
+		D7B100B500000000000000B5 /* SpeedJarvisWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = D7B100A400000000000000A4 /* SpeedJarvisWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -30,6 +31,38 @@
 		D7B100A300000000000000A3 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		D7B100A400000000000000A4 /* SpeedJarvisWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SpeedJarvisWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		D7B100C700000000000000C7 /* Embed Watch Content */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(CONTENTS_FOLDER_PATH)/Watch";
+			dstSubfolderSpec = 16;
+			files = (
+				D7B100B500000000000000B5 /* SpeedJarvisWatch.app in Embed Watch Content */,
+			);
+			name = "Embed Watch Content";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXContainerItemProxy section */
+		D7B100C900000000000000C9 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = D62659BD2C69962800625B74 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D7B100C200000000000000C2;
+			remoteInfo = SpeedJarvisWatch;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXTargetDependency section */
+		D7B100C800000000000000C8 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D7B100C200000000000000C2 /* SpeedJarvisWatch */;
+			targetProxy = D7B100C900000000000000C9 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		D62659C22C69962800625B74 /* Frameworks */ = {
@@ -127,10 +160,12 @@
 				D62659C12C69962800625B74 /* Sources */,
 				D62659C22C69962800625B74 /* Frameworks */,
 				D62659C32C69962800625B74 /* Resources */,
+				D7B100C700000000000000C7 /* Embed Watch Content */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				D7B100C800000000000000C8 /* PBXTargetDependency */,
 			);
 			name = SpeedJarvis;
 			packageProductDependencies = (
@@ -447,6 +482,7 @@
 				MARKETING_VERSION = 0.14.1;
 				PRODUCT_BUNDLE_IDENTIFIER = "lu.ios.speed-jarvis.watchkitapp";
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "$(WATCH_PROVISIONING_PROFILE_SPECIFIER)";
 				SDKROOT = watchos;
 				SKIP_INSTALL = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -474,6 +510,7 @@
 				MARKETING_VERSION = 0.14.1;
 				PRODUCT_BUNDLE_IDENTIFIER = "lu.ios.speed-jarvis.watchkitapp";
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "$(WATCH_PROVISIONING_PROFILE_SPECIFIER)";
 				SDKROOT = watchos;
 				SKIP_INSTALL = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
