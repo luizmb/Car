@@ -701,17 +701,25 @@ public enum AppFeature {
                     // The tone, not a sentence. A reroute is routine and usually follows a turn the
                     // rider knows they missed; being told about it in words is nagging.
                     let tone = ctx.environment.playRerouteTone() |> Effect<AppAction>.fireAndForget
-                    // One response to leaving the route, Apple's: replan to the destination
-                    // from where the rider is and the way they are going. Rejoining the old
-                    // geometry always aimed at points behind a deliberate detour — the constant
-                    // summons back that made deviating feel like disobedience.
-                    let request = rerouteRequest(
-                        from: position, course: update.course, speed: update.speed,
-                        to: destination ?? position,
-                        preferences: preferences, chosen: preferences,
-                        original: route, decision: decision, fromStep: stepIndex,
-                        finished: finished, world: ctx.environment
-                    )
+                    // The short way back to the chosen route — direction-aware. A missed turn
+                    // rejoins the original at whichever manoeuvre is genuinely cheapest, with the
+                    // legs asked from ahead of the bike and U-turn openings paying their penalty;
+                    // repeated deviations mean the route itself is the problem, and the replan
+                    // carries the same direction bias.
+                    let request = decision == .rejoin
+                        ? rejoinRequest(
+                            from: position, heading: update.course, speed: update.speed,
+                            original: route, fromStep: stepIndex,
+                            preferences: preferences, chosen: preferences,
+                            finished: finished, world: ctx.environment
+                        )
+                        : rerouteRequest(
+                            from: position, course: update.course, speed: update.speed,
+                            to: destination ?? position,
+                            preferences: preferences, chosen: preferences,
+                            original: route, decision: decision, fromStep: stepIndex,
+                            finished: finished, world: ctx.environment
+                        )
                     return tone <> request.asEffect { $0 }
                 }
         }

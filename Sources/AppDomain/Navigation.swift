@@ -587,30 +587,163 @@ private func pathBearing(_ points: [Coordinate], lastLeg: Bool) -> Double? {
 
 /// Which lane to be in, when the rule is knowable without lane data.
 ///
-/// MapKit's public API carries no lane information — but two British rules need none. The
-/// Highway Code's roundabout rule is *stated* in clock terms: leaving before 12 o'clock,
-/// approach in the left lane; after 12, the right — and the clock is already computed from the
-/// route's own bearings. And a motorway exit is a left-hand slip, always. Everything else stays
-/// unsaid: guessing lanes on an unknown road is how an app talks itself out of being trusted.
+/// One rule qualifies: a motorway exit is a left-hand slip, always. The roundabout after-12
+/// heuristic was tried and withdrawn — road markings override the Highway Code's default often
+/// enough that the advice was sometimes wrong, and sometimes-wrong advice teaches the rider to
+/// ignore the advice that is right. Real lane guidance — "left lane exits, stay in the right
+/// two" — needs lane data, which OSM's turn:lanes can supply from our own extract one day.
 public func laneHint(_ steps: [RouteStep], at index: Int) -> String? {
     guard let step = steps[safe: index] else { return nil }
     let words = step.instructions.lowercased()
-    if words.contains("roundabout") {
-        guard
-            let next = steps[safe: index + 1],
-            let incoming = pathBearing(step.path.suffix(8), lastLeg: true),
-            let outgoing = pathBearing(Array(next.path.prefix(8)), lastLeg: false)
-        else { return nil }
-        switch clockDirection(incoming: incoming, outgoing: outgoing) {
-        case 1...5: return "Use the right lane"
-        case 7...11: return "Use the left lane"
-        default: return nil   // straight over: left unless signed, and silence over guessing
-        }
-    }
-    if words.contains("exit"), words.contains("motorway") || words.contains("towards") {
+    if words.contains("exit"), !words.contains("roundabout"),
+       words.contains("motorway") || words.contains("towards") {
         return "Keep left"
     }
     return nil
+}
+
+// MARK: - Choosing where to rejoin
+
+/// One place the original route could be rejoined at, and what it would cost to finish from there.
+public struct RejoinCandidate: Sendable, Equatable {
+    /// Index into the route's located steps — the manoeuvre being rejoined at.
+    public let stepIndex: Int
+    public let point: Coordinate
+    /// Time from this manoeuvre to the destination **along the original route**.
+    ///
+    /// Estimated rather than requested: the route already knows its own distance and duration, so
+    /// the remaining distance scaled by its average speed costs nothing and needs no network. It is
+    /// only ever compared against other candidates on the same route, so a systematic error in the
+    /// average cancels out.
+    public let remainingTime: TimeInterval
+}
+
+/// The next few manoeuvres, each as a place the route could be picked up again.
+///
+/// Bounded because each candidate costs a routing request. Four covers the realistic cases — a
+/// missed turn, a deliberate detour of a junction or two — and Apple throttles well before ten.
+public func rejoinCandidates(
+    _ route: RouteOption,
+    from stepIndex: Int,
+    /// Where the rider is, so candidates already behind them can be dropped.
+    at position: Coordinate? = nil,
+    /// Which way they are going, which is the only usable answer to "is that behind me" once too
+    /// far off the route to measure progress along it.
+    heading: Course? = nil,
+    limit: Int = 4
+) -> [RejoinCandidate] {
+    let steps = route.steps.filter { $0.start != nil }
+    // `stepIndex` can be past the end — guidance runs off the last manoeuvre on the approach to the
+    // destination — and `9..<4` is a crash, not an empty range.
+    guard
+        stepIndex < steps.count, stepIndex >= 0,
+        route.travelTime > 0, route.distance.rawValue > 0
+    else { return [] }
+    let metresPerSecond = route.distance.rawValue / route.travelTime
+
+    // How far along the route the rider has got. A manoeuvre behind that is behind *them*, and
+    // rejoining at it means turning round — which is what the rider saw: "turn right onto Luton
+    // Road" while joining Church Road, sending them back the way they came. The time comparison was
+    // supposed to make a U-turn lose, and cannot when the legs it needs are the ones that fail.
+    //
+    // `nil` when too far off the route to place, in which case nothing can be ruled out and every
+    // candidate stands.
+    let progress = position.flatMap { distanceAlongRoute(route.shape, to: $0) }
+
+    return (stepIndex..<min(stepIndex + limit, steps.count)).compactMap { index in
+        guard let point = steps[safe: index]?.start else { return nil }
+        if
+            let progress,
+            let junction = distanceAlongRoute(route.shape, to: point),
+            junction < progress {
+            return nil
+        }
+        // And when progress cannot be measured — more than a couple of hundred metres off the
+        // route, which is exactly when a reroute happens — direction of travel is the only thing
+        // left that says what is behind. Without it the rider was sent back down roads they had
+        // just ridden, one reroute after another.
+        //
+        // A wide cone: rejoining legitimately involves turning, and only something genuinely
+        // behind the shoulder should be ruled out.
+        if
+            progress == nil,
+            let heading,
+            let position,
+            distanceMetres(from: position.pair, to: point.pair) > 100 {
+            var apart = abs(bearing(from: position.pair, to: point.pair) - heading.rawValue)
+                .truncatingRemainder(dividingBy: 360)
+            if apart > 180 { apart = 360 - apart }
+            if apart > 120 { return nil }
+        }
+        // Everything still to drive once back on the route at this manoeuvre.
+        let remaining = steps.dropFirst(index).reduce(0.0) { $0 + $1.distance.rawValue }
+        return RejoinCandidate(
+            stepIndex: index,
+            point: point,
+            remainingTime: remaining / metresPerSecond
+        )
+    }
+}
+
+/// The candidate that gets to the destination soonest.
+///
+/// The whole point of comparing rather than always taking the first: a rider who *deliberately*
+/// went a different way has not made a mistake to be undone. Sending them back to the turn they
+/// skipped is a U-turn plus the leg they just rode, and it loses to simply carrying on and picking
+/// the route up further along — which is what a rider means when they take a road they prefer.
+///
+/// `legTimes` is the time from where the rider is now to each candidate, in the same order. `nil`
+/// means that leg could not be routed, and the candidate is dropped rather than guessed at.
+public func bestRejoin(
+    _ candidates: [RejoinCandidate], legTimes: [TimeInterval?]
+) -> RejoinCandidate? {
+    zip(candidates, legTimes)
+        .compactMap { candidate, leg in leg.map { (candidate, $0 + candidate.remainingTime) } }
+        .min { $0.1 < $1.1 }?
+        .0
+}
+
+// MARK: - Stitching a way back on
+
+/// The rejoin route, followed by whatever was left of the original.
+///
+/// This is what makes ``RerouteDecision/rejoin`` mean what it says. Routing straight to the final
+/// destination after a missed turn is what sends a rider down a completely different road — Apple
+/// answers "best way there from here", which after one wrong turn is frequently a different route
+/// altogether. Splicing keeps the ride the rider actually chose and treats the mistake as a
+/// detour back onto it.
+///
+/// Distance and travel time add; the exclusions are `true` if either half carries them, since a
+/// spliced route uses a motorway if any part of it does.
+public func splice(
+    rejoin: RouteOption, onto original: RouteOption, fromStep index: Int
+) -> RouteOption {
+    let remainingSteps = Array(original.steps.dropFirst(index))
+    // **Drop the way-back's last step.** Every route MapKit returns ends by announcing arrival, and
+    // the way back was routed to a *rejoin point* — so splicing it whole puts "arrive at the
+    // destination" in the middle of the journey. Heard on a replayed ride: "turn left onto Tennyson
+    // Road, then in 10 metres arrive at the destination", ten miles from anywhere.
+    //
+    // Dropping the last one is exact rather than a guess at the wording: the leg's final step is
+    // always the arrival at the join, and the join is where the original route's own step takes
+    // over.
+    let wayBack = rejoin.steps.dropLast()
+    // The tail of the original's geometry, from the manoeuvre being rejoined at. Falls back to the
+    // whole of it when that manoeuvre has no position, which is the same fallback guidance uses.
+    let joinPoint = remainingSteps.first?.start
+    let tail = joinPoint.map { point in
+        Array(original.shape.drop { distanceMetres(from: $0.pair, to: point.pair) > 25 })
+    } ?? []
+
+    return RouteOption(
+        name: original.name,
+        distance: Meters(rejoin.distance.rawValue + original.distance.rawValue),
+        travelTime: rejoin.travelTime + original.travelTime,
+        hasTolls: rejoin.hasTolls || original.hasTolls,
+        hasMotorways: rejoin.hasMotorways || original.hasMotorways,
+        steps: Array(wayBack) + remainingSteps,
+        shape: rejoin.shape + tail
+    )
 }
 
 // MARK: - Forward bias for replans

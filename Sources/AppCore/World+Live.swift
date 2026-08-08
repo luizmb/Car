@@ -585,6 +585,7 @@ extension World {
             completeAddress: RoutingClient.completeAddress,
             resolveAddress: RoutingClient.resolve,
             routes: RoutingClient.routes,
+            routesToEach: RoutingClient.routesToEach,
             thresholds: [110.0, 99, 88, 77, 66, 55, 44, 33, 22, 11].map { MPH($0) },
             formatSpeed: {
                 Measurement(value: $0.rawValue, unit: UnitSpeed.milesPerHour).formatted(speedFmt)
