@@ -14,6 +14,7 @@ public extension World {
             locationUpdates: { .empty() },
             subscribeToRoadSpeed: { .empty() },
             localRoad: { _, _, _ in nil },
+            laneContext: { _, _, _ in nil },
             camerasOnRoad: { _, _, _ in .just(nil) },
             subscribeToCameras: { .empty() },
             reverseGeocode: { _, _ in .just(nil) },

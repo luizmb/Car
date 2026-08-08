@@ -82,6 +82,9 @@ public enum AppFeature {
         /// and has to know which one it had to break when it cannot.
         public var routePreferences: RoutePreferences = .none
         public var reroute: RerouteState = RerouteState()
+        /// The fork whose lane advice has already been given — one fork, one sentence, however
+        /// many fixes arrive while it approaches.
+        public var laneAdvisedWayID: Int?
 
         /// Whether a journey is under way, by the two-signal rule. Not derived on demand: the rule
         /// is a *transition*, so the previous phase has to be remembered to know an edge happened.
@@ -162,6 +165,7 @@ public enum AppFeature {
         /// Guidance advanced for a fix. Carries both, because working them out needs the distance
         /// formatter and so happens inside an effect.
         case guidanceUpdated(GuidanceState, GuidanceBanner?)
+        case laneAdvised(Int)
         case stopNavigation
         /// Off-route bookkeeping for a fix.
         case rerouteTracked(RerouteState)
@@ -519,6 +523,7 @@ public enum AppFeature {
                 $0.guidanceBanner = nil
                 $0.routePreferences = preferences
                 $0.reroute = RerouteState()
+                $0.laneAdvisedWayID = nil
             }
             .produce { ctx in
                 // The destination goes into the journey log at GO — bypassing the journey gate the
@@ -558,6 +563,7 @@ public enum AppFeature {
                 $0.guidance = GuidanceState()
                 $0.guidanceBanner = nil
                 $0.reroute = RerouteState()
+                $0.laneAdvisedWayID = nil
             }
             .produce { _ in
                 Effect.just(.speedMonitor(.setRoute([])))
@@ -591,6 +597,24 @@ public enum AppFeature {
                 let spoken = advanced.announcement.map {
                     ctx.environment.speakQueued($0) |> Effect<AppAction>.fireAndForget
                 } ?? .empty
+                // Lane advice, from the extract's paint rather than from the route: the case it
+                // exists for — an exit-only lane the route rides *past* — has no manoeuvre, so no
+                // step machinery would ever speak of it. One sentence per fork.
+                let lane: Effect<AppAction>
+                if
+                    let paint = ctx.environment.laneContext(update.latitude, update.longitude, update.course),
+                    paint.splitWayID != state.laneAdvisedWayID,
+                    let advised = laneAdvice(
+                        steps: route.steps, stepIndex: advanced.state.stepIndex,
+                        at: position, heading: update.course, speed: speed,
+                        context: paint, formatDistance: ctx.environment.formatDistance
+                    )
+                {
+                    lane = (ctx.environment.speakQueued(advised) |> Effect<AppAction>.fireAndForget)
+                        <> Effect.just(.laneAdvised(paint.splitWayID))
+                } else {
+                    lane = .empty
+                }
                 // Arrival ends navigation, not just the talking. "You have arrived" used to leave
                 // the route loaded, so the reroute machinery treated every metre of onward riding
                 // as off-route and recalculated the way *back* — ten minutes of it on a real ride.
@@ -601,6 +625,7 @@ public enum AppFeature {
                 return Effect.just(.guidanceUpdated(advanced.state, banner))
                     <> Effect.just(.speedMonitor(.setNextTurn(banner?.distance)))
                     <> spoken
+                    <> lane
                     <> finished
             }
         }
@@ -610,6 +635,11 @@ public enum AppFeature {
             else { return }
             state.guidance = guidanceState
             state.guidanceBanner = banner
+        }
+
+        <> Behavior<AppAction, AppState, World>.reduce { action, state in
+            guard let wayID = AppAction.prism.laneAdvised.preview(action) else { return }
+            state.laneAdvisedWayID = wayID
         }
 
         // Without this, off-route detection was dead code. The action was dispatched on every fix

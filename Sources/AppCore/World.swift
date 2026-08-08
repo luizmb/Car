@@ -18,6 +18,11 @@ public struct World: Sendable {
     /// Roads from the on-device extract, tried before Overpass. `nil` means the file is absent or
     /// has nothing here, and the network answers instead.
     public let localRoad: @Sendable (Latitude, Longitude, Course?) -> RoadInfo?
+    /// The lane paint under the wheels, from the extract's `turn:lanes` (v6). Extract-only, no
+    /// network fallback: Overpass cannot answer "where does this paint end" without the way
+    /// topology, and lane advice is worth having exactly as far as it can be trusted. `nil` is
+    /// the common, honest answer — untagged road, older file, no course to read direction from.
+    public let laneContext: @Sendable (Latitude, Longitude, Course?) -> LaneWayContext?
     /// The cameras on one specific road — the road the rider just joined.
     ///
     /// `nil` when the extract cannot answer (predates road attachment, or the rider is outside

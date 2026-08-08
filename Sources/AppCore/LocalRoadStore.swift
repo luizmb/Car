@@ -37,6 +37,10 @@ final class LocalRoadStore: @unchecked Sendable {
     /// untagged urban primary resolving to 30 (restricted road: lamps, no signs) and to a
     /// fictitious "national 60".
     private let roadsCarryLit: Bool
+    /// Whether this extract's roads carry lane paint (v6 onwards): `lanes`, `oneway` and the raw
+    /// `turn:lanes` strings for each direction of travel. A v5 file answers every lane question
+    /// with silence, which is what the app said before the feature existed.
+    private let roadsCarryLanes: Bool
 
     /// The extract, if one has been put in Documents. Absent is normal and not an error — the app
     /// simply falls through to Overpass, which is what it did before this existed.
@@ -82,6 +86,13 @@ final class LocalRoadStore: @unchecked Sendable {
         }
         sqlite3_finalize(litStatement)
         roadsCarryLit = hasLit
+        var laneStatement: OpaquePointer?
+        var hasLanes = false
+        if sqlite3_prepare_v2(db, "SELECT turn_fwd FROM road LIMIT 1", -1, &laneStatement, nil) == SQLITE_OK {
+            hasLanes = true
+        }
+        sqlite3_finalize(laneStatement)
+        roadsCarryLanes = hasLanes
     }
 
     deinit { sqlite3_close(handle) }
@@ -128,6 +139,126 @@ final class LocalRoadStore: @unchecked Sendable {
         let chosen = selectRoad(from: candidates, at: (latitude, longitude), course: course)
         guard chosen != nil else { return nil }
         return roadInfo(from: chosen, among: candidates)
+    }
+
+    /// The lane paint under the wheels, read in the direction of travel.
+    ///
+    /// Only lane-tagged ways are considered, the rider has to be *on* one — within 25 m of it and
+    /// pointed along it — and the answer names where the paint runs out. That last part is a walk,
+    /// not a lookup: mappers split a long painted approach into several ways, each carrying the
+    /// same `turn:lanes` string, and the fork is at the end of the last of them. The walk follows
+    /// end-to-start joins with an identical string for up to four hops; a string that changes is a
+    /// new lane picture and honestly a new fork.
+    ///
+    /// `nil` whenever anything is unresolved — no course, no v6 file, no tagged way underneath,
+    /// travel direction ambiguous — because lane advice built on a guess is exactly the
+    /// sometimes-wrong advice this app refuses to give.
+    func laneContext(latitude: Latitude, longitude: Longitude, course: Course?) -> LaneWayContext? {
+        guard roadsCarryLanes, let course else { return nil }
+        var best: (offset: Double, row: LaneRow, turns: String, remaining: Double, ahead: (Double, Double))?
+        for row in laneRows(nearLat: latitude.rawValue, nearLon: longitude.rawValue, padMetres: 120) {
+            guard
+                let fit = polylineFit(row.points, lat: latitude.rawValue, lon: longitude.rawValue),
+                fit.offset <= 25
+            else { continue }
+            let misalignment = angularDifference(course.rawValue, fit.bearing)
+            let forward: Bool
+            if misalignment <= 50 {
+                forward = true
+            } else if misalignment >= 130 {
+                forward = false
+            } else {
+                continue
+            }
+            // A way mapped against the traffic (oneway=-1) paints its plain turn:lanes for the
+            // rider travelling *backward* along the geometry.
+            let turns = forward
+                ? (row.oneway == -1 ? nil : row.turnFwd)
+                : (row.oneway == -1 ? row.turnFwd : row.turnBack)
+            guard let turns else { continue }
+            let remaining = forward ? fit.length - fit.along : fit.along
+            let endLat = forward ? row.points.last?.0.rawValue : row.points.first?.0.rawValue
+            let endLon = forward ? row.points.last?.1.rawValue : row.points.first?.1.rawValue
+            guard let endLat, let endLon else { continue }
+            if best.map({ fit.offset < $0.offset }) ?? true {
+                best = (fit.offset, row, turns, remaining, (endLat, endLon))
+            }
+        }
+        guard let best else { return nil }
+
+        var splitWayID = best.row.id
+        var splitDistance = best.remaining
+        var endPoint = best.ahead
+        var visited: Set<Int> = [best.row.id]
+        for _ in 0..<4 {
+            let near = laneRows(nearLat: endPoint.0, nearLon: endPoint.1, padMetres: 15)
+            guard let next = near.lazy.compactMap({ (row: LaneRow) -> (LaneRow, Bool)? in
+                guard !visited.contains(row.id) else { return nil }
+                if let start = row.points.first,
+                   metresApart(start, endPoint) <= 15,
+                   (row.oneway == -1 ? nil : row.turnFwd) == best.turns {
+                    return (row, true)
+                }
+                if let end = row.points.last,
+                   metresApart(end, endPoint) <= 15,
+                   (row.oneway == -1 ? row.turnFwd : row.turnBack) == best.turns {
+                    return (row, false)
+                }
+                return nil
+            }).first else { break }
+            let (row, forward) = next
+            splitWayID = row.id
+            splitDistance += polylineLength(row.points)
+            visited.insert(row.id)
+            let far = forward ? row.points.last : row.points.first
+            guard let far else { break }
+            endPoint = (far.0.rawValue, far.1.rawValue)
+        }
+        return LaneWayContext(
+            splitWayID: splitWayID,
+            turnLanes: best.turns,
+            splitDistance: Meters(splitDistance)
+        )
+    }
+
+    private struct LaneRow {
+        let id: Int
+        let oneway: Int?
+        let turnFwd: String?
+        let turnBack: String?
+        let points: [(Latitude, Longitude)]
+    }
+
+    /// Lane-tagged ways whose bounding box touches the pad. The filter is in the SQL: untagged
+    /// ways — nearly all of them — never leave the database.
+    private func laneRows(nearLat: Double, nearLon: Double, padMetres: Double) -> [LaneRow] {
+        let pad = padMetres / 111_320
+        let lonPad = pad / cos(nearLat * .pi / 180)
+        var rows: [LaneRow] = []
+        query(
+            """
+            SELECT r.id, r.oneway, r.turn_fwd, r.turn_back, r.geom
+            FROM road_bbox b JOIN road r ON r.id = b.id
+            WHERE b.maxlat >= ? AND b.minlat <= ? AND b.maxlon >= ? AND b.minlon <= ?
+              AND (r.turn_fwd IS NOT NULL OR r.turn_back IS NOT NULL)
+            LIMIT 50
+            """,
+            bind: [nearLat - pad, nearLat + pad, nearLon - lonPad, nearLon + lonPad]
+        ) { statement in
+            guard let blob = sqlite3_column_blob(statement, 4) else { return }
+            let bytes = Int(sqlite3_column_bytes(statement, 4))
+            let points = decode(Data(bytes: blob, count: bytes))
+            guard points.count >= 2 else { return }
+            rows.append(LaneRow(
+                id: Int(sqlite3_column_int64(statement, 0)),
+                oneway: sqlite3_column_type(statement, 1) == SQLITE_NULL
+                    ? nil : Int(sqlite3_column_int(statement, 1)),
+                turnFwd: text(statement, 2),
+                turnBack: text(statement, 3),
+                points: points
+            ))
+        }
+        return rows
     }
 
     /// Every camera and average-speed zone within `radius` metres.
@@ -406,6 +537,72 @@ private func decode(_ data: Data) -> [(Latitude, Longitude)] {
         }
     }
     return points
+}
+
+// MARK: - Polyline geometry
+
+/// Where a point falls against a polyline: perpendicular offset, distance travelled along it to
+/// the projection, the bearing of the segment it projects onto, and the polyline's full length.
+/// Equirectangular metres — the same approximation the extractor's camera attachment uses, and
+/// exact enough at road scale that GPS noise dwarfs it.
+private struct PolylineFit {
+    let offset: Double
+    let along: Double
+    let bearing: Double
+    let length: Double
+}
+
+private func polylineFit(
+    _ points: [(Latitude, Longitude)], lat: Double, lon: Double
+) -> PolylineFit? {
+    guard points.count >= 2 else { return nil }
+    let scale = cos(lat * .pi / 180)
+    var travelled = 0.0
+    var best: PolylineFit?
+    for (a, b) in zip(points, points.dropFirst()) {
+        let sx = (b.1.rawValue - a.1.rawValue) * 111_320 * scale
+        let sy = (b.0.rawValue - a.0.rawValue) * 111_320
+        let px = (lon - a.1.rawValue) * 111_320 * scale
+        let py = (lat - a.0.rawValue) * 111_320
+        let lengthSquared = sx * sx + sy * sy
+        let segment = lengthSquared.squareRoot()
+        let t = lengthSquared == 0 ? 0 : max(0, min(1, (px * sx + py * sy) / lengthSquared))
+        let offset = ((px - t * sx) * (px - t * sx) + (py - t * sy) * (py - t * sy)).squareRoot()
+        if best.map({ offset < $0.offset }) ?? true {
+            let degrees = atan2(sx, sy) * 180 / .pi
+            best = PolylineFit(
+                offset: offset,
+                along: travelled + t * segment,
+                bearing: degrees < 0 ? degrees + 360 : degrees,
+                length: 0
+            )
+        }
+        travelled += segment
+    }
+    return best.map { PolylineFit(offset: $0.offset, along: $0.along, bearing: $0.bearing, length: travelled) }
+}
+
+private func polylineLength(_ points: [(Latitude, Longitude)]) -> Double {
+    guard let anchor = points.first else { return 0 }
+    let scale = cos(anchor.0.rawValue * .pi / 180)
+    return zip(points, points.dropFirst()).reduce(0.0) { sum, pair in
+        let (a, b) = pair
+        let dx = (b.1.rawValue - a.1.rawValue) * 111_320 * scale
+        let dy = (b.0.rawValue - a.0.rawValue) * 111_320
+        return sum + (dx * dx + dy * dy).squareRoot()
+    }
+}
+
+private func metresApart(_ point: (Latitude, Longitude), _ other: (Double, Double)) -> Double {
+    let scale = cos(point.0.rawValue * .pi / 180)
+    let dx = (other.1 - point.1.rawValue) * 111_320 * scale
+    let dy = (other.0 - point.0.rawValue) * 111_320
+    return (dx * dx + dy * dy).squareRoot()
+}
+
+private func angularDifference(_ a: Double, _ b: Double) -> Double {
+    let raw = abs(a - b).truncatingRemainder(dividingBy: 360)
+    return raw > 180 ? 360 - raw : raw
 }
 
 /// The class names, in the order the extractor assigned them — sorted, so the mapping is derivable
