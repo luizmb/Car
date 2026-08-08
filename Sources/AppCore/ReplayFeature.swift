@@ -35,6 +35,10 @@ public enum ReplayFeature {
         /// until they leave.
         public var finished: Bool = false
         public var started: Bool = false
+        /// Where the tape is and how long it runs — the HUD's ticking proof that a stopped bike
+        /// is a red light, not a hang.
+        public var position: TimeInterval = 0
+        public var duration: TimeInterval = 0
 
         public init(ride: Ride) {
             self.ride = ride
@@ -48,8 +52,8 @@ public enum ReplayFeature {
     public enum Action: Sendable {
         /// The screen appeared; roll the tape.
         case begin
-        /// One step of the tape, on time.
-        case event(ReplayEvent)
+        /// One step of the tape, on time, knowing where on the tape it sits.
+        case event(ReplayStep)
         /// The lifted second monitor — the same actions the live one handles.
         case monitor(SpeedMonitorFeature.Action)
         case ended
@@ -79,28 +83,36 @@ func replayBehavior() -> Behavior<AppAction, AppState, World> {
             !entry.started
         else { return .doNothing }
         let schedule = replaySchedule(for: entry.ride.records)
+        let duration = schedule.last?.position ?? 0
         return .reduce {
-            $0.updateReplay { $0.started = true }
+            $0.updateReplay {
+                $0.started = true
+                $0.duration = duration
+            }
         }
         .produce { ctx in
             ctx.environment.playback(schedule).asEffect { AppAction.replay(.event($0)) }
         }
     }
 
-    // Each step becomes exactly the action the live World would have produced.
+    // Each step becomes exactly the action the live World would have produced — and moves the
+    // tape counter, which is the screen's proof of life during recorded stillness.
     <> Behavior<AppAction, AppState, World>.handle { action, _ in
         guard
-            let event = AppAction.prism.replay.preview(action)
+            let step = AppAction.prism.replay.preview(action)
                 .flatMap(ReplayFeature.Action.prism.event.preview)
         else { return .doNothing }
-        switch event {
+        switch step.event {
         case let .fix(update):
-            return .produce { _ in Effect.just(.replay(.monitor(.locationUpdate(update)))) }
+            return .reduce { $0.updateReplay { $0.position = step.position } }
+                .produce { _ in Effect.just(.replay(.monitor(.locationUpdate(update)))) }
         case let .road(info):
-            return .produce { _ in Effect.just(.replay(.monitor(.roadSpeedChanged(info)))) }
+            return .reduce { $0.updateReplay { $0.position = step.position } }
+                .produce { _ in Effect.just(.replay(.monitor(.roadSpeedChanged(info)))) }
         case let .indicator(side):
             return .reduce {
                 $0.updateReplay { replay in
+                    replay.position = step.position
                     replay.indicator = side.map { $0 == "left" ? .left : .right }
                 }
             }
@@ -196,7 +208,7 @@ final class ReplayBox: @unchecked Sendable {
     private let lock = NSLock()
     private var generation = 0
 
-    func play(_ steps: [ReplayStep]) -> Publisher<ReplayEvent, Never> {
+    func play(_ steps: [ReplayStep]) -> Publisher<ReplayStep, Never> {
         Publisher { [weak self] continuation in
             guard let self else { return }
             let mine = self.lock.withLock {
@@ -208,7 +220,7 @@ final class ReplayBox: @unchecked Sendable {
                     try? await Task.sleep(nanoseconds: UInt64(step.delay * 1_000_000_000))
                 }
                 guard self.lock.withLock({ self.generation == mine }) else { return }
-                continuation.yield(step.event)
+                continuation.yield(step)
             }
         }
     }

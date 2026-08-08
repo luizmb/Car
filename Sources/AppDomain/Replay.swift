@@ -20,16 +20,25 @@ public enum ReplayEvent: Sendable, Equatable {
     case finished
 }
 
-/// An event and how long after the *previous* one it belongs — the tape, cut into waits.
+/// An event, how long after the *previous* one it belongs, and where on the tape it sits — so
+/// the screen can show a position ticking and a stopped bike reads as a red light, not a hang.
 public struct ReplayStep: Sendable, Equatable {
     public let delay: TimeInterval
+    /// Seconds from the tape's start (after trimming) — what the HUD counts.
+    public let position: TimeInterval
     public let event: ReplayEvent
 
-    public init(delay: TimeInterval, event: ReplayEvent) {
+    public init(delay: TimeInterval, position: TimeInterval, event: ReplayEvent) {
         self.delay = delay
+        self.position = position
         self.event = event
     }
 }
+
+/// A rider is moving above this; below it the tape is parked footage.
+private let replayMovingMPS = 1.5
+/// Seconds of stillness kept either side of the motion, so the pull-away has a run-up.
+private let replayLeadSeconds: TimeInterval = 5
 
 // MARK: - Cutting the tape
 
@@ -37,23 +46,55 @@ public struct ReplayStep: Sendable, Equatable {
 ///
 /// Only the replayable kinds survive: fixes, indicators, roads. Barometer, tyres, weather and the
 /// journey markers describe the ride but do not drive the screen being replayed. Delays are the
-/// records' own spacing — a five-minute wait at a junction replays as five minutes, because the
-/// point is to watch the journey as it was, not a highlights reel.
+/// records' own spacing — a red light replays as a red light, because the point is to watch the
+/// journey as it was, not a highlights reel.
+///
+/// The parked **bookends** are the one exception: a ride's record often opens with minutes of
+/// standing still before the pull-away, and replaying that verbatim is footage of a wall — a real
+/// rider watched two and a half minutes of zeroes and reasonably called it broken. The tape starts
+/// a few seconds before the first movement and ends a few seconds after the last; every stop *in*
+/// the ride stays real.
 public func replaySchedule(for records: [JourneyRecord]) -> [ReplayStep] {
     let ordered = records.sorted { $0.time < $1.time }
+
+    let movingTimes = ordered.compactMap { record -> Date? in
+        guard
+            let fix = record.payload as? FixPayload,
+            let mph = fix.mph,
+            Iso<MPS, MPH>.convert.reverseGet(MPH(mph)).rawValue >= replayMovingMPS
+        else { return nil }
+        return record.time
+    }
+    // A ride that never moves keeps its whole (short) tape rather than becoming nothing.
+    let window: (Date, Date)? = zip(movingTimes.first, movingTimes.last).map {
+        ($0.addingTimeInterval(-replayLeadSeconds), $1.addingTimeInterval(replayLeadSeconds))
+    }
+
     var steps: [ReplayStep] = []
+    var start: Date?
     var previous: Date?
 
     for record in ordered {
+        if let (from, to) = window, record.time < from || record.time > to { continue }
         guard let event = replayEvent(for: record.payload) else { continue }
         let delay = previous.map { record.time.timeIntervalSince($0) } ?? 0
-        steps.append(ReplayStep(delay: max(0, delay), event: event))
+        let tapeStart = start ?? record.time
+        start = tapeStart
+        steps.append(ReplayStep(
+            delay: max(0, delay),
+            position: record.time.timeIntervalSince(tapeStart),
+            event: event
+        ))
         previous = record.time
     }
-    if !steps.isEmpty {
-        steps.append(ReplayStep(delay: 1, event: .finished))
+    if let last = steps.last {
+        steps.append(ReplayStep(delay: 1, position: last.position + 1, event: .finished))
     }
     return steps
+}
+
+private func zip<A, B>(_ a: A?, _ b: B?) -> (A, B)? {
+    a.flatMap { justA in b.map { (justA, $0) } }
 }
 
 private func replayEvent(for payload: any JourneyPayloadType) -> ReplayEvent? {
