@@ -65,6 +65,31 @@ def parse_mph(raw):
     return int(round(value))
 
 
+def parse_lanes(raw):
+    """OSM `lanes` as a small int. Values like "2; 3" or "narrow" resolve to None — the turn
+    string itself carries a lane count (its pipe count), so this is corroboration, not the law."""
+    if not raw:
+        return None
+    try:
+        return int(raw.strip())
+    except ValueError:
+        return None
+
+
+def parse_oneway(raw):
+    """1 forward-only, -1 reversed (travel runs against the geometry), 0 both ways, None untagged."""
+    if not raw:
+        return None
+    raw = raw.strip().lower()
+    if raw in ("yes", "true", "1"):
+        return 1
+    if raw == "-1":
+        return -1
+    if raw in ("no", "false", "0"):
+        return 0
+    return None
+
+
 def parse_direction(raw):
     """Compass degrees from a number or a cardinal abbreviation.
 
@@ -187,9 +212,11 @@ class Extractor(osmium.SimpleHandler):
             # duplicated four REALs across 4.3 million rows for no reader — the candidate query
             # joins through the index and never selects them — which is about 140 MB.
             self.db.executemany(
-                "INSERT OR IGNORE INTO road (id, name, ref, class, mph, geom, lit)"
-                " VALUES (?,?,?,?,?,?,?)",
-                [(r[0], r[1], r[2], r[3], r[4], r[9], r[10]) for r in self.roads])
+                "INSERT OR IGNORE INTO road (id, name, ref, class, mph, geom, lit,"
+                " lanes, oneway, turn_fwd, turn_back)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                [(r[0], r[1], r[2], r[3], r[4], r[9], r[10], r[11], r[12], r[13], r[14])
+                 for r in self.roads])
             self.db.executemany(
                 "INSERT OR IGNORE INTO road_bbox (id, minlat, maxlat, minlon, maxlon)"
                 " VALUES (?,?,?,?,?)",
@@ -270,10 +297,18 @@ class Extractor(osmium.SimpleHandler):
         # sunset-sunrise all describe lighting that exists.
         lit_tag = tags.get("lit")
         lit = None if lit_tag is None else (0 if lit_tag in ("no", "disused") else 1)
+        # Lane guidance (v6). On a oneway carriageway — where exit-only lanes actually happen —
+        # the tag is plain `turn:lanes`; on a two-way road each direction gets its own suffix.
+        # Both are kept verbatim: the pipe-and-semicolon grammar is parsed once, in Swift, where
+        # it has tests, rather than half-parsed here and half there.
+        oneway = parse_oneway(tags.get("oneway"))
+        turn_fwd = tags.get("turn:lanes:forward") or (tags.get("turn:lanes") if oneway != 0 else None)
+        turn_back = tags.get("turn:lanes:backward")
         self.roads.append((
             w.id, tags.get("name"), tags.get("ref"), CLASS_ID[highway],
             parse_mph(tags.get("maxspeed")),
             min(lats), max(lats), min(lons), max(lons), pack(coords), lit,
+            parse_lanes(tags.get("lanes")), oneway, turn_fwd, turn_back,
         ))
         if len(self.roads) >= 50_000:
             self.flush()
@@ -366,8 +401,13 @@ def main(pbf, out):
         -- the law's own discriminator: lamps and no signs make a *restricted road*, 30 mph
         -- whatever the class - the difference between the A505 through Dunstable and the same
         -- A505 in the fields, neither of which carries a maxspeed tag.
+        -- Lane guidance (v6): lanes is the tagged total, oneway is 1/-1/0/NULL as parse_oneway
+        -- says, and turn_fwd/turn_back hold the raw turn:lanes strings for travel with and
+        -- against the geometry. Tagged on a few percent of ways - motorways and big junction
+        -- approaches - and NULL elsewhere, which is the app's cue to stay silent.
         CREATE TABLE road (id INTEGER PRIMARY KEY, name TEXT, ref TEXT, class INTEGER, mph INTEGER,
-                           geom BLOB, lit INTEGER);
+                           geom BLOB, lit INTEGER,
+                           lanes INTEGER, oneway INTEGER, turn_fwd TEXT, turn_back TEXT);
         CREATE VIRTUAL TABLE road_bbox USING rtree(id, minlat, maxlat, minlon, maxlon);
         -- A camera belongs to a *road*, and which road it is on is a fact about the map rather
         -- than about the rider — so it is settled here, once, instead of re-derived from geometry
@@ -436,6 +476,10 @@ def main(pbf, out):
 
     for table in ("road", "camera", "zone", "station"):
         print(f"  {table}: {db.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]:,}", flush=True)
+    laned = db.execute(
+        "SELECT COUNT(*) FROM road WHERE turn_fwd IS NOT NULL OR turn_back IS NOT NULL"
+    ).fetchone()[0]
+    print(f"  roads with turn lanes: {laned:,}", flush=True)
     devices = db.execute("SELECT COUNT(DISTINCT zone_id) FROM zone_device").fetchone()[0]
     print(f"  zones with located devices: {devices:,}", flush=True)
     located = db.execute("SELECT COUNT(*) FROM zone WHERE start_lat IS NOT NULL").fetchone()[0]

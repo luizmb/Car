@@ -23,8 +23,11 @@ private func makeExtract(
     zones: [(id: Int, mph: Int?, start: (Double, Double)?, end: (Double, Double)?)] = [],
     stations: [(id: Int, name: String?, brand: String?, lat: Double, lon: Double)] = [],
     roads: [(id: Int, name: String?, roadClass: Int, mph: Int?, lit: Int?, points: [(Double, Double)])] = [],
+    laneRoads: [(id: Int, oneway: Int?, turnFwd: String?, turnBack: String?, points: [(Double, Double)])] = [],
     // The extract already ridden with has no `lit` column; asking it must degrade, not error.
-    roadsHaveLitColumn: Bool = true
+    roadsHaveLitColumn: Bool = true,
+    // Likewise the v5 file predates lane paint; every lane question against it must answer nil.
+    roadsHaveLaneColumns: Bool = true
 ) throws -> URL {
     let url = FileManager.default.temporaryDirectory
         .appendingPathComponent("extract-\(UUID().uuidString).sqlite")
@@ -45,7 +48,10 @@ private func makeExtract(
     run("""
         CREATE TABLE road (id INTEGER PRIMARY KEY, name TEXT, ref TEXT, class INTEGER, mph INTEGER,
                            minlat REAL, maxlat REAL, minlon REAL, maxlon REAL, geom BLOB\(
-                               roadsHaveLitColumn ? ", lit INTEGER" : ""));
+                               roadsHaveLitColumn ? ", lit INTEGER" : "")\(
+                               roadsHaveLaneColumns
+                                   ? ", lanes INTEGER, oneway INTEGER, turn_fwd TEXT, turn_back TEXT"
+                                   : ""));
         CREATE TABLE camera (id INTEGER PRIMARY KEY, kind TEXT, mph INTEGER, direction REAL,
                              lat REAL, lon REAL,
                              road_id INTEGER, road_name TEXT, road_ref TEXT, road_class INTEGER,
@@ -131,6 +137,26 @@ private func makeExtract(
         run("""
             INSERT INTO road (id, name, class, mph, geom\(litColumns.0))
               VALUES (\(road.id), \(name), \(road.roadClass), \(mph), X'\(hex)'\(litColumns.1));
+            INSERT INTO road_bbox VALUES (\(road.id), \(box.0), \(box.1), \(box.2), \(box.3));
+            """)
+    }
+
+    for road in laneRoads {
+        var geom = Data()
+        for (lat, lon) in road.points {
+            withUnsafeBytes(of: Int32(lat * 1e7).littleEndian) { geom.append(contentsOf: $0) }
+            withUnsafeBytes(of: Int32(lon * 1e7).littleEndian) { geom.append(contentsOf: $0) }
+        }
+        let hex = geom.map { String(format: "%02x", $0) }.joined()
+        let lats = road.points.map(\.0)
+        let lons = road.points.map(\.1)
+        let box = (lats.min() ?? 0, lats.max() ?? 0, lons.min() ?? 0, lons.max() ?? 0)
+        let oneway = road.oneway.map { "\($0)" } ?? "NULL"
+        let turnFwd = road.turnFwd.map { "'\($0)'" } ?? "NULL"
+        let turnBack = road.turnBack.map { "'\($0)'" } ?? "NULL"
+        run("""
+            INSERT INTO road (id, name, class, geom, oneway, turn_fwd, turn_back)
+              VALUES (\(road.id), 'Laned Road', 3, X'\(hex)', \(oneway), \(turnFwd), \(turnBack));
             INSERT INTO road_bbox VALUES (\(road.id), \(box.0), \(box.1), \(box.2), \(box.3));
             """)
     }
@@ -430,10 +456,107 @@ struct LocalExtractLitTests {
     func oldSchemaStillWorks() throws {
         let store = try #require(LocalRoadStore(url: makeExtract(
             roads: [(3, "Dunstable Road", 3, nil, nil, path)],
-            roadsHaveLitColumn: false
+            roadsHaveLitColumn: false,
+            roadsHaveLaneColumns: false
         )))
         let info = store.road(at: bedford.0, longitude: bedford.1, course: nil)
         #expect(info?.limit == .value(MPH(60)))
         #expect(info?.name == "Dunstable Road")
+    }
+}
+
+// MARK: - Lane paint from the extract
+
+@Suite("Lane context from the extract")
+struct LocalLaneContextTests {
+    /// An east–west way through the fixture's Bedford point; the rider sits at its midpoint, so
+    /// the paint runs out ~340 m ahead when travelling east.
+    private let acrossBedford = [(52.13, -0.465), (52.13, -0.455)]
+    private let east = Course(90)
+    private let west = Course(270)
+
+    @Test("The paint under the wheels, read eastbound")
+    func readsForward() throws {
+        let store = try #require(LocalRoadStore(url: makeExtract(
+            laneRoads: [(10, 1, "slight_left|through|through", nil, acrossBedford)]
+        )))
+        let paint = try #require(store.laneContext(
+            latitude: bedford.0, longitude: bedford.1, course: east
+        ))
+        #expect(paint.splitWayID == 10)
+        #expect(paint.turnLanes == "slight_left|through|through")
+        #expect(paint.splitDistance.rawValue > 300 && paint.splitDistance.rawValue < 380)
+    }
+
+    /// A oneway carriageway ridden against the geometry has no paint for that direction of travel
+    /// — whatever put the rider there, lane advice is not the announcement to make.
+    @Test("Against a oneway's flow there is no answer")
+    func onewayAgainstFlow() throws {
+        let store = try #require(LocalRoadStore(url: makeExtract(
+            laneRoads: [(10, 1, "slight_left|through|through", nil, acrossBedford)]
+        )))
+        #expect(store.laneContext(latitude: bedford.0, longitude: bedford.1, course: west) == nil)
+    }
+
+    @Test("A two-way road answers each direction with its own paint")
+    func twoWayPaint() throws {
+        let store = try #require(LocalRoadStore(url: makeExtract(
+            laneRoads: [(10, 0, "through|right", "left|through", acrossBedford)]
+        )))
+        let westbound = try #require(store.laneContext(
+            latitude: bedford.0, longitude: bedford.1, course: west
+        ))
+        #expect(westbound.turnLanes == "left|through")
+        #expect(westbound.splitDistance.rawValue > 300 && westbound.splitDistance.rawValue < 380)
+    }
+
+    /// Mappers split a long painted approach into several ways. The fork is at the end of the
+    /// *last* of them, and the second way here sits beyond the first query's reach on purpose —
+    /// only the walk can find it.
+    @Test("Identical paint chains through way boundaries to the real fork")
+    func chainsToTheFork() throws {
+        let store = try #require(LocalRoadStore(url: makeExtract(laneRoads: [
+            (10, 1, "slight_left|through|through", nil, [(52.13, -0.465), (52.13, -0.460)]),
+            (11, 1, "slight_left|through|through", nil, [(52.13, -0.460), (52.13, -0.455)])
+        ])))
+        let paint = try #require(store.laneContext(
+            latitude: Latitude(52.13), longitude: Longitude(-0.4645), course: east
+        ))
+        #expect(paint.splitWayID == 11)
+        #expect(paint.splitDistance.rawValue > 550 && paint.splitDistance.rawValue < 750)
+    }
+
+    /// A different string on the next way is a different lane picture — a new fork, not more of
+    /// this one. The distance stops at the boundary.
+    @Test("Changed paint ends the chain")
+    func changedPaintStops() throws {
+        let store = try #require(LocalRoadStore(url: makeExtract(laneRoads: [
+            (10, 1, "slight_left|through|through", nil, [(52.13, -0.465), (52.13, -0.460)]),
+            (11, 1, "left|through", nil, [(52.13, -0.460), (52.13, -0.455)])
+        ])))
+        let paint = try #require(store.laneContext(
+            latitude: Latitude(52.13), longitude: Longitude(-0.4645), course: east
+        ))
+        #expect(paint.splitWayID == 10)
+        #expect(paint.splitDistance.rawValue > 250 && paint.splitDistance.rawValue < 360)
+    }
+
+    /// Direction is half the answer; without a course the paint cannot be read left-to-right.
+    @Test("No course, no answer")
+    func needsCourse() throws {
+        let store = try #require(LocalRoadStore(url: makeExtract(
+            laneRoads: [(10, 1, "slight_left|through|through", nil, acrossBedford)]
+        )))
+        #expect(store.laneContext(latitude: bedford.0, longitude: bedford.1, course: nil) == nil)
+    }
+
+    /// The v5 file on the phone keeps working exactly as before: silence, not an SQL error.
+    @Test("A pre-lane extract answers every lane question with nil")
+    func v5StaysSilent() throws {
+        let store = try #require(LocalRoadStore(url: makeExtract(
+            roads: [(3, "Dunstable Road", 3, nil, nil, [(52.13, -0.461), (52.13, -0.459)])],
+            roadsHaveLaneColumns: false
+        )))
+        #expect(store.laneContext(latitude: bedford.0, longitude: bedford.1, course: east) == nil)
     }
 }
