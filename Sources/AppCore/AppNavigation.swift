@@ -64,6 +64,7 @@ private extension AppState {
         case .navigate: .navigate(NavigationFeature.initialState(with: ()))
         case .rides: .rides(RideReviewFeature.initialState(with: ()))
         case .maintenance: .maintenance(MaintenanceFeature.initialState(with: ()))
+        case let .replay(ride): .replay(ReplayFeature.State(ride: ride))
         }
     }
 }

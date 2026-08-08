@@ -251,6 +251,7 @@ extension World {
         let appDatabase = AppDatabase()
         let watchLink = PhoneWatchBox()
         let cameraOCR = CameraOCRBox()
+        let replayBox = ReplayBox()
         let motionBox = MotionBox()
         let device    = DeviceBox()
         let ticks     = IndicatorAudioBox()
@@ -479,6 +480,8 @@ extension World {
             captureText: { cameraOCR.recognizedText },
             stopTextCapture: { Publisher.future { cameraOCR.finishAll() } },
             cameraPreview: { cameraOCR.previewLayer() },
+            playback: { steps in replayBox.play(steps) },
+            stopPlayback: { Publisher.future { replayBox.stop() } },
             phoneBattery: { device.batteryLevel },
             isLowPowerMode: { ProcessInfo.processInfo.isLowPowerModeEnabled },
             fetchStation: { latitude, longitude in

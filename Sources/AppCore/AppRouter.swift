@@ -71,6 +71,8 @@ public struct AppRouter {
             AppScopes.rides.pushedView(of: RideReviewFeature.self, from: store, world: world)
         case .maintenance:
             AppScopes.maintenance.pushedView(of: MaintenanceFeature.self, from: store, world: world)
+        case .replay:
+            ReplayView(store: store, world: world)
         }
     }
 }

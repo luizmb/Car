@@ -23,6 +23,7 @@ public enum StackEntry: Sendable, Equatable {
     case navigate(NavigationFeature.State)
     case rides(RideReviewFeature.State)
     case maintenance(MaintenanceFeature.State)
+    case replay(ReplayFeature.State)
 }
 
 public extension StackEntry {
@@ -34,6 +35,7 @@ public extension StackEntry {
         case .navigate: .navigate
         case .rides: .rides
         case .maintenance: .maintenance
+        case .replay: .replay
         }
     }
 }

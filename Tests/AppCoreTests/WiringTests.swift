@@ -481,6 +481,8 @@ struct RefuelRecordingTests {
             captureText: world.captureText,
             stopTextCapture: world.stopTextCapture,
             cameraPreview: world.cameraPreview,
+            playback: world.playback,
+            stopPlayback: world.stopPlayback,
             phoneBattery: world.phoneBattery,
             isLowPowerMode: world.isLowPowerMode,
             fetchStation: world.fetchStation,
@@ -686,6 +688,8 @@ struct WatchLinkWiringTests {
             captureText: world.captureText,
             stopTextCapture: world.stopTextCapture,
             cameraPreview: world.cameraPreview,
+            playback: world.playback,
+            stopPlayback: world.stopPlayback,
             phoneBattery: world.phoneBattery,
             isLowPowerMode: world.isLowPowerMode,
             fetchStation: world.fetchStation,
@@ -827,5 +831,83 @@ struct PumpScanWiringTests {
         }
         #expect(state.scan?.phase == .pump)
         #expect(state.scan?.pump == nil)
+    }
+}
+
+@Suite("Ride replay")
+@MainActor
+struct ReplayWiringTests {
+
+    private func ride() -> Ride {
+        Ride(
+            start: Date(timeIntervalSince1970: 0),
+            end: Date(timeIntervalSince1970: 60),
+            endedCleanly: true,
+            records: [
+                JourneyRecord(time: Date(timeIntervalSince1970: 0), payload: JourneyStartPayload(via: "both")),
+                JourneyRecord(
+                    time: Date(timeIntervalSince1970: 1),
+                    payload: FixPayload(lat: 51.87, lon: -0.41, mph: 30, course: 90, alt: 90, acc: 5)
+                )
+            ]
+        )
+    }
+
+    /// The join from the reviews sheet to the tape: deleting it would compile, and the play
+    /// button would do nothing.
+    @Test("the play button closes the sheet and opens the replay carrying the ride")
+    func playOpensReplay() async {
+        let store = MainStore.app(world: .stub)
+        store.dispatch(.navigation(.push(.rides)), source: .init(file: #file, function: #function, line: #line))
+        store.dispatch(.rides(.loaded([ride()])), source: .init(file: #file, function: #function, line: #line))
+        store.dispatch(.rides(.replayRide(ride().id)), source: .init(file: #file, function: #function, line: #line))
+        for _ in 0..<10 { await Task.yield() }
+
+        let replay = store.state.path.compactMap(StackEntry.prism.replay.preview).last
+        #expect(replay != nil)
+        #expect(replay?.ride.id == ride().id)
+    }
+
+    /// The tape's events drive the *lifted* monitor — the same behavior as the home screen,
+    /// under a different prefix, invisible to journey recording and the watch link.
+    @Test("a taped fix and road land in the replay's own monitor")
+    func tapeDrivesTheSecondMonitor() async {
+        let store = MainStore.app(world: .stub)
+        store.dispatch(.navigation(.push(.replay(ride()))), source: .init(file: #file, function: #function, line: #line))
+
+        let update = LocationUpdate(
+            speed: MPS(13.4), speedAccuracy: nil, course: Course(rawValue: 90),
+            latitude: Latitude(51.87), longitude: Longitude(-0.41),
+            altitude: Meters(90), timestamp: Date(timeIntervalSince1970: 1),
+            horizontalAccuracy: Meters(5)
+        )
+        store.dispatch(.replay(.event(.fix(update))), source: .init(file: #file, function: #function, line: #line))
+        store.dispatch(
+            .replay(.event(.road(RoadInfo(
+                limit: .value(MPH(30)), ref: nil, name: "A505", origin: .signed
+            )))),
+            source: .init(file: #file, function: #function, line: #line)
+        )
+        store.dispatch(.replay(.event(.indicator("left"))), source: .init(file: #file, function: #function, line: #line))
+        // The display rebuilds per fix, exactly as it does live — the road shows from the next
+        // fix onward, and on the tape fixes arrive every second.
+        store.dispatch(.replay(.event(.fix(update))), source: .init(file: #file, function: #function, line: #line))
+        for _ in 0..<15 { await Task.yield() }
+
+        let replay = store.state.path.compactMap(StackEntry.prism.replay.preview).last
+        #expect(replay?.monitor.lastLocation?.latitude == Latitude(51.87))
+        #expect(replay?.monitor.display.roadName == "A505")
+        #expect(replay?.indicator == .left)
+        // And the *live* monitor never saw any of it.
+        #expect(store.state.speedMonitor.lastLocation == nil)
+    }
+
+    @Test("stop pops the screen; the tape ends with it")
+    func stopPops() async {
+        let store = MainStore.app(world: .stub)
+        store.dispatch(.navigation(.push(.replay(ride()))), source: .init(file: #file, function: #function, line: #line))
+        store.dispatch(.replay(.cancel), source: .init(file: #file, function: #function, line: #line))
+        for _ in 0..<10 { await Task.yield() }
+        #expect(store.state.path.compactMap(StackEntry.prism.replay.preview).isEmpty)
     }
 }

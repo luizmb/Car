@@ -209,6 +209,16 @@ private struct RideDetailView: View {
                 }
             }
 
+            Section {
+                Button {
+                    viewStore.dispatch(.replayRide(ride.id))
+                } label: {
+                    Label("Replay this ride", systemImage: "play.circle")
+                }
+            } footer: {
+                Text("The home screen plays the ride back in real time, announcements included.")
+            }
+
             if let destination = ride.destination {
                 Section {
                     Button {
