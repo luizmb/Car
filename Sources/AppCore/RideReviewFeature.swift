@@ -77,10 +77,12 @@ public enum RideReviewFeature {
 
     @Tracked
     public struct State: Sendable, Equatable {
-        /// Newest first — the ride you just finished is the one you came to look at. Kept whole
-        /// for the app-level joins (replay, ride-there-again); the *screen* reads `rows`.
-        public var rides: [Ride] = []
+        /// The list's three columns, straight from the journey table — never the timeline.
+        public var summaries: [RideSummary] = []
         public var rows: [RideRow] = []
+        /// The one ride actually opened, loaded by its own time window — what the detail, the
+        /// export, the replay and ride-there-again all read.
+        public var detailRide: Ride?
         public var isLoading: Bool = false
         /// The ride open in the detail sheet.
         public var selected: Date?
@@ -105,7 +107,7 @@ public enum RideReviewFeature {
         public init() {}
 
         public var selectedRide: Ride? {
-            selected.flatMap { id in rides.first { $0.id == id } }
+            selected.flatMap { id in detailRide?.id == id ? detailRide : nil }
         }
     }
 
@@ -114,10 +116,12 @@ public enum RideReviewFeature {
     @Prisms
     public enum Action: Sendable {
         case appeared
-        case loaded([Ride])
+        case summariesLoaded([RideSummary])
         /// The rows, worded in the behavior where the formatters live.
         case rowsPrepared([RideRow])
         case select(Date?)
+        /// The opened ride's records, loaded by window and assembled.
+        case rideLoaded(Ride)
         /// The selected ride's numbers and words, prepared off the reducer.
         case detailPrepared(RideDetail, DetailWords)
         /// A finger over a chart named a moment, or lifted (`nil`).
@@ -138,7 +142,8 @@ public enum RideReviewFeature {
     // MARK: Environment
 
     public struct Environment: Sendable {
-        public let loadJourneyRecords: @Sendable () -> Publisher<[JourneyRecord], Never>
+        public let loadRideSummaries: @Sendable () -> Publisher<[RideSummary], Never>
+        public let loadRideRecords: @Sendable (Date, Int?) -> Publisher<[JourneyRecord], Never>
         public let writeShareFile: @Sendable (String, String) -> Publisher<URL?, Never>
         public let formatDistance: @Sendable (Meters) -> String
         public let formatDuration: @Sendable (TimeInterval) -> String
@@ -148,7 +153,8 @@ public enum RideReviewFeature {
         public let formatSpeed: @Sendable (MPH) -> String
 
         public init(
-            loadJourneyRecords: @escaping @Sendable () -> Publisher<[JourneyRecord], Never>,
+            loadRideSummaries: @escaping @Sendable () -> Publisher<[RideSummary], Never>,
+            loadRideRecords: @escaping @Sendable (Date, Int?) -> Publisher<[JourneyRecord], Never>,
             writeShareFile: @escaping @Sendable (String, String) -> Publisher<URL?, Never>,
             formatDistance: @escaping @Sendable (Meters) -> String,
             formatDuration: @escaping @Sendable (TimeInterval) -> String,
@@ -156,7 +162,8 @@ public enum RideReviewFeature {
             formatDayTime: @escaping @Sendable (Date) -> String,
             formatSpeed: @escaping @Sendable (MPH) -> String
         ) {
-            self.loadJourneyRecords = loadJourneyRecords
+            self.loadRideSummaries = loadRideSummaries
+            self.loadRideRecords = loadRideRecords
             self.writeShareFile = writeShareFile
             self.formatDistance = formatDistance
             self.formatDuration = formatDuration
@@ -176,27 +183,30 @@ public enum RideReviewFeature {
             case .appeared:
                 return .reduce { $0.isLoading = true }
                     .produce { ctx in
-                        ctx.environment.loadJourneyRecords()
-                            .asEffect { records in
-                                Action.loaded(assembleRides(from: records).reversed())
-                            }
+                        // Three columns per ride, from the journey table itself. The timeline —
+                        // forty thousand rows and counting — is never touched for a list.
+                        ctx.environment.loadRideSummaries().asEffect(Action.summariesLoaded)
                     }
 
-            case let .loaded(rides):
+            case let .summariesLoaded(summaries):
                 return .reduce {
-                    $0.rides = rides
+                    $0.summaries = summaries
                     $0.isLoading = false
                 }
                 .produce { ctx in
                     // Worded here because the reducer has no formatters — and once, because a
                     // list that re-words itself per scroll frame is the lag this screen had.
-                    Effect.just(.rowsPrepared(rides.map { ride in
+                    Effect.just(.rowsPrepared(summaries.map { summary in
                         RideRow(
-                            id: ride.id,
-                            title: ctx.environment.formatDayTime(ride.start),
-                            subtitle: ctx.environment.formatDuration(ride.duration) + " · "
-                                + ctx.environment.formatDistance(Meters(ride.distanceMetres)),
-                            endedCleanly: ride.endedCleanly
+                            id: summary.id,
+                            title: ctx.environment.formatDayTime(summary.start),
+                            subtitle: summary.seconds.map { seconds in
+                                ctx.environment.formatDuration(TimeInterval(seconds))
+                                    + (summary.metres.map {
+                                        " · " + ctx.environment.formatDistance(Meters($0))
+                                    } ?? "")
+                            } ?? "interrupted",
+                            endedCleanly: summary.endedCleanly
                         )
                     }))
                 }
@@ -205,7 +215,7 @@ public enum RideReviewFeature {
                 return .reduce { $0.rows = rows }
 
             case let .select(id):
-                let ride = context.stateBefore?.rides.first { $0.id == id }
+                let summary = context.stateBefore?.summaries.first { $0.id == id }
                 return .reduce { state in
                     state.selected = id
                     // A share sheet must never offer the previous ride's file.
@@ -213,20 +223,36 @@ public enum RideReviewFeature {
                     state.scrubTime = nil
                     state.pinchBaseSeconds = nil
                     state.detail = nil
+                    state.detailRide = nil
                     state.words = DetailWords()
-                    if let ride {
-                        state.chartWindowSeconds = max(60, ride.duration)
-                        state.chartAnchorTime = ride.start
+                    if let summary {
+                        state.chartWindowSeconds = max(60, Double(summary.seconds ?? 3_600))
+                        state.chartAnchorTime = summary.start
                     }
                 }
                 .produce { ctx in
-                    // The one heavy pass, off the reducer: series cut and downsampled, words
-                    // formatted — everything the sheet will draw, ready before it settles.
-                    guard let ride else { return .empty }
-                    return Effect.just(.detailPrepared(
-                        rideDetail(for: ride), words(for: ride, ctx.environment)
-                    ))
+                    // The opened ride's own window, and nothing else, comes off the disk.
+                    guard let summary else { return .empty }
+                    return ctx.environment.loadRideRecords(summary.start, summary.seconds)
+                        .asEffect { records in
+                            let rides = assembleRides(from: records)
+                            let ride = rides.first { $0.id == summary.id } ?? rides.first
+                            return Action.rideLoaded(ride ?? Ride(
+                                start: summary.start, end: summary.start,
+                                endedCleanly: summary.endedCleanly, records: []
+                            ))
+                        }
                 }
+
+            case let .rideLoaded(ride):
+                return .reduce { $0.detailRide = ride }
+                    .produce { ctx in
+                        // The one heavy pass, off the reducer: series cut and downsampled, words
+                        // formatted — everything the sheet will draw.
+                        Effect.just(.detailPrepared(
+                            rideDetail(for: ride), words(for: ride, ctx.environment)
+                        ))
+                    }
 
             case let .detailPrepared(detail, words):
                 return .reduce {

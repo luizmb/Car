@@ -531,6 +531,12 @@ extension World {
             loadJourneyRecords: {
                 Publisher.future { appDatabase?.journeyRecords() ?? [] }
             },
+            loadRideSummaries: {
+                Publisher.future { appDatabase?.rideSummaries() ?? [] }
+            },
+            loadRideRecords: { start, seconds in
+                Publisher.future { appDatabase?.rideRecords(from: start, seconds: seconds) ?? [] }
+            },
             writeShareFile: { name, contents in
                 Publisher.future {
                     let url = FileManager.default.temporaryDirectory

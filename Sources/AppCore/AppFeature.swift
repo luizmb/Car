@@ -87,6 +87,12 @@ public enum AppFeature {
         /// is a *transition*, so the previous phase has to be remembered to know an edge happened.
         public var journey: JourneyPhase = .idle
 
+        /// Metres ridden in the journey under way, accumulated fix by fix so the end record can
+        /// carry the figure without anyone ever walking the timeline for it.
+        public var journeyMetres: Double = 0
+        /// The previous fix of the running journey — the accumulator's other operand.
+        public var lastJourneyFix: LocationUpdate?
+
         /// Whether the pre-ride briefing has been spoken for the journey now under way.
         ///
         /// Reset when the journey ends, so it is once *per ride* rather than once per app session —
@@ -300,6 +306,26 @@ public enum AppFeature {
             }
         }
 
+        // The journey's own odometer: each fix adds its hop while a journey is active, consecutive
+        // fixes only (a gap over thirty seconds is signal loss, not road), so journey end can write
+        // the total down instead of anyone ever recomputing it.
+        <> Behavior<AppAction, AppState, World>.reduce { action, state in
+            guard
+                JourneyPhase.prism.active.preview(state.journey) != nil,
+                let monitorAction = AppAction.prism.speedMonitor.preview(action),
+                let update = SpeedMonitorFeature.Action.prism.locationUpdate.preview(monitorAction)
+            else { return }
+            if
+                let previous = state.lastJourneyFix,
+                update.timestamp.timeIntervalSince(previous.timestamp) <= 30 {
+                state.journeyMetres += distanceMetres(
+                    from: (previous.latitude, previous.longitude),
+                    to: (update.latitude, update.longitude)
+                )
+            }
+            state.lastJourneyFix = update
+        }
+
         <> navigationBehavior()
 
         <> watchSyncBehavior()
@@ -363,8 +389,13 @@ public enum AppFeature {
             )
             return .reduce {
                 $0.journey = next
-                // A finished journey re-arms the briefing for the next one.
+                // A finished journey re-arms the briefing for the next one; a starting one
+                // zeroes the distance it will be measured by.
                 if JourneyPhase.prism.idle.preview(next) != nil { $0.flightPlanSpoken = false }
+                if JourneyPhase.prism.active.preview(next) != nil {
+                    $0.journeyMetres = 0
+                    $0.lastJourneyFix = nil
+                }
             }
                 .produce { ctx in
                     let now = ctx.environment.now()
@@ -388,7 +419,9 @@ public enum AppFeature {
                                             : signals.ignition ? "ignition" : "indimate")
                     case let (.active(since), .idle):
                         JourneyEndPayload(
-                            seconds: Int(now.timeIntervalSince(since).rounded()), started: since
+                            seconds: Int(now.timeIntervalSince(since).rounded()),
+                            started: since,
+                            metres: before.journeyMetres
                         )
                     default: nil
                     }
@@ -979,7 +1012,7 @@ public enum AppScopes: Rig {
         .action(\.rides)
         .state(preview: topmost(StackEntry.prism.rides), set: replacing(StackEntry.prism.rides))
         .environment(fanout(
-            keypaths: \.loadJourneyRecords, \.writeShareFile,
+            keypaths: \.loadRideSummaries, \.loadRideRecords, \.writeShareFile,
                       \.formatDistance, \.formatDuration, \.formatTime, \.formatDayTime, \.formatSpeed,
             into: RideReviewFeature.Environment.init
         ))

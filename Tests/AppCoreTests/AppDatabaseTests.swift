@@ -226,3 +226,44 @@ struct AppDatabaseTripTests {
         #expect(db.tripDistance() == 2_000)
     }
 }
+
+@Suite("App database rides list")
+struct AppDatabaseRideListTests {
+    @Test("The list is three columns off the journey table, and the window loads one ride")
+    func summariesAndWindow() throws {
+        let db = try makeDatabase()
+        let start = Date(timeIntervalSince1970: 1_000)
+        db.append(JourneyRecord(time: start, payload: JourneyStartPayload(via: "both")))
+        db.append(JourneyRecord(
+            time: start.addingTimeInterval(60),
+            payload: FixPayload(lat: 52, lon: -0.4, mph: 30, course: nil, alt: nil, acc: nil)
+        ))
+        db.append(JourneyRecord(
+            time: start.addingTimeInterval(600),
+            payload: JourneyEndPayload(seconds: 600, started: start, metres: 4_200)
+        ))
+        // A later journey whose records must stay out of the first one's window.
+        let later = start.addingTimeInterval(10_000)
+        db.append(JourneyRecord(time: later, payload: JourneyStartPayload(via: "ignition")))
+        db.append(JourneyRecord(
+            time: later.addingTimeInterval(30),
+            payload: FixPayload(lat: 53, lon: -0.4, mph: 20, course: nil, alt: nil, acc: nil)
+        ))
+
+        let summaries = db.rideSummaries()
+        #expect(summaries.count == 2)
+        #expect(summaries.first?.endedCleanly == false)   // newest first: the open one
+        #expect(summaries.last?.metres == 4_200)
+        #expect(summaries.last?.seconds == 600)
+
+        let window = db.rideRecords(from: start, seconds: 600)
+        #expect(window.count == 3)   // start, fix, end — not the later journey's records
+        #expect(window.first?.type == .journeyStart)
+        #expect(window.last?.type == .journeyEnd)
+
+        // The open ride's window runs to the next journey's start.
+        let openWindow = db.rideRecords(from: later, seconds: nil)
+        #expect(openWindow.contains { ($0.payload as? FixPayload)?.lat == 53 })
+        #expect(!openWindow.contains { ($0.payload as? FixPayload)?.lat == 52 })
+    }
+}

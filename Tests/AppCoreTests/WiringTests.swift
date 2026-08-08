@@ -492,6 +492,8 @@ struct RefuelRecordingTests {
             newID: world.newID,
             logAction: world.logAction,
             loadJourneyRecords: world.loadJourneyRecords,
+            loadRideSummaries: world.loadRideSummaries,
+            loadRideRecords: world.loadRideRecords,
             writeShareFile: world.writeShareFile,
             logJourney: { payload in
                 Publisher.future { spy.record(payload) }
@@ -700,6 +702,8 @@ struct WatchLinkWiringTests {
             newID: world.newID,
             logAction: world.logAction,
             loadJourneyRecords: world.loadJourneyRecords,
+            loadRideSummaries: world.loadRideSummaries,
+            loadRideRecords: world.loadRideRecords,
             writeShareFile: world.writeShareFile,
             logJourney: { payload in
                 Publisher.future { spy.journey(payload) }
@@ -861,7 +865,8 @@ struct ReplayWiringTests {
     func playOpensReplay() async {
         let store = MainStore.app(world: .stub)
         store.dispatch(.navigation(.push(.rides)), source: .init(file: #file, function: #function, line: #line))
-        store.dispatch(.rides(.loaded([ride()])), source: .init(file: #file, function: #function, line: #line))
+        // The detail loads the opened ride by window; the test hands it over directly.
+        store.dispatch(.rides(.rideLoaded(ride())), source: .init(file: #file, function: #function, line: #line))
         store.dispatch(.rides(.replayRide(ride().id)), source: .init(file: #file, function: #function, line: #line))
         for _ in 0..<10 { await Task.yield() }
 

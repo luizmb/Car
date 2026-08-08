@@ -282,6 +282,28 @@ public func gpx(for ride: Ride, creator: String = "SpeedJarvis") -> String {
     """
 }
 
+// MARK: - The list's own row
+
+/// What the rides list actually needs — three columns, not a timeline.
+///
+/// Start and duration were always in the `journey_end` record; distance joins them at journey
+/// end, denormalised on purpose. A summary with no end is a ride the app was killed inside —
+/// shown, marked, and carrying only what is honestly known.
+public struct RideSummary: Sendable, Equatable, Identifiable {
+    public var id: Date { start }
+    public let start: Date
+    public let seconds: Int?
+    public let metres: Double?
+    public let endedCleanly: Bool
+
+    public init(start: Date, seconds: Int?, metres: Double?, endedCleanly: Bool) {
+        self.start = start
+        self.seconds = seconds
+        self.metres = metres
+        self.endedCleanly = endedCleanly
+    }
+}
+
 // MARK: - The detail, precomputed
 
 /// One point of a ride chart.

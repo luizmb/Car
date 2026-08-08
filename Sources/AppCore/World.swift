@@ -132,6 +132,10 @@ public struct World: Sendable {
     /// input: rides are reassembled from these, never stored separately, so the screens cannot
     /// disagree with the log.
     public let loadJourneyRecords: @Sendable () -> Publisher<[JourneyRecord], Never>
+    /// The rides list's three columns — a dozen rows read as a dozen rows, the timeline untouched.
+    public let loadRideSummaries: @Sendable () -> Publisher<[RideSummary], Never>
+    /// One ride's records by its time window, for the detail that actually opened.
+    public let loadRideRecords: @Sendable (Date, Int?) -> Publisher<[JourneyRecord], Never>
     /// Writes a shareable file and hands back its URL. Exists so exporting a GPX is a value
     /// through a boundary rather than a view writing to disk.
     public let writeShareFile: @Sendable (String, String) -> Publisher<URL?, Never>

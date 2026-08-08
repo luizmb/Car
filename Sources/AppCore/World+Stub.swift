@@ -56,6 +56,8 @@ public extension World {
             newID: { UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)) },
             logAction: { _ in .empty() },
             loadJourneyRecords: { .just([]) },
+            loadRideSummaries: { .just([]) },
+            loadRideRecords: { _, _ in .just([]) },
             writeShareFile: { _, _ in .just(nil) },
             logJourney: { _ in .empty() },
             speak: { _ in .empty() },

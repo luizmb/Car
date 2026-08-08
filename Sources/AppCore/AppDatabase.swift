@@ -92,6 +92,12 @@ final class AppDatabase: @unchecked Sendable {
             CREATE TABLE IF NOT EXISTS trip (
                 id INTEGER PRIMARY KEY CHECK (id = 1), metres REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS journey (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                start TEXT NOT NULL, via TEXT,
+                end TEXT, seconds INTEGER, metres REAL
+            );
+            CREATE INDEX IF NOT EXISTS journey_start_time ON journey(start);
             """, nil, nil, nil)
         ensureJourneySchema()
     }
@@ -105,9 +111,10 @@ final class AppDatabase: @unchecked Sendable {
     /// Column names are the payloads' own coding keys, so a row reads like the record it stores —
     /// including `camera`'s historical `cameraType`, which the flat JSON format needed and renaming
     /// now would only make old and new records disagree.
+    /// The journey's start and end are **not** two event tables: they are the lifecycle of one
+    /// entity, so they live as one `journey` row — a start inserts it, its end updates it. Every
+    /// other record type keeps a table of its own.
     private static let journeySchema: [RecordType: [(name: String, type: String)]] = [
-        .journeyStart: [("via", "TEXT")],
-        .journeyEnd: [("seconds", "INTEGER"), ("started", "TEXT")],
         .fix: [("lat", "REAL"), ("lon", "REAL"), ("mph", "REAL"),
                ("course", "REAL"), ("alt", "REAL"), ("acc", "REAL")],
         .road: [("mph", "REAL"), ("origin", "TEXT"), ("label", "TEXT"), ("variable", "INTEGER")],
@@ -137,8 +144,8 @@ final class AppDatabase: @unchecked Sendable {
     /// NULL for it, which is the truth.
     private func ensureJourneySchema() {
         for type in RecordType.allCases {
+            guard let columns = Self.journeySchema[type] else { continue }
             let table = Self.table(type)
-            let columns = Self.journeySchema[type] ?? []
             let definitions = columns.map { ", \($0.name) \($0.type)" }.joined()
             sqlite3_exec(handle, """
                 CREATE TABLE IF NOT EXISTS \(table) (
@@ -168,9 +175,29 @@ final class AppDatabase: @unchecked Sendable {
         let t = SQLValue.text(timestamps.string(from: record.time))
         switch record.payload {
         case let p as JourneyStartPayload:
-            insert(.journeyStart, [t, .text(p.via)])
+            query(
+                "INSERT INTO journey (start, via) VALUES (?, ?)",
+                bind: [t, .text(p.via)]
+            ) { _ in }
         case let p as JourneyEndPayload:
-            insert(.journeyEnd, [t, .integer(p.seconds), .text(timestamps.string(from: p.started))])
+            // The end completes its start's row; an end whose start was never written — possible
+            // only if the log opened mid-ride — still records the whole journey.
+            let started = timestamps.string(from: p.started)
+            var exists = false
+            query("SELECT id FROM journey WHERE start = ? LIMIT 1", bind: [.text(started)]) { _ in
+                exists = true
+            }
+            if exists {
+                query(
+                    "UPDATE journey SET end = ?, seconds = ?, metres = ? WHERE start = ?",
+                    bind: [t, .integer(p.seconds), .real(p.metres), .text(started)]
+                ) { _ in }
+            } else {
+                query(
+                    "INSERT INTO journey (start, end, seconds, metres) VALUES (?, ?, ?, ?)",
+                    bind: [.text(started), t, .integer(p.seconds), .real(p.metres)]
+                ) { _ in }
+            }
         case let p as FixPayload:
             insert(.fix, [t, .real(p.lat), .real(p.lon), .real(p.mph),
                           .real(p.course), .real(p.alt), .real(p.acc)])
@@ -212,14 +239,71 @@ final class AppDatabase: @unchecked Sendable {
         query(sql, bind: values) { _ in }
     }
 
+    // MARK: - The rides list, without the timeline
+
+    /// The list's three columns, straight off `journey_start` joined to its end — a dozen rows
+    /// read as a dozen rows. The timeline is never walked here; that is the entire point.
+    func rideSummaries() -> [RideSummary] {
+        var summaries: [RideSummary] = []
+        query("SELECT start, seconds, metres, end FROM journey ORDER BY start DESC") { s in
+            guard let start = text(s, 0).flatMap(parseTimestamp) else { return }
+            summaries.append(RideSummary(
+                start: start, seconds: integer(s, 1), metres: real(s, 2),
+                endedCleanly: text(s, 3) != nil
+            ))
+        }
+        return summaries
+    }
+
+    /// One ride's records, by its own time window — the detail's data, loaded when a detail
+    /// opens and never before. `end` is `nil` for a ride the app was killed inside; the window
+    /// then runs to the next journey's start or the end of the record.
+    func rideRecords(from start: Date, seconds: Int?) -> [JourneyRecord] {
+        let lower = timestamps.string(from: start)
+        // A minute of slack after the recorded end: the closing records themselves.
+        let upper = seconds.map {
+            timestamps.string(from: start.addingTimeInterval(Double($0) + 60))
+        } ?? nextJourneyStart(after: start).map { timestamps.string(from: $0) }
+
+        var records = journeyLifecycleRecords(where: "start = ?", bind: [.text(lower)])
+        for type in RecordType.allCases {
+            guard let schema = Self.journeySchema[type] else { continue }
+            let columns = schema.map(\.name).joined(separator: ", ")
+            let sql = "SELECT t\(columns.isEmpty ? "" : ", " + columns) FROM \(Self.table(type))"
+                + " WHERE t >= ?" + (upper.map { _ in " AND t <= ?" } ?? "")
+            query(sql, bind: [SQLValue.text(lower)] + (upper.map { [SQLValue.text($0)] } ?? [])) {
+                statement in
+                guard
+                    let stamp = text(statement, 0),
+                    let time = parseTimestamp(stamp),
+                    let payload = payload(of: type, from: statement)
+                else { return }
+                records.append(JourneyRecord(time: time, payload: payload))
+            }
+        }
+        return records.sorted { $0.time < $1.time }
+    }
+
+    private func nextJourneyStart(after start: Date) -> Date? {
+        var next: Date?
+        query(
+            "SELECT start FROM journey WHERE start > ? ORDER BY start ASC LIMIT 1",
+            bind: [.text(timestamps.string(from: start))]
+        ) { s in
+            next = text(s, 0).flatMap(parseTimestamp)
+        }
+        return next
+    }
+
     // MARK: - Reading the timeline
 
     /// The whole timeline, reassembled across the tables and ordered by time — the same promise
     /// the dated files kept by sorting their names, now kept by sorting the union.
     func journeyRecords() -> [JourneyRecord] {
-        var records: [JourneyRecord] = []
+        var records: [JourneyRecord] = journeyLifecycleRecords(where: nil, bind: [])
         for type in RecordType.allCases {
-            let columns = (Self.journeySchema[type] ?? []).map(\.name).joined(separator: ", ")
+            guard let schema = Self.journeySchema[type] else { continue }
+            let columns = schema.map(\.name).joined(separator: ", ")
             query("SELECT t\(columns.isEmpty ? "" : ", " + columns) FROM \(Self.table(type))") {
                 statement in
                 guard
@@ -233,18 +317,37 @@ final class AppDatabase: @unchecked Sendable {
         return records.sorted { $0.time < $1.time }
     }
 
+    /// The `journey` rows, expanded back into the start/end records the domain speaks.
+    private func journeyLifecycleRecords(where clause: String?, bind: [SQLValue]) -> [JourneyRecord] {
+        var records: [JourneyRecord] = []
+        query(
+            "SELECT start, via, end, seconds, metres FROM journey" + (clause.map { " WHERE " + $0 } ?? ""),
+            bind: bind
+        ) { s in
+            guard let start = text(s, 0).flatMap(parseTimestamp) else { return }
+            // `via` is written by every witnessed start; a row created by an orphan end has none,
+            // and inventing a start record for it would be testimony nobody gave.
+            if let via = text(s, 1) {
+                records.append(JourneyRecord(time: start, payload: JourneyStartPayload(via: via)))
+            }
+            if let end = text(s, 2).flatMap(parseTimestamp) {
+                records.append(JourneyRecord(time: end, payload: JourneyEndPayload(
+                    seconds: integer(s, 3) ?? 0, started: start, metres: real(s, 4)
+                )))
+            }
+        }
+        return records
+    }
+
     /// Columns back into the payload struct — the inverse of `append`, held to it by the same
     /// exhaustive test. Column 0 is always `t`; payload columns start at 1 in schema order.
     private func payload(
         of type: RecordType, from s: OpaquePointer
     ) -> (any JourneyPayloadType)? {
         switch type {
-        case .journeyStart:
-            JourneyStartPayload(via: text(s, 1) ?? "")
-        case .journeyEnd:
-            text(s, 2).flatMap(parseTimestamp).map {
-                JourneyEndPayload(seconds: integer(s, 1) ?? 0, started: $0)
-            }
+        case .journeyStart, .journeyEnd:
+            // Lifecycle records live in the `journey` table and are expanded elsewhere.
+            nil
         case .fix:
             FixPayload(lat: real(s, 1) ?? 0, lon: real(s, 2) ?? 0, mph: real(s, 3),
                        course: real(s, 4), alt: real(s, 5), acc: real(s, 6))
