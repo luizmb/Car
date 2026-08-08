@@ -69,7 +69,6 @@ public extension World {
             completeAddress: { _, _, _ in .empty() },
             resolveAddress: { _ in .empty() },
             routes: { _, _, _ in .empty() },
-            routesToEach: { _, _, _ in .empty() },
             thresholds: [],
             formatSpeed: { "\($0.rawValue)" },
             formatSpeedSpeech: { "\($0.rawValue)" },

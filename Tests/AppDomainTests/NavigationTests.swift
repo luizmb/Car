@@ -858,82 +858,6 @@ struct RelaxationTests {
     }
 }
 
-@Suite("Stitching a way back on")
-struct SpliceTests {
-    private func coordinate(_ latitude: Double) -> Coordinate {
-        Coordinate(latitude: Latitude(latitude), longitude: Longitude(-0.46))
-    }
-
-    private var original: RouteOption {
-        RouteOption(
-            name: "A421", distance: Meters(3_000), travelTime: 600,
-            hasTolls: false, hasMotorways: false,
-            steps: [
-                RouteStep(instructions: "Turn left onto A", distance: Meters(500), notice: nil, start: coordinate(52.00)),
-                RouteStep(instructions: "Turn right onto B", distance: Meters(500), notice: nil, start: coordinate(52.01)),
-                RouteStep(instructions: "Arrive", distance: Meters(200), notice: nil, start: coordinate(52.02))
-            ],
-            shape: (0..<30).map { coordinate(52.0 + Double($0) / 1_000) }
-        )
-    }
-
-    private var rejoin: RouteOption {
-        RouteOption(
-            name: "detour", distance: Meters(400), travelTime: 90,
-            hasTolls: false, hasMotorways: true, steps: [
-                RouteStep(instructions: "Turn around", distance: Meters(400), notice: nil, start: coordinate(51.99))
-            ],
-            shape: [coordinate(51.99), coordinate(52.005)]
-        )
-    }
-
-    /// The point of rejoining: the rest of the ride is still the one the rider picked.
-    @Test("The remaining original steps follow the way back")
-    func keepsTheRest() {
-        let spliced = splice(rejoin: rejoin, onto: original, fromStep: 1)
-        #expect(spliced.steps.map(\.instructions) == ["Turn right onto B", "Arrive"])
-    }
-
-    /// Every MapKit route ends by announcing arrival, and the way back was routed to a *rejoin
-    /// point* — so splicing it whole put "arrive at the destination" in the middle of the journey.
-    /// Heard on a replayed ride, ten miles from anywhere.
-    @Test("The way back does not announce arriving at the join")
-    func dropsTheLegsArrival() {
-        let leg = RouteOption(
-            name: "detour", distance: Meters(400), travelTime: 90,
-            hasTolls: false, hasMotorways: false,
-            steps: [
-                RouteStep(instructions: "Turn around", distance: Meters(300), notice: nil, start: coordinate(51.99)),
-                RouteStep(instructions: "Arrive at the destination", distance: Meters(0), notice: nil, start: coordinate(52.005))
-            ],
-            shape: [coordinate(51.99), coordinate(52.005)]
-        )
-        let spliced = splice(rejoin: leg, onto: original, fromStep: 1)
-        #expect(!spliced.steps.map(\.instructions).contains("Arrive at the destination"))
-        #expect(spliced.steps.map(\.instructions) == ["Turn around", "Turn right onto B", "Arrive"])
-    }
-
-    @Test("Distance and time add up")
-    func sums() {
-        let spliced = splice(rejoin: rejoin, onto: original, fromStep: 1)
-        #expect(spliced.distance == Meters(3_400))
-        #expect(spliced.travelTime == 690)
-    }
-
-    /// A spliced route uses a motorway if any part of it does — otherwise the badge would say it
-    /// avoids one while the detour back is a slip road.
-    @Test("The exclusions of both halves carry over")
-    func exclusionsCombine() {
-        #expect(splice(rejoin: rejoin, onto: original, fromStep: 1).hasMotorways)
-    }
-
-    @Test("Splicing past the last step keeps just the way back, minus its arrival")
-    func pastTheEnd() {
-        let spliced = splice(rejoin: rejoin, onto: original, fromStep: 9)
-        #expect(spliced.steps.isEmpty)
-    }
-}
-
 @Suite("A manoeuvre that was missed")
 struct SkippedStepTests {
     private func metres(_ m: Meters) -> String { "\(Int(m.rawValue)) m" }
@@ -1014,107 +938,6 @@ struct SkippedStepTests {
         #expect(!riding(southbound, at: here, heading: Course(0)))
         // Turned around, the same position visits it.
         #expect(riding(southbound, at: here, heading: Course(180)))
-    }
-}
-
-@Suite("Where to rejoin")
-struct RejoinChoiceTests {
-    private func coordinate(_ latitude: Double) -> Coordinate {
-        Coordinate(latitude: Latitude(latitude), longitude: Longitude(-0.46))
-    }
-
-    private var route: RouteOption {
-        RouteOption(
-            name: "A", distance: Meters(4_000), travelTime: 480,
-            hasTolls: false, hasMotorways: false,
-            steps: [
-                RouteStep(instructions: "Left onto A", distance: Meters(1_000), notice: nil, start: coordinate(52.00)),
-                RouteStep(instructions: "Right onto B", distance: Meters(1_000), notice: nil, start: coordinate(52.01)),
-                RouteStep(instructions: "Right onto High Street", distance: Meters(1_000), notice: nil, start: coordinate(52.02)),
-                RouteStep(instructions: "Left onto C", distance: Meters(1_000), notice: nil, start: coordinate(52.03))
-            ],
-            shape: (0..<40).map { coordinate(52 + Double($0) / 1_000) }
-        )
-    }
-
-    @Test("Candidates are the next few manoeuvres, bounded")
-    func bounded() {
-        #expect(rejoinCandidates(route, from: 0, limit: 4).map(\.stepIndex) == [0, 1, 2, 3])
-        #expect(rejoinCandidates(route, from: 2, limit: 4).map(\.stepIndex) == [2, 3])
-    }
-
-    @Test("Rejoining later leaves less of the route to finish")
-    func remainingShrinks() {
-        let candidates = rejoinCandidates(route, from: 0)
-        #expect(candidates[safe: 0].map { $0.remainingTime } ?? 0 > (candidates[safe: 3].map { $0.remainingTime } ?? 0))
-    }
-
-    /// The case that motivates the comparison: a rider who deliberately took a different road that
-    /// converges further along should carry on, not be sent back to the turn they skipped.
-    @Test("Carrying on beats a U-turn back to the missed turn")
-    func prefersConvergingAhead() {
-        let candidates = rejoinCandidates(route, from: 0)
-        let legs: [TimeInterval?] = [400, 300, 200, 60]
-        #expect(bestRejoin(candidates, legTimes: legs)?.stepIndex == 3)
-    }
-
-    @Test("A genuine missed turn still goes back for it")
-    func goesBackWhenCloser() {
-        let candidates = rejoinCandidates(route, from: 0)
-        let legs: [TimeInterval?] = [20, 400, 600, 800]
-        #expect(bestRejoin(candidates, legTimes: legs)?.stepIndex == 0)
-    }
-
-    @Test("A candidate that could not be routed to is dropped, not guessed at")
-    func dropsUnroutable() {
-        let candidates = rejoinCandidates(route, from: 0)
-        #expect(bestRejoin(candidates, legTimes: [nil, nil, nil, 90])?.stepIndex == 3)
-    }
-
-    @Test("With nothing routable there is no winner")
-    func noneRoutable() {
-        #expect(bestRejoin(rejoinCandidates(route, from: 0), legTimes: [nil, nil, nil, nil]) == nil)
-    }
-
-    @Test("Past the last manoeuvre there is nowhere left to rejoin")
-    func pastTheEnd() {
-        #expect(rejoinCandidates(route, from: 9).isEmpty)
-    }
-
-    /// A manoeuvre behind the rider is a U-turn, and the time comparison that should rule it out
-    /// cannot when the legs it needs are the ones that fail to route.
-    @Test("A manoeuvre already behind is not offered as a rejoin")
-    func dropsCandidatesBehind() {
-        let here = coordinate(52.025)
-        let ahead = rejoinCandidates(route, from: 0, at: here).map(\.stepIndex)
-        #expect(!ahead.contains(0))
-        #expect(!ahead.contains(1))
-        #expect(ahead.contains(3))
-    }
-
-    /// Too far off the route to measure progress — exactly when a reroute happens — direction of
-    /// travel is the only thing left that says what is behind.
-    @Test("Far off the route, a manoeuvre behind the shoulder is still ruled out")
-    func headingRulesOutBehind() {
-        let past = Coordinate(latitude: Latitude(52.05), longitude: Longitude(-0.46))
-        #expect(rejoinCandidates(route, from: 0, at: past, heading: Course(0)).isEmpty)
-        let turned = rejoinCandidates(route, from: 0, at: past, heading: Course(180))
-        #expect(turned.map(\.stepIndex) == [0, 1, 2, 3])
-    }
-
-    @Test("Far off the route with no heading, every candidate is still offered")
-    func keepsAllWhenUnplaceable() {
-        let miles = Coordinate(latitude: Latitude(53.5), longitude: Longitude(-2.0))
-        #expect(rejoinCandidates(route, from: 0, at: miles).count == 4)
-    }
-
-    @Test("A degenerate route yields no candidates rather than infinities")
-    func degenerate() {
-        let broken = RouteOption(
-            name: "", distance: Meters(0), travelTime: 0,
-            hasTolls: false, hasMotorways: false, steps: route.steps, shape: []
-        )
-        #expect(rejoinCandidates(broken, from: 0).isEmpty)
     }
 }
 
@@ -1441,5 +1264,86 @@ struct AddressSuggestionTests {
             AddressSuggestion(title: "High Street", subtitle: "Bedford").id
                 != AddressSuggestion(title: "High Street", subtitle: "Luton").id
         )
+    }
+}
+
+// MARK: - The clock face
+
+/// The junction's shape, spoken: each hour is thirty degrees, twelve is straight on. This is the
+/// eyes-free answer to "which exit" on a roundabout where counting exits goes wrong.
+@Suite("The clock face")
+struct ClockFaceTests {
+    @Test("Hours land where the body expects them")
+    func hours() {
+        #expect(clockDirection(incoming: 0, outgoing: 0) == 12)     // straight on
+        #expect(clockDirection(incoming: 0, outgoing: 90) == 3)     // right angle right
+        #expect(clockDirection(incoming: 0, outgoing: 270) == 9)    // right angle left
+        #expect(clockDirection(incoming: 0, outgoing: 60) == 2)     // the classic roundabout exit
+        #expect(clockDirection(incoming: 0, outgoing: 180) == 6)    // U-turn
+        #expect(clockDirection(incoming: 350, outgoing: 20) == 1)   // across north
+    }
+
+    private func step(_ text: String, path: [(Double, Double)]) -> RouteStep {
+        RouteStep(
+            instructions: text, distance: Meters(500), notice: nil,
+            start: path.last.map { Coordinate(latitude: Latitude($0.0), longitude: Longitude($0.1)) },
+            path: path.map { Coordinate(latitude: Latitude($0.0), longitude: Longitude($0.1)) }
+        )
+    }
+
+    @Test("A roundabout instruction always gets its hour; a gentle bend stays quiet")
+    func suffixRules() {
+        // Approach heading north, exit heading east: 3 o'clock.
+        let steps = [
+            step("At the roundabout, take the second exit onto A505",
+                 path: [(52.000, -0.46), (52.002, -0.46)]),
+            step("Continue", path: [(52.002, -0.46), (52.002, -0.457)])
+        ]
+        #expect(clockSuffix(steps, at: 0) == "3 o'clock")
+        #expect(chainedInstruction(steps, from: 0)
+            .hasPrefix("At the roundabout, take the second exit onto A505, 3 o'clock"))
+
+        // Straight on through an ordinary junction: no suffix.
+        let straight = [
+            step("Continue onto London Road", path: [(52.000, -0.46), (52.002, -0.46)]),
+            step("Continue", path: [(52.002, -0.46), (52.004, -0.46)])
+        ]
+        #expect(clockSuffix(straight, at: 0) == nil)
+    }
+}
+
+// MARK: - Forward bias
+
+/// Why a deliberate detour now gets a forward route instead of a summons back.
+@Suite("Replanning forward")
+struct ForwardBiasTests {
+    @Test("The origin projects ahead along the course, further when faster")
+    func projection() {
+        let here = Coordinate(latitude: Latitude(52), longitude: Longitude(-0.46))
+        #expect(projectedOrigin(here, course: nil, speed: MPS(10)) == here)
+        let slow = projectedOrigin(here, course: Course(0), speed: MPS(2))
+        let fast = projectedOrigin(here, course: Course(0), speed: MPS(20))
+        #expect(slow.latitude.rawValue > 52)          // ahead means north here
+        #expect(fast.latitude.rawValue > slow.latitude.rawValue)
+        // Clamped: never more than forty metres of guesswork.
+        #expect(distanceMetres(
+            from: (here.latitude, here.longitude),
+            to: (fast.latitude, fast.longitude)
+        ) <= 41)
+    }
+
+    @Test("A route opening against the traveller pays three minutes; a forward one pays nothing")
+    func penalty() {
+        func route(headingNorth: Bool) -> RouteOption {
+            let latitudes = headingNorth ? [52.000, 52.004] : [52.000, 51.996]
+            return RouteOption(
+                name: "A", distance: Meters(1_000), travelTime: 600,
+                hasTolls: false, hasMotorways: false, steps: [],
+                shape: latitudes.map { Coordinate(latitude: Latitude($0), longitude: Longitude(-0.46)) }
+            )
+        }
+        #expect(uTurnPenaltySeconds(route: route(headingNorth: true), course: Course(0)) == 0)
+        #expect(uTurnPenaltySeconds(route: route(headingNorth: false), course: Course(0)) == 180)
+        #expect(uTurnPenaltySeconds(route: route(headingNorth: false), course: nil) == 0)
     }
 }

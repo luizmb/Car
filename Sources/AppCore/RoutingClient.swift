@@ -118,37 +118,6 @@ enum RoutingClient {
         }
     }
 
-    /// A route to each of several targets, all asked for at once.
-    ///
-    /// Rejoining compares candidates, and comparing them sequentially would mean four round trips
-    /// before the rider is told anything — a reroute they are riding away from the whole time. A
-    /// task group makes it one round trip's worth of waiting.
-    ///
-    /// Bounded by the caller rather than here: `MKDirections` answers `loadingThrottled` under
-    /// load, and a fan-out is exactly the shape that provokes it. Failures come back as `nil` and
-    /// simply drop that candidate.
-    static let routesToEach: @Sendable (Coordinate, [Coordinate], RoutePreferences)
-        -> Publisher<[RouteOption?], Never> = { from, targets, preferences in
-        Publisher { continuation in
-            let found = await withTaskGroup(of: (Int, RouteOption?).self) { group in
-                for (index, target) in targets.enumerated() {
-                    group.addTask {
-                        let result = await fetch(from: from, to: target, preferences: preferences)
-                        // The quickest of whatever came back for this target, which is the one the
-                        // comparison is about — not the one Apple happened to list first.
-                        let best = ((try? result.get()) ?? [])
-                            .min { $0.travelTime < $1.travelTime }
-                        return (index, best)
-                    }
-                }
-                var results = [RouteOption?](repeating: nil, count: targets.count)
-                for await (index, route) in group { results[index] = route }
-                return results
-            }
-            continuation.yield(found)
-        }
-    }
-
     private static func fetch(
         from: Coordinate, to: Coordinate, preferences: RoutePreferences
     ) async -> Result<[RouteOption], RouteError> {
