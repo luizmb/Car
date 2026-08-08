@@ -74,6 +74,9 @@ public enum RideReviewFeature {
         /// the part the rider means. Handled at app level, which is the only place that can close
         /// this screen and open the planner.
         case navigateAgain(DestinationPayload)
+        /// Watch this ride again on the home screen, fed by the tape. Handled at app level — the
+        /// only place that can close this screen and open the replay.
+        case replayRide(Date)
     }
 
     // MARK: Environment
@@ -176,6 +179,10 @@ public enum RideReviewFeature {
 
             // App-level: closes this screen, opens the planner, hands it the destination.
             case .navigateAgain:
+                return .doNothing
+
+            // App-level too: closes this screen and rolls the tape.
+            case .replayRide:
                 return .doNothing
             }
         }

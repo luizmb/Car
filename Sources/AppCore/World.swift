@@ -100,6 +100,12 @@ public struct World: Sendable {
     /// The live viewfinder for the scan screen. View-layer plumbing on the main actor — a
     /// viewfinder is pixels, and this is the one closure that hands a layer out.
     public let cameraPreview: @MainActor @Sendable () -> CALayer?
+    // The tape deck
+    /// Plays a replay schedule in real time — the waits are the only side-effect a replay needs.
+    /// Starting a playback stops any previous one.
+    public let playback: @Sendable ([ReplayStep]) -> Publisher<ReplayEvent, Never>
+    /// The deterministic stop, pressed by the cancel button and by the screen disappearing.
+    public let stopPlayback: @Sendable () -> Publisher<Void, Never>
     /// The phone is the instrument cluster, so its battery is a pre-ride check. Low Power Mode
     /// matters more than the percentage: it throttles the background work location and Bluetooth
     /// depend on, and can silently disable most of the app mid-ride.

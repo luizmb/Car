@@ -43,6 +43,8 @@ public extension World {
             captureText: { .empty() },
             stopTextCapture: { .just(()) },
             cameraPreview: { nil },
+            playback: { _ in .empty() },
+            stopPlayback: { .just(()) },
             phoneBattery: { 1.0 },
             isLowPowerMode: { false },
             fetchStation: { _, _ in .just(nil) },

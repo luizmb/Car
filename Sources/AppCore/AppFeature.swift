@@ -131,6 +131,10 @@ public enum AppFeature {
         case navigate(NavigationFeature.Action)
         case rides(RideReviewFeature.Action)
         case maintenance(MaintenanceFeature.Action)
+        /// The ride replay screen: a second monitor fed by the tape.
+        case replay(ReplayFeature.Action)
+        /// The replay entry left the stack by any route; the tape must stop.
+        case replayScreenGone
         /// A refuel asked for from the watch — the wrist's one command.
         case watchRefuel(WatchRefuel)
         /// The ask with its forecourt resolved, ready to become a record.
@@ -299,6 +303,8 @@ public enum AppFeature {
         <> navigationBehavior()
 
         <> watchSyncBehavior()
+
+        <> replayBehavior()
 
         // Bluetooth is requested only once location has resolved. Constructing a `CBCentralManager`
         // *is* the permission request, so chaining the two here is what keeps the system dialogs
@@ -976,6 +982,49 @@ public enum AppScopes: Rig {
             \.loadJourneyRecords, \.writeShareFile,
             \.formatDistance, \.formatDuration, \.formatTime, \.formatSpeed
         ) >>> RideReviewFeature.Environment.init)
+
+    /// The replay's second monitor: the same feature as the home screen, lifted into the replay
+    /// stack entry, with the live inputs unplugged - the tape feeds it actions instead. Roads are
+    /// no-ops rather than lookups (a desk's lookup answers with the desk's road) and the camera
+    /// closures answer "cannot say", which silences warnings on a screen that is a film.
+    public static let replayMonitor = ScopeOf<AppScopes>
+        .action(\.replay.monitor)
+        .state(
+            preview: { state in
+                state.path.compactMap(StackEntry.prism.replay.preview).last?.monitor
+            },
+            set: { state, monitor in
+                var next = state
+                next.path = next.path.map { entry in
+                    guard var replay = StackEntry.prism.replay.preview(entry) else { return entry }
+                    replay.monitor = monitor
+                    return .replay(replay)
+                }
+                return next
+            }
+        )
+        .environment { (world: World) in
+            SpeedMonitorFeature.Environment(
+                requestAuthorization: { .just(()) },
+                authorizationUpdates: { .empty() },
+                locationUpdates: { .empty() },
+                subscribeToRoadSpeed: { .empty() },
+                subscribeToCameras: { .empty() },
+                camerasOnRoad: { _, _, _ in .just(nil) },
+                refreshRoadNow: { _, _ in .just(()) },
+                speak: world.speak,
+                announceRoad: world.speakQueued,
+                announceCamera: world.speakQueued,
+                announceOverLimit: world.announceOverLimit,
+                announceUnderLimit: world.announceUnderLimit,
+                thresholds: world.thresholds,
+                formatSpeed: world.formatSpeed,
+                formatSpeedSpeech: world.formatSpeedSpeech,
+                formatAltitude: world.formatAltitude,
+                formatBearing: world.formatBearing,
+                formatCoordinate: world.formatCoordinate
+            )
+        }
 
     /// The maintenance screen - affine like the other pushed screens. It owns its own file and
     /// clock; the odometer it displays is handed to it by the app, which is the only party that
