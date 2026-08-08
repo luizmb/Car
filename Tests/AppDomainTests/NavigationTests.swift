@@ -1347,3 +1347,58 @@ struct ForwardBiasTests {
         #expect(uTurnPenaltySeconds(route: route(headingNorth: false), course: nil) == 0)
     }
 }
+
+/// The Highway Code's own roundabout rule, spoken: before 12 o'clock the left lane, after it the
+/// right — the one lane rule that needs no lane data, because the clock is the rule.
+@Suite("Lane hints")
+struct LaneHintTests {
+    private func step(_ text: String, path: [(Double, Double)]) -> RouteStep {
+        RouteStep(
+            instructions: text, distance: Meters(500), notice: nil,
+            start: path.last.map { Coordinate(latitude: Latitude($0.0), longitude: Longitude($0.1)) },
+            path: path.map { Coordinate(latitude: Latitude($0.0), longitude: Longitude($0.1)) }
+        )
+    }
+
+    @Test("A late roundabout exit asks for the right lane, an early one the left")
+    func roundaboutLanes() {
+        // Approach north, exit east: 3 o'clock — past 12, right lane.
+        let late = [
+            step("At the roundabout, take the third exit onto A505",
+                 path: [(52.000, -0.46), (52.002, -0.46)]),
+            step("Continue", path: [(52.002, -0.46), (52.002, -0.457)])
+        ]
+        #expect(laneHint(late, at: 0) == "Use the right lane")
+
+        // Approach north, exit west: 9 o'clock — before 12, left lane.
+        let early = [
+            step("At the roundabout, take the first exit onto B579",
+                 path: [(52.000, -0.46), (52.002, -0.46)]),
+            step("Continue", path: [(52.002, -0.46), (52.002, -0.463)])
+        ]
+        #expect(laneHint(early, at: 0) == "Use the left lane")
+
+        // Straight over: the Code says left unless signed; silence beats guessing.
+        let straight = [
+            step("At the roundabout, take the second exit onto A6",
+                 path: [(52.000, -0.46), (52.002, -0.46)]),
+            step("Continue", path: [(52.002, -0.46), (52.004, -0.46)])
+        ]
+        #expect(laneHint(straight, at: 0) == nil)
+    }
+
+    @Test("A motorway exit keeps left; an ordinary turn earns no lane advice")
+    func exitsAndTurns() {
+        let exit = [
+            step("Take the exit towards Luton", path: [(52.0, -0.46), (52.002, -0.46)]),
+            step("Continue", path: [(52.002, -0.46), (52.002, -0.459)])
+        ]
+        #expect(laneHint(exit, at: 0) == "Keep left")
+
+        let turn = [
+            step("Turn right onto Gullible Street", path: [(52.0, -0.46), (52.002, -0.46)]),
+            step("Continue", path: [(52.002, -0.46), (52.002, -0.457)])
+        ]
+        #expect(laneHint(turn, at: 0) == nil)
+    }
+}
