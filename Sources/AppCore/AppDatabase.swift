@@ -15,6 +15,12 @@ import SQLite3
 /// trip distance — stay named JSON documents, because the app treats them as documents and rows
 /// would only add a mapping layer for nothing.
 ///
+/// The stores that were JSON documents are **normalised**: refuels reference a `station`
+/// dimension by foreign key, maintenance events cascade under their item, and every dated table
+/// indexes its date. Saving stays write-whole — one transaction replaces the store — because that
+/// is the semantics the features have always had; normalisation changes what the bytes look like
+/// at rest, not what the domain hands across the boundary.
+///
 /// The mapping between payload structs and columns is hand-written here, at the World boundary
 /// where ugly conversions belong, and is held honest by an exhaustive round-trip test over every
 /// `RecordType` — a payload changed without its mapping fails the suite, not a year of records.
@@ -52,9 +58,39 @@ final class AppDatabase: @unchecked Sendable {
         sqlite3_exec(db, """
             PRAGMA journal_mode=WAL;
             PRAGMA synchronous=NORMAL;
-            CREATE TABLE IF NOT EXISTS document (
-                name TEXT PRIMARY KEY,
-                json TEXT NOT NULL
+            PRAGMA foreign_keys=ON;
+            CREATE TABLE IF NOT EXISTS station (
+                id INTEGER PRIMARY KEY, brand TEXT, name TEXT
+            );
+            CREATE TABLE IF NOT EXISTS refuel_record (
+                id TEXT PRIMARY KEY, date TEXT NOT NULL,
+                litres REAL NOT NULL, pricePerLitre REAL NOT NULL, grade TEXT NOT NULL,
+                filledToBrim INTEGER NOT NULL, gpsKilometres REAL, odometer REAL,
+                lat REAL, lon REAL,
+                stationID INTEGER REFERENCES station(id)
+            );
+            CREATE INDEX IF NOT EXISTS refuel_record_date ON refuel_record(date);
+            CREATE TABLE IF NOT EXISTS reserve_event (
+                id TEXT PRIMARY KEY, date TEXT NOT NULL,
+                odometer REAL, gpsKilometres REAL, lat REAL, lon REAL
+            );
+            CREATE INDEX IF NOT EXISTS reserve_event_date ON reserve_event(date);
+            CREATE TABLE IF NOT EXISTS maintenance_item (
+                id TEXT PRIMARY KEY, title TEXT NOT NULL,
+                dueRule TEXT NOT NULL, dueDate TEXT, dueOdometer REAL,
+                warnDaysBefore INTEGER, warnKilometresBefore REAL,
+                recurDays INTEGER, recurKilometres REAL,
+                closed INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS maintenance_item_date ON maintenance_item(dueDate);
+            CREATE TABLE IF NOT EXISTS maintenance_event (
+                id TEXT PRIMARY KEY,
+                itemID TEXT NOT NULL REFERENCES maintenance_item(id) ON DELETE CASCADE,
+                date TEXT NOT NULL, odometer REAL, lat REAL, lon REAL, notes TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS maintenance_event_date ON maintenance_event(date);
+            CREATE TABLE IF NOT EXISTS trip (
+                id INTEGER PRIMARY KEY CHECK (id = 1), metres REAL NOT NULL
             );
             """, nil, nil, nil)
         ensureJourneySchema()
@@ -244,22 +280,204 @@ final class AppDatabase: @unchecked Sendable {
         }
     }
 
-    // MARK: - Documents
+    // MARK: - The fuel store
 
-    func document(_ name: String) -> String? {
-        var json: String?
-        query("SELECT json FROM document WHERE name = ?", bind: [.text(name)]) { statement in
-            json = text(statement, 0)
+    func fuelLog() -> FuelLog {
+        var refuels: [RefuelRecord] = []
+        var reserves: [ReserveEvent] = []
+        query("""
+            SELECT r.id, r.date, r.litres, r.pricePerLitre, r.grade, r.filledToBrim,
+                   r.gpsKilometres, r.odometer, r.lat, r.lon, s.id, s.brand, s.name
+            FROM refuel_record r LEFT JOIN station s ON s.id = r.stationID
+            ORDER BY r.date
+            """) { s in
+            guard
+                let id = text(s, 0).flatMap(UUID.init(uuidString:)),
+                let date = text(s, 1).flatMap({ self.timestamps.date(from: $0) }),
+                let grade = text(s, 4).flatMap(FuelGrade.init(rawValue:))
+            else { return }
+            refuels.append(RefuelRecord(
+                id: id, date: date,
+                litres: Litres(real(s, 2) ?? 0),
+                pricePerLitre: real(s, 3) ?? 0,
+                grade: grade,
+                filledToBrim: bool(s, 5),
+                odometer: real(s, 7).map { Kilometres($0) },
+                gpsKilometres: real(s, 6).map { Kilometres($0) },
+                latitude: real(s, 8).map { Latitude($0) },
+                longitude: real(s, 9).map { Longitude($0) },
+                station: integer(s, 10).map {
+                    FuelStation(id: $0, brand: text(s, 11), name: text(s, 12))
+                }
+            ))
         }
-        return json
+        query("SELECT id, date, odometer, gpsKilometres, lat, lon FROM reserve_event ORDER BY date") { s in
+            guard
+                let id = text(s, 0).flatMap(UUID.init(uuidString:)),
+                let date = text(s, 1).flatMap({ self.timestamps.date(from: $0) })
+            else { return }
+            reserves.append(ReserveEvent(
+                id: id, date: date,
+                odometer: real(s, 2).map { Kilometres($0) },
+                gpsKilometres: real(s, 3).map { Kilometres($0) },
+                latitude: real(s, 4).map { Latitude($0) },
+                longitude: real(s, 5).map { Longitude($0) }
+            ))
+        }
+        return FuelLog(refuels: refuels, reserves: reserves)
     }
 
-    /// Whole-document replacement — the same semantics the atomic file write had.
-    func saveDocument(_ name: String, json: String) {
-        query(
-            "INSERT OR REPLACE INTO document (name, json) VALUES (?, ?)",
-            bind: [.text(name), .text(json)]
-        ) { _ in }
+    /// Write-whole in one transaction, exactly as the atomic file was: a log half-written when
+    /// the app is killed would take every past fill with it.
+    func save(_ log: FuelLog) {
+        transaction {
+            raw("DELETE FROM refuel_record")
+            raw("DELETE FROM reserve_event")
+            raw("DELETE FROM station")
+            var stationsSeen: Set<Int> = []
+            for station in log.refuels.compactMap(\.station) where stationsSeen.insert(station.id).inserted {
+                rawQuery(
+                    "INSERT OR REPLACE INTO station (id, brand, name) VALUES (?, ?, ?)",
+                    bind: [.integer(station.id), .text(station.brand), .text(station.name)]
+                ) { _ in }
+            }
+            for r in log.refuels {
+                rawQuery("""
+                    INSERT INTO refuel_record
+                    (id, date, litres, pricePerLitre, grade, filledToBrim, gpsKilometres,
+                     odometer, lat, lon, stationID)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, bind: [
+                        .text(r.id.uuidString), .text(timestamps.string(from: r.date)),
+                        .real(r.litres.rawValue), .real(r.pricePerLitre), .text(r.grade.rawValue),
+                        .bool(r.filledToBrim), .real(r.gpsKilometres?.rawValue),
+                        .real(r.odometer?.rawValue), .real(r.latitude?.rawValue),
+                        .real(r.longitude?.rawValue), .integer(r.station?.id)
+                    ]) { _ in }
+            }
+            for r in log.reserves {
+                rawQuery("""
+                    INSERT INTO reserve_event (id, date, odometer, gpsKilometres, lat, lon)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """, bind: [
+                        .text(r.id.uuidString), .text(timestamps.string(from: r.date)),
+                        .real(r.odometer?.rawValue), .real(r.gpsKilometres?.rawValue),
+                        .real(r.latitude?.rawValue), .real(r.longitude?.rawValue)
+                    ]) { _ in }
+            }
+        }
+    }
+
+    // MARK: - The maintenance store
+
+    func maintenanceLog() -> MaintenanceLog {
+        var events: [String: [MaintenanceEvent]] = [:]
+        query("SELECT itemID, id, date, odometer, lat, lon, notes FROM maintenance_event ORDER BY date") { s in
+            guard
+                let itemID = text(s, 0),
+                let id = text(s, 1).flatMap(UUID.init(uuidString:)),
+                let date = text(s, 2).flatMap({ self.timestamps.date(from: $0) })
+            else { return }
+            events[itemID, default: []].append(MaintenanceEvent(
+                id: id, date: date,
+                odometer: real(s, 3).map { Kilometres($0) },
+                latitude: real(s, 4).map { Latitude($0) },
+                longitude: real(s, 5).map { Longitude($0) },
+                notes: text(s, 6) ?? ""
+            ))
+        }
+        var items: [MaintenanceItem] = []
+        query("""
+            SELECT id, title, dueRule, dueDate, dueOdometer, warnDaysBefore,
+                   warnKilometresBefore, recurDays, recurKilometres, closed
+            FROM maintenance_item ORDER BY dueDate
+            """) { s in
+            guard
+                let idText = text(s, 0),
+                let id = UUID(uuidString: idText),
+                let due = self.due(
+                    rule: text(s, 2),
+                    date: text(s, 3).flatMap { self.timestamps.date(from: $0) },
+                    odometer: real(s, 4)
+                )
+            else { return }
+            let days = integer(s, 7)
+            let kilometres = real(s, 8)
+            items.append(MaintenanceItem(
+                id: id, title: text(s, 1) ?? "", due: due,
+                warnDaysBefore: integer(s, 5),
+                warnKilometresBefore: real(s, 6),
+                recurrence: days == nil && kilometres == nil
+                    ? nil : MaintenanceRecurrence(days: days, kilometres: kilometres),
+                events: events[idText] ?? [],
+                closed: bool(s, 9)
+            ))
+        }
+        return MaintenanceLog(items: items)
+    }
+
+    func save(_ log: MaintenanceLog) {
+        transaction {
+            // The cascade wipes each item's events with it.
+            raw("DELETE FROM maintenance_item")
+            for item in log.items {
+                let axis: MaintenanceAxis = switch item.due {
+                case .onDate: .date
+                case .atOdometer: .odometer
+                case .either: .either
+                case .both: .both
+                }
+                rawQuery("""
+                    INSERT INTO maintenance_item
+                    (id, title, dueRule, dueDate, dueOdometer, warnDaysBefore,
+                     warnKilometresBefore, recurDays, recurKilometres, closed)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, bind: [
+                        .text(item.id.uuidString), .text(item.title), .text(axis.rawValue),
+                        .text(item.due.date.map { timestamps.string(from: $0) }),
+                        .real(item.due.odometer?.rawValue),
+                        .integer(item.warnDaysBefore), .real(item.warnKilometresBefore),
+                        .integer(item.recurrence?.days), .real(item.recurrence?.kilometres),
+                        .bool(item.closed)
+                    ]) { _ in }
+                for event in item.events {
+                    rawQuery("""
+                        INSERT INTO maintenance_event (id, itemID, date, odometer, lat, lon, notes)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """, bind: [
+                            .text(event.id.uuidString), .text(item.id.uuidString),
+                            .text(timestamps.string(from: event.date)),
+                            .real(event.odometer?.rawValue),
+                            .real(event.latitude?.rawValue), .real(event.longitude?.rawValue),
+                            .text(event.notes)
+                        ]) { _ in }
+                }
+            }
+        }
+    }
+
+    /// A stored deadline back into its sum type; an impossible combination — a rule naming an
+    /// axis whose value is missing — drops the row rather than inventing a deadline.
+    private func due(rule: String?, date: Date?, odometer: Double?) -> MaintenanceDue? {
+        switch MaintenanceAxis(rawValue: rule ?? "") {
+        case .date: date.map(MaintenanceDue.onDate)
+        case .odometer: odometer.map { .atOdometer(Kilometres($0)) }
+        case .either: date.flatMap { d in odometer.map { .either(date: d, odometer: Kilometres($0)) } }
+        case .both: date.flatMap { d in odometer.map { .both(date: d, odometer: Kilometres($0)) } }
+        case nil: nil
+        }
+    }
+
+    // MARK: - The trip counter
+
+    func tripDistance() -> Double? {
+        var metres: Double?
+        query("SELECT metres FROM trip WHERE id = 1") { s in metres = real(s, 0) }
+        return metres
+    }
+
+    func saveTripDistance(_ metres: Double) {
+        query("INSERT OR REPLACE INTO trip (id, metres) VALUES (1, ?)", bind: [.real(metres)]) { _ in }
     }
 
     // MARK: - Plumbing
@@ -284,6 +502,24 @@ final class AppDatabase: @unchecked Sendable {
     private func query(_ sql: String, bind: [SQLValue] = [], each: (OpaquePointer) -> Void) {
         lock.lock()
         defer { lock.unlock() }
+        rawQuery(sql, bind: bind, each: each)
+    }
+
+    /// One lock, one transaction: everything inside commits or nothing does.
+    private func transaction(_ body: () -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
+        raw("BEGIN IMMEDIATE")
+        body()
+        raw("COMMIT")
+    }
+
+    private func raw(_ sql: String) {
+        sqlite3_exec(handle, sql, nil, nil, nil)
+    }
+
+    /// The unlocked worker — callers hold the lock, directly or through a transaction.
+    private func rawQuery(_ sql: String, bind: [SQLValue] = [], each: (OpaquePointer) -> Void) {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else { return }
         defer { sqlite3_finalize(statement) }
@@ -318,12 +554,3 @@ final class AppDatabase: @unchecked Sendable {
     }
 }
 
-// MARK: - Document names
-
-/// The names documents live under. An enum of constants rather than stringly call sites, for the
-/// same reason the JSONL filenames were.
-enum AppDocument {
-    static let fuelLog = "fuel-log"
-    static let maintenanceLog = "maintenance-log"
-    static let tripDistance = "trip-distance"
-}
