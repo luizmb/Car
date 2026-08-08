@@ -11,6 +11,10 @@
 		D62659CD2C69962A00625B74 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = D62659CC2C69962A00625B74 /* Assets.xcassets */; };
 		D62659D02C69962A00625B74 /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = D62659CF2C69962A00625B74 /* Preview Assets.xcassets */; };
 		D62659D82C69969F00625B74 /* AppCore in Frameworks */ = {isa = PBXBuildFile; productRef = D62659D72C69969F00625B74 /* AppCore */; };
+		D7B100B100000000000000B1 /* SpeedJarvisWatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7B100A100000000000000A1 /* SpeedJarvisWatchApp.swift */; };
+		D7B100B200000000000000B2 /* WatchWorldLive.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7B100A200000000000000A2 /* WatchWorldLive.swift */; };
+		D7B100B300000000000000B3 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = D7B100A300000000000000A3 /* Assets.xcassets */; };
+		D7B100B400000000000000B4 /* WatchCore in Frameworks */ = {isa = PBXBuildFile; productRef = D7B100C600000000000000C6 /* WatchCore */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -21,6 +25,10 @@
 		D62659D92C69B27A00625B74 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		D6C19A5C2C6C4BA400D93BDD /* SpeedJarvis.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = SpeedJarvis.entitlements; sourceTree = "<group>"; };
 		25C1422C44B7E303FEC68D2E /* Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Shared.xcconfig; sourceTree = "<group>"; };
+		D7B100A100000000000000A1 /* SpeedJarvisWatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeedJarvisWatchApp.swift; sourceTree = "<group>"; };
+		D7B100A200000000000000A2 /* WatchWorldLive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchWorldLive.swift; sourceTree = "<group>"; };
+		D7B100A300000000000000A3 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		D7B100A400000000000000A4 /* SpeedJarvisWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SpeedJarvisWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -32,6 +40,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D7B100C400000000000000C4 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D7B100B400000000000000B4 /* WatchCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -39,6 +55,7 @@
 			isa = PBXGroup;
 			children = (
 				D62659C72C69962800625B74 /* App */,
+				D7B100C100000000000000C1 /* WatchApp */,
 				5376334CF4C9786DF154729D /* Config */,
 				D62659C62C69962800625B74 /* Products */,
 				D62659D62C69969F00625B74 /* Frameworks */,
@@ -58,6 +75,7 @@
 			isa = PBXGroup;
 			children = (
 				D62659C52C69962800625B74 /* SpeedJarvis.app */,
+				D7B100A400000000000000A4 /* SpeedJarvisWatch.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -72,6 +90,16 @@
 				D62659CE2C69962A00625B74 /* Preview Content */,
 			);
 			path = App;
+			sourceTree = "<group>";
+		};
+		D7B100C100000000000000C1 /* WatchApp */ = {
+			isa = PBXGroup;
+			children = (
+				D7B100A100000000000000A1 /* SpeedJarvisWatchApp.swift */,
+				D7B100A200000000000000A2 /* WatchWorldLive.swift */,
+				D7B100A300000000000000A3 /* Assets.xcassets */,
+			);
+			path = WatchApp;
 			sourceTree = "<group>";
 		};
 		D62659CE2C69962A00625B74 /* Preview Content */ = {
@@ -112,6 +140,26 @@
 			productReference = D62659C52C69962800625B74 /* SpeedJarvis.app */;
 			productType = "com.apple.product-type.application";
 		};
+		D7B100C200000000000000C2 /* SpeedJarvisWatch */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D7B100D300000000000000D3 /* Build configuration list for PBXNativeTarget "SpeedJarvisWatch" */;
+			buildPhases = (
+				D7B100C300000000000000C3 /* Sources */,
+				D7B100C400000000000000C4 /* Frameworks */,
+				D7B100C500000000000000C5 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = SpeedJarvisWatch;
+			packageProductDependencies = (
+				D7B100C600000000000000C6 /* WatchCore */,
+			);
+			productName = SpeedJarvisWatch;
+			productReference = D7B100A400000000000000A4 /* SpeedJarvisWatch.app */;
+			productType = "com.apple.product-type.application";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -123,6 +171,9 @@
 				LastUpgradeCheck = 1530;
 				TargetAttributes = {
 					D62659C42C69962800625B74 = {
+						CreatedOnToolsVersion = 15.3;
+					};
+					D7B100C200000000000000C2 = {
 						CreatedOnToolsVersion = 15.3;
 					};
 				};
@@ -145,6 +196,7 @@
 			projectRoot = "";
 			targets = (
 				D62659C42C69962800625B74 /* SpeedJarvis */,
+				D7B100C200000000000000C2 /* SpeedJarvisWatch */,
 			);
 		};
 /* End PBXProject section */
@@ -159,6 +211,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D7B100C500000000000000C5 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D7B100B300000000000000B3 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -167,6 +227,15 @@
 			buildActionMask = 2147483647;
 			files = (
 				D62659C92C69962800625B74 /* SpeedJarvisApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D7B100C300000000000000C3 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D7B100B100000000000000B1 /* SpeedJarvisWatchApp.swift in Sources */,
+				D7B100B200000000000000B2 /* WatchWorldLive.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -358,6 +427,60 @@
 			};
 			name = Release;
 		};
+		D7B100D100000000000000D1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 25C1422C44B7E303FEC68D2E /* Shared.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CURRENT_PROJECT_VERSION = 24;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = SpeedJarvis;
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = "lu.ios.speed-jarvis";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.14.1;
+				PRODUCT_BUNDLE_IDENTIFIER = "lu.ios.speed-jarvis.watchkitapp";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 26.0;
+			};
+			name = Debug;
+		};
+		D7B100D200000000000000D2 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 25C1422C44B7E303FEC68D2E /* Shared.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CURRENT_PROJECT_VERSION = 24;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = SpeedJarvis;
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = "lu.ios.speed-jarvis";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.14.1;
+				PRODUCT_BUNDLE_IDENTIFIER = "lu.ios.speed-jarvis.watchkitapp";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 26.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -375,6 +498,15 @@
 			buildConfigurations = (
 				D62659D42C69962A00625B74 /* Debug */,
 				D62659D52C69962A00625B74 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		D7B100D300000000000000D3 /* Build configuration list for PBXNativeTarget "SpeedJarvisWatch" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D7B100D100000000000000D1 /* Debug */,
+				D7B100D200000000000000D2 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
@@ -408,6 +540,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = D6AA00012C6996AA00625B74 /* XCLocalSwiftPackageReference ".." */;
 			productName = AppCore;
+		};
+		D7B100C600000000000000C6 /* WatchCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D6AA00012C6996AA00625B74 /* XCLocalSwiftPackageReference ".." */;
+			productName = WatchCore;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

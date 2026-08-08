@@ -249,6 +249,7 @@ extension World {
         // The journey timeline now lives in the app database; only the debug firehose - the
         // temporary, deleted-weekly dump - remains a text file, because grep is its query engine.
         let appDatabase = AppDatabase()
+        let watchLink = PhoneWatchBox()
         let motionBox = MotionBox()
         let device    = DeviceBox()
         let ticks     = IndicatorAudioBox()
@@ -470,6 +471,10 @@ extension World {
                     return .success(())
                 }
             },
+            sendWatchSnapshot: { snapshot in
+                Publisher.future { watchLink.send(snapshot) }
+            },
+            watchRefuels: { watchLink.refuels },
             phoneBattery: { device.batteryLevel },
             isLowPowerMode: { ProcessInfo.processInfo.isLowPowerModeEnabled },
             fetchStation: { latitude, longitude in

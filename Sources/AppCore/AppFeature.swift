@@ -131,6 +131,14 @@ public enum AppFeature {
         case navigate(NavigationFeature.Action)
         case rides(RideReviewFeature.Action)
         case maintenance(MaintenanceFeature.Action)
+        /// A refuel asked for from the watch — the wrist's one command.
+        case watchRefuel(WatchRefuel)
+        /// The ask with its forecourt resolved, ready to become a record.
+        case watchRefuelPlaced(WatchRefuel, FuelStation?)
+        case watchRefuelApplied
+        case watchRefuelFailed
+        /// The post-reduction truth, flattened for the wrist and about to be pushed.
+        case watchSnapshotComposed(WatchSnapshot)
         /// Speak the briefing on demand, at either verbosity.
         case speakFlightPlan(FlightPlanVerbosity)
         /// A journey began or ended. Carries the phase rather than recomputing it, so the reduction
@@ -204,7 +212,8 @@ public enum AppFeature {
         <> Behavior<AppAction, AppState, World>.handle { action, _ in
             let isLaunch = AppAction.prism.appLaunch.preview(action) != nil
             let isSaved = AppAction.prism.fuel.preview(action).flatMap(FuelFeature.Action.prism.saved.preview) != nil
-            guard isLaunch || isSaved else { return .doNothing }
+            let isWatchSaved = AppAction.prism.watchRefuelApplied.preview(action) != nil
+            guard isLaunch || isSaved || isWatchSaved else { return .doNothing }
             return .produce { ctx in
                 ctx.environment.loadFuelLog()
                     .asEffect { (result: Result<FuelLog, FileError>) in
@@ -288,6 +297,8 @@ public enum AppFeature {
         }
 
         <> navigationBehavior()
+
+        <> watchSyncBehavior()
 
         // Bluetooth is requested only once location has resolved. Constructing a `CBCentralManager`
         // *is* the permission request, so chaining the two here is what keeps the system dialogs
@@ -419,8 +430,9 @@ public enum AppFeature {
         }
 
         <> AppScopes.trip.behavior(of: TripFeature.self)
-            // A fill or a reserve switch starts a fresh measurement.
+            // A fill or a reserve switch starts a fresh measurement — from either screen or wrist.
             .on(.action(\.fuel.saved), dispatch: .action(review: const(.trip(.reset))))
+            .on(.action(\.watchRefuelApplied), dispatch: .action(review: const(.trip(.reset))))
 
         <> AppScopes.fuel.behavior(of: FuelFeature.self)
 

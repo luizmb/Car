@@ -38,6 +38,8 @@ public extension World {
             saveFuelLog: { _ in .just(.success(())) },
             loadMaintenanceLog: { .just(.success(.empty)) },
             saveMaintenanceLog: { _ in .just(.success(())) },
+            sendWatchSnapshot: { _ in .just(()) },
+            watchRefuels: { .empty() },
             phoneBattery: { 1.0 },
             isLowPowerMode: { false },
             fetchStation: { _, _ in .just(nil) },

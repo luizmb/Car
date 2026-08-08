@@ -84,6 +84,12 @@ public struct World: Sendable {
     /// in Documents, inspectable and correctable by hand.
     public let loadMaintenanceLog: @Sendable () -> Publisher<Result<MaintenanceLog, FileError>, Never>
     public let saveMaintenanceLog: @Sendable (MaintenanceLog) -> Publisher<Result<Void, FileError>, Never>
+    // The wrist
+    /// The latest truth, pushed to the watch. Fire-and-forget: the watch renders whatever arrives
+    /// and asks for nothing — the phone remains the only source of truth.
+    public let sendWatchSnapshot: @Sendable (WatchSnapshot) -> Publisher<Void, Never>
+    /// Refuel asks arriving from the watch. The one command the wrist may send.
+    public let watchRefuels: @Sendable () -> Publisher<WatchRefuel, Never>
     /// The phone is the instrument cluster, so its battery is a pre-ride check. Low Power Mode
     /// matters more than the percentage: it throttles the background work location and Bluetooth
     /// depend on, and can silently disable most of the app mid-ride.
