@@ -84,6 +84,11 @@ func replayBehavior() -> Behavior<AppAction, AppState, World> {
         else { return .doNothing }
         let schedule = replaySchedule(for: entry.ride.records)
         let duration = schedule.last?.position ?? 0
+        // The whole journey's line, under the moving rider — where you have been and where you
+        // are going, exactly what the ride's own track holds.
+        let track = simplified(entry.ride.track.map {
+            Coordinate(latitude: Latitude($0.fix.lat), longitude: Longitude($0.fix.lon))
+        })
         return .reduce {
             $0.updateReplay {
                 $0.started = true
@@ -91,7 +96,8 @@ func replayBehavior() -> Behavior<AppAction, AppState, World> {
             }
         }
         .produce { ctx in
-            ctx.environment.playback(schedule).asEffect { AppAction.replay(.event($0)) }
+            Effect.just(.replay(.monitor(.setRoute(track))))
+                <> ctx.environment.playback(schedule).asEffect { AppAction.replay(.event($0)) }
         }
     }
 
@@ -110,14 +116,25 @@ func replayBehavior() -> Behavior<AppAction, AppState, World> {
             return .reduce { $0.updateReplay { $0.position = step.position } }
                 .produce { _ in Effect.just(.replay(.monitor(.roadSpeedChanged(info)))) }
         case let .indicator(side):
+            let mapped: Side? = side.map { $0 == "left" ? .left : .right }
             return .reduce {
                 $0.updateReplay { replay in
                     replay.position = step.position
-                    replay.indicator = side.map { $0 == "left" ? .left : .right }
+                    replay.indicator = mapped
                 }
             }
+            // The Indimate's click, exactly as the live feature plays it — a replay without the
+            // relay's tick is a silent film of a talkie.
+            .produce { ctx in
+                (mapped.map(ctx.environment.playIndicatorLoop)
+                    ?? ctx.environment.stopIndicatorLoop())
+                    |> Effect.fireAndForget
+            }
         case .finished:
-            return .produce { _ in Effect.just(.replay(.ended)) }
+            return .produce { ctx in
+                (ctx.environment.stopIndicatorLoop() |> Effect.fireAndForget)
+                    <> Effect.just(.replay(.ended))
+            }
         }
     }
 
@@ -137,6 +154,7 @@ func replayBehavior() -> Behavior<AppAction, AppState, World> {
         else { return .doNothing }
         return .produce { ctx in
             (ctx.environment.stopPlayback() |> Effect.fireAndForget)
+                <> (ctx.environment.stopIndicatorLoop() |> Effect.fireAndForget)
                 <> Effect.just(.navigation(.pop))
         }
     }
@@ -166,7 +184,8 @@ func replayBehavior() -> Behavior<AppAction, AppState, World> {
     <> Behavior<AppAction, AppState, World>.handle { action, _ in
         guard AppAction.prism.replayScreenGone.preview(action) != nil else { return .doNothing }
         return .produce { ctx in
-            ctx.environment.stopPlayback() |> Effect.fireAndForget
+            (ctx.environment.stopPlayback() |> Effect.fireAndForget)
+                <> (ctx.environment.stopIndicatorLoop() |> Effect.fireAndForget)
         }
     }
 
