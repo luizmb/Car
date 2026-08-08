@@ -585,6 +585,34 @@ private func pathBearing(_ points: [Coordinate], lastLeg: Bool) -> Double? {
     return nil
 }
 
+/// Which lane to be in, when the rule is knowable without lane data.
+///
+/// MapKit's public API carries no lane information — but two British rules need none. The
+/// Highway Code's roundabout rule is *stated* in clock terms: leaving before 12 o'clock,
+/// approach in the left lane; after 12, the right — and the clock is already computed from the
+/// route's own bearings. And a motorway exit is a left-hand slip, always. Everything else stays
+/// unsaid: guessing lanes on an unknown road is how an app talks itself out of being trusted.
+public func laneHint(_ steps: [RouteStep], at index: Int) -> String? {
+    guard let step = steps[safe: index] else { return nil }
+    let words = step.instructions.lowercased()
+    if words.contains("roundabout") {
+        guard
+            let next = steps[safe: index + 1],
+            let incoming = pathBearing(step.path.suffix(8), lastLeg: true),
+            let outgoing = pathBearing(Array(next.path.prefix(8)), lastLeg: false)
+        else { return nil }
+        switch clockDirection(incoming: incoming, outgoing: outgoing) {
+        case 1...5: return "Use the right lane"
+        case 7...11: return "Use the left lane"
+        default: return nil   // straight over: left unless signed, and silence over guessing
+        }
+    }
+    if words.contains("exit"), words.contains("motorway") || words.contains("towards") {
+        return "Keep left"
+    }
+    return nil
+}
+
 // MARK: - Forward bias for replans
 
 /// Metres ahead of the rider a replan's origin is projected — the public routing API cannot be
@@ -838,9 +866,12 @@ public func guidance(
         remaining > windows.imminent.rawValue * 1.5,
         state.stage < .early {
         next.stage = .early
+        // Lane advice belongs to the early call: four hundred metres out is when a lane can
+        // still be chosen calmly; at the junction mouth it is a demand, not advice.
+        let lane = laneHint(steps, at: state.stepIndex).map { ". \($0)" } ?? ""
         return GuidanceUpdate(
             announcement: "In \(formatDistance(Meters(remaining))), "
-                + lowercasedFirst(chainedInstruction(steps, from: state.stepIndex)),
+                + lowercasedFirst(chainedInstruction(steps, from: state.stepIndex)) + lane,
             state: next
         )
     }
