@@ -217,3 +217,23 @@ work. The map data is already downloaded and processed, which is the part that w
 hard.
 
 Parked until the app is stable. It is the largest single item here.
+
+## Productisation (brief of 2026-08-08 — planning first)
+
+The goal, verbatim: *all the rules we have hardcoded become data; we ship the app with good
+defaults but the user can do whatever they want.*
+
+- **Generic peripherals** — "Add peripheral" with kinds. Audio Route: detect the current route
+  name (PACK EDGE), name it (Cardo), pick an icon that turns green while the route is active.
+  BLE: "advertising only" (FOBO-style) vs "connect" (CHIGEE-style presence); validated
+  accessories (FOBO, Indimate) keep their extra functionality, everything else is generic —
+  possibly down to user-defined GATT services/characteristics with read/write and interpretation.
+- **Automations** — peripherals represent state and trigger actions as data: "chigee represents
+  ignition", "indimate or chigee → journey on", "both off → journey off". Today's hardcoded
+  journey rule becomes the shipped default row.
+- **Alerts as data** — on journey start → sound or speech; on speed thresholds → speak the figure
+  or play a tone; on limit / limit+10% → escalating dings. The announcement layer becomes rules.
+- **Units** — distance and speed configurable.
+- **Siri intents** — start/end journey as App Intents, so Shortcuts can drive them from CarPlay.
+- **Multi-vehicle** — vehicles as first-class, each with its own rules and accessories; journeys,
+  fuel and maintenance tracked per vehicle.
