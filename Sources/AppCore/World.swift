@@ -103,7 +103,7 @@ public struct World: Sendable {
     // The tape deck
     /// Plays a replay schedule in real time — the waits are the only side-effect a replay needs.
     /// Starting a playback stops any previous one.
-    public let playback: @Sendable ([ReplayStep]) -> Publisher<ReplayEvent, Never>
+    public let playback: @Sendable ([ReplayStep]) -> Publisher<ReplayStep, Never>
     /// The deterministic stop, pressed by the cancel button and by the screen disappearing.
     public let stopPlayback: @Sendable () -> Publisher<Void, Never>
     /// The phone is the instrument cluster, so its battery is a pre-ride check. Low Power Mode

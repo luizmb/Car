@@ -39,6 +39,11 @@ struct ReplayView: View {
                 .font(.caption.weight(.black))
                 .foregroundStyle(replay?.finished == true ? .green : .orange)
 
+                // The tape counter: recorded stillness ticks, a hang does not.
+                Text("\(stamp(replay?.position ?? 0)) / \(stamp(replay?.duration ?? 0))")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+
                 indicatorArrows
             }
             .padding(.horizontal, 12)
@@ -62,6 +67,11 @@ struct ReplayView: View {
         }
         .toolbar(.hidden, for: .navigationBar)
         .onAppear { viewStore.dispatch(.replay(.begin)) }
+    }
+
+    private func stamp(_ seconds: TimeInterval) -> String {
+        let whole = Int(seconds.rounded())
+        return String(format: "%02d:%02d", whole / 60, whole % 60)
     }
 
     /// The ride's blinker, as it blinked. Solid rather than animated — the record has edges, and

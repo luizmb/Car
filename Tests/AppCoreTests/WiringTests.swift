@@ -881,23 +881,33 @@ struct ReplayWiringTests {
             altitude: Meters(90), timestamp: Date(timeIntervalSince1970: 1),
             horizontalAccuracy: Meters(5)
         )
-        store.dispatch(.replay(.event(.fix(update))), source: .init(file: #file, function: #function, line: #line))
         store.dispatch(
-            .replay(.event(.road(RoadInfo(
-                limit: .value(MPH(30)), ref: nil, name: "A505", origin: .signed
-            )))),
+            .replay(.event(ReplayStep(delay: 0, position: 0, event: .fix(update)))),
             source: .init(file: #file, function: #function, line: #line)
         )
-        store.dispatch(.replay(.event(.indicator("left"))), source: .init(file: #file, function: #function, line: #line))
+        store.dispatch(
+            .replay(.event(ReplayStep(delay: 1, position: 1, event: .road(RoadInfo(
+                limit: .value(MPH(30)), ref: nil, name: "A505", origin: .signed
+            ))))),
+            source: .init(file: #file, function: #function, line: #line)
+        )
+        store.dispatch(
+            .replay(.event(ReplayStep(delay: 1, position: 2, event: .indicator("left")))),
+            source: .init(file: #file, function: #function, line: #line)
+        )
         // The display rebuilds per fix, exactly as it does live — the road shows from the next
         // fix onward, and on the tape fixes arrive every second.
-        store.dispatch(.replay(.event(.fix(update))), source: .init(file: #file, function: #function, line: #line))
+        store.dispatch(
+            .replay(.event(ReplayStep(delay: 1, position: 3, event: .fix(update)))),
+            source: .init(file: #file, function: #function, line: #line)
+        )
         for _ in 0..<15 { await Task.yield() }
 
         let replay = store.state.path.compactMap(StackEntry.prism.replay.preview).last
         #expect(replay?.monitor.lastLocation?.latitude == Latitude(51.87))
         #expect(replay?.monitor.display.roadName == "A505")
         #expect(replay?.indicator == .left)
+        #expect(replay?.position == 3)   // the HUD's counter follows the tape
         // And the *live* monitor never saw any of it.
         #expect(store.state.speedMonitor.lastLocation == nil)
     }
