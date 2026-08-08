@@ -281,3 +281,144 @@ public func gpx(for ride: Ride, creator: String = "SpeedJarvis") -> String {
     </gpx>
     """
 }
+
+// MARK: - The detail, precomputed
+
+/// One point of a ride chart.
+public struct ChartPoint: Sendable, Equatable {
+    public let time: Date
+    public let value: Double
+
+    public init(time: Date, value: Double) {
+        self.time = time
+        self.value = value
+    }
+}
+
+/// One stretch of indicator, as a value the screen can diff.
+public struct IndicatorInterval: Sendable, Equatable {
+    public let side: String
+    public let start: Date
+    public let end: Date
+
+    public init(side: String, start: Date, end: Date) {
+        self.side = side
+        self.start = start
+        self.end = end
+    }
+}
+
+/// Everything the detail screen draws, computed **once** when a ride is selected.
+///
+/// The screen was recomputing the track (a compactMap over every record) five times per body
+/// evaluation, and a body evaluation happened on every scrub tick — the lag was arithmetic, not
+/// rendering. Charts additionally get downsampled series: a phone-width chart cannot show more
+/// than a few hundred points anyway, and Swift Charts walks every mark it is given.
+public struct RideDetail: Sendable, Equatable {
+    public let track: [Coordinate]
+    public let speed: [ChartPoint]
+    public let altitude: [ChartPoint]
+    public let gradient: [ChartPoint]
+    public let indicators: [IndicatorInterval]
+    /// The full-resolution fix timeline, for the scrub ball — position lookup is a binary search
+    /// here, not a linear walk per drag frame.
+    public let fixTimes: [Date]
+    public let fixCoordinates: [Coordinate]
+
+    public init(
+        track: [Coordinate], speed: [ChartPoint], altitude: [ChartPoint],
+        gradient: [ChartPoint], indicators: [IndicatorInterval],
+        fixTimes: [Date], fixCoordinates: [Coordinate]
+    ) {
+        self.track = track
+        self.speed = speed
+        self.altitude = altitude
+        self.gradient = gradient
+        self.indicators = indicators
+        self.fixTimes = fixTimes
+        self.fixCoordinates = fixCoordinates
+    }
+}
+
+/// Min–max bucket downsampling: each bucket contributes its extremes, in time order.
+///
+/// Extremes rather than averages, because the spikes are the story — a top-speed blip or a
+/// pothole's gradient must survive the thinning, and averaging would file them off.
+public func downsampled(_ points: [ChartPoint], buckets: Int) -> [ChartPoint] {
+    guard buckets > 0, points.count > buckets * 2 else { return points }
+    let size = Double(points.count) / Double(buckets)
+    var kept: [ChartPoint] = []
+    kept.reserveCapacity(buckets * 2)
+    for bucket in 0..<buckets {
+        let start = Int(Double(bucket) * size)
+        let end = min(points.count, Int(Double(bucket + 1) * size))
+        guard start < end else { continue }
+        let slice = points[start..<end]
+        guard
+            let low = slice.min(by: { $0.value < $1.value }),
+            let high = slice.max(by: { $0.value < $1.value })
+        else { continue }
+        if low == high {
+            kept.append(low)
+        } else {
+            kept.append(contentsOf: low.time <= high.time ? [low, high] : [high, low])
+        }
+    }
+    return kept
+}
+
+/// Cuts a ride into its precomputed detail. Pure, and the only place the heavy walks happen.
+public func rideDetail(for ride: Ride, maxChartBuckets: Int = 160) -> RideDetail {
+    let fixes = ride.track
+    let coordinates = fixes.map {
+        Coordinate(latitude: Latitude($0.fix.lat), longitude: Longitude($0.fix.lon))
+    }
+    let speed = fixes.compactMap { point in
+        point.fix.mph.map { ChartPoint(time: point.time, value: $0) }
+    }
+    let altitude = fixes.compactMap { point in
+        point.fix.alt.map { ChartPoint(time: point.time, value: $0) }
+    }
+    let gradient = ride.gradients.map { ChartPoint(time: $0.time, value: $0.percent) }
+    return RideDetail(
+        track: coordinates,
+        speed: downsampled(speed, buckets: maxChartBuckets),
+        altitude: downsampled(altitude, buckets: maxChartBuckets),
+        gradient: downsampled(gradient, buckets: maxChartBuckets),
+        indicators: ride.indicatorIntervals.map {
+            IndicatorInterval(side: $0.side, start: $0.start, end: $0.end)
+        },
+        fixTimes: fixes.map(\.time),
+        fixCoordinates: coordinates
+    )
+}
+
+/// Where the ride was at an instant — a binary search over the precomputed timeline, so the ball
+/// can follow a finger at frame rate without walking the ride.
+public func trackPosition(at time: Date, times: [Date], coordinates: [Coordinate]) -> Coordinate? {
+    guard let first = times.first, let firstCoord = coordinates.first,
+          let last = times.last, let lastCoord = coordinates.last,
+          times.count == coordinates.count
+    else { return nil }
+    guard time > first else { return firstCoord }
+    guard time < last else { return lastCoord }
+
+    var low = 0
+    var high = times.count - 1
+    while high - low > 1 {
+        let mid = (low + high) / 2
+        if times[safe: mid].map({ $0 <= time }) == true { low = mid } else { high = mid }
+    }
+    guard
+        let beforeTime = times[safe: low], let afterTime = times[safe: high],
+        let before = coordinates[safe: low], let after = coordinates[safe: high]
+    else { return nil }
+    let span = afterTime.timeIntervalSince(beforeTime)
+    let fraction = span > 0 ? time.timeIntervalSince(beforeTime) / span : 0
+    return Coordinate(
+        latitude: Latitude(before.latitude.rawValue
+            + (after.latitude.rawValue - before.latitude.rawValue) * fraction),
+        longitude: Longitude(before.longitude.rawValue
+            + (after.longitude.rawValue - before.longitude.rawValue) * fraction)
+    )
+}
