@@ -20,11 +20,12 @@ let sharedRC: [Target.Dependency] = [
 
 let package = Package(
     name: "SpeedJarvis",
-    platforms: [.iOS(.v26)],
+    platforms: [.iOS(.v26), .watchOS(.v26)],
     products: [
         .library(name: "AppDomain",              targets: ["AppDomain"]),
         .library(name: "SpeedMonitorFeature", targets: ["SpeedMonitorFeature"]),
         .library(name: "AppCore",             targets: ["AppCore"]),
+        .library(name: "WatchCore",           targets: ["WatchCore"]),
     ],
     dependencies: [
         .package(url: "https://github.com/SwiftRex/SwiftRex.git", branch: "main", traits: ["ReactiveConcurrency"]),
@@ -65,6 +66,14 @@ let package = Package(
             resources: [.process("Resources")]
         ),
 
+        // MARK: - Watch app wiring (feature, views, world shape)
+
+        .target(
+            name: "WatchCore",
+            dependencies: ["AppDomain"] + sharedFP + sharedSwiftRex + sharedRC,
+            path: "Sources/WatchCore"
+        ),
+
         // MARK: - Tests
 
         .testTarget(
@@ -81,6 +90,11 @@ let package = Package(
             name: "AppCoreTests",
             dependencies: ["AppCore"],
             path: "Tests/AppCoreTests"
+        ),
+        .testTarget(
+            name: "WatchCoreTests",
+            dependencies: ["WatchCore"],
+            path: "Tests/WatchCoreTests"
         ),
     ],
     swiftLanguageModes: [.v6]

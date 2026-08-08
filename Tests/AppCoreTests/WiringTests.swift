@@ -476,6 +476,8 @@ struct RefuelRecordingTests {
             saveFuelLog: world.saveFuelLog,
             loadMaintenanceLog: world.loadMaintenanceLog,
             saveMaintenanceLog: world.saveMaintenanceLog,
+            sendWatchSnapshot: world.sendWatchSnapshot,
+            watchRefuels: world.watchRefuels,
             phoneBattery: world.phoneBattery,
             isLowPowerMode: world.isLowPowerMode,
             fetchStation: world.fetchStation,
@@ -624,5 +626,130 @@ struct MaintenanceWiringTests {
             store.state.flightPlanInputs(.stub), verbosity: .exceptions
         )
         #expect(lines.contains { $0.contains("Chain oil is due") })
+    }
+}
+
+@Suite("Watch link wiring")
+@MainActor
+struct WatchLinkWiringTests {
+
+    /// Captures what the phone pushes to the wrist and what it writes to the journey log.
+    private final class LinkSpy: @unchecked Sendable {
+        private let lock = NSLock()
+        private var snapshots: [WatchSnapshot] = []
+        private var journal: [any JourneyPayloadType] = []
+        func push(_ snapshot: WatchSnapshot) { lock.withLock { snapshots.append(snapshot) } }
+        func journey(_ payload: any JourneyPayloadType) { lock.withLock { journal.append(payload) } }
+        var pushed: [WatchSnapshot] { lock.withLock { snapshots } }
+        var journalTypes: [RecordType] { lock.withLock { journal.map { Swift.type(of: $0).recordType } } }
+    }
+
+    private func world(_ spy: LinkSpy) -> World {
+        let world = World.stub
+        return World(
+            requestAuthorization: world.requestAuthorization,
+            authorizationUpdates: world.authorizationUpdates,
+            locationUpdates: world.locationUpdates,
+            subscribeToRoadSpeed: world.subscribeToRoadSpeed,
+            localRoad: world.localRoad,
+            camerasOnRoad: world.camerasOnRoad,
+            subscribeToCameras: world.subscribeToCameras,
+            reverseGeocode: world.reverseGeocode,
+            refreshRoadNow: world.refreshRoadNow,
+            bluetoothAuthorization: world.bluetoothAuthorization,
+            indimateEvents: world.indimateEvents,
+            playIndicatorLoop: world.playIndicatorLoop,
+            stopIndicatorLoop: world.stopIndicatorLoop,
+            tyreReadings: world.tyreReadings,
+            formatPressure: world.formatPressure,
+            formatTemperature: world.formatTemperature,
+            chigeeEvents: world.chigeeEvents,
+            cardoEvents: world.cardoEvents,
+            audioRouteChanges: world.audioRouteChanges,
+            barometer: world.barometer,
+            motion: world.motion,
+            motionActivity: world.motionActivity,
+            fetchWeather: world.fetchWeather,
+            loadTripDistance: world.loadTripDistance,
+            saveTripDistance: world.saveTripDistance,
+            loadFuelLog: world.loadFuelLog,
+            saveFuelLog: world.saveFuelLog,
+            loadMaintenanceLog: world.loadMaintenanceLog,
+            saveMaintenanceLog: world.saveMaintenanceLog,
+            sendWatchSnapshot: { snapshot in
+                Publisher.future { spy.push(snapshot) }
+            },
+            watchRefuels: world.watchRefuels,
+            phoneBattery: world.phoneBattery,
+            isLowPowerMode: world.isLowPowerMode,
+            fetchStation: world.fetchStation,
+            parseNumber: world.parseNumber,
+            formatNumber: world.formatNumber,
+            now: world.now,
+            newID: world.newID,
+            logAction: world.logAction,
+            loadJourneyRecords: world.loadJourneyRecords,
+            writeShareFile: world.writeShareFile,
+            logJourney: { payload in
+                Publisher.future { spy.journey(payload) }
+            },
+            speak: world.speak,
+            speakQueued: world.speakQueued,
+            speakSequence: world.speakSequence,
+            announceOverLimit: world.announceOverLimit,
+            announceUnderLimit: world.announceUnderLimit,
+            playRerouteTone: world.playRerouteTone,
+            completeAddress: world.completeAddress,
+            resolveAddress: world.resolveAddress,
+            routes: world.routes,
+            routesToEach: world.routesToEach,
+            thresholds: world.thresholds,
+            formatSpeed: world.formatSpeed,
+            formatSpeedSpeech: world.formatSpeedSpeech,
+            formatAltitude: world.formatAltitude,
+            formatDistance: world.formatDistance,
+            formatDuration: world.formatDuration,
+            formatTime: world.formatTime,
+            formatBearing: world.formatBearing,
+            formatCoordinate: world.formatCoordinate
+        )
+    }
+
+    /// A fix must reach the wrist as the post-reduction truth — deleting the push join would
+    /// compile and the watch would simply show "waiting for the phone" for ever.
+    @Test("a fix is pushed to the wrist as a snapshot")
+    func fixReachesTheWrist() async {
+        let spy = LinkSpy()
+        let store = MainStore.app(world: world(spy))
+        store.dispatch(
+            .speedMonitor(.locationUpdate(LocationUpdate(
+                speed: MPS(13.4), speedAccuracy: MPS(1), course: Course(rawValue: 90),
+                latitude: Latitude(51.88), longitude: Longitude(-0.42),
+                altitude: Meters(90), timestamp: Date(timeIntervalSince1970: 0),
+                horizontalAccuracy: Meters(5)
+            ))),
+            source: .init(file: #file, function: #function, line: #line)
+        )
+        for _ in 0..<20 { await Task.yield() }
+
+        let last = spy.pushed.last
+        #expect(last != nil)
+        #expect(last?.latitude == 51.88)
+        #expect(last.flatMap(\.mph).map { Int($0.rounded()) } == 30)
+    }
+
+    /// The wrist's one command becomes exactly what the fuel screen writes: a journey record and
+    /// a saved log — and the trip counter starts a fresh measurement.
+    @Test("a watch refuel writes the same record the screen would")
+    func watchRefuelWrites() async {
+        let spy = LinkSpy()
+        let store = MainStore.app(world: world(spy))
+        store.dispatch(
+            .watchRefuel(WatchRefuel(litres: 9.2, pricePerLitre: 1.47, grade: "E5", filledToBrim: true)),
+            source: .init(file: #file, function: #function, line: #line)
+        )
+        for _ in 0..<20 { await Task.yield() }
+
+        #expect(spy.journalTypes.contains(.refuel))
     }
 }
