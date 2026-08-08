@@ -431,12 +431,45 @@ extension World {
             motion: { makeMotionStream(box: motionBox) },
             motionActivity: { makeActivityStream(box: motionBox) },
             fetchWeather: weatherFetch,
-            loadTripDistance: { makeDocumentReader(Double.self, name: AppDocument.tripDistance, database: appDatabase) },
-            saveTripDistance: { makeDocumentWriter($0, name: AppDocument.tripDistance, database: appDatabase) },
-            loadFuelLog: { makeDocumentReader(FuelLog.self, name: AppDocument.fuelLog, database: appDatabase) },
-            saveFuelLog: { makeDocumentWriter($0, name: AppDocument.fuelLog, database: appDatabase) },
-            loadMaintenanceLog: { makeDocumentReader(MaintenanceLog.self, name: AppDocument.maintenanceLog, database: appDatabase) },
-            saveMaintenanceLog: { makeDocumentWriter($0, name: AppDocument.maintenanceLog, database: appDatabase) },
+            loadTripDistance: {
+                Publisher.future { () -> Result<Double, FileError> in
+                    guard let appDatabase else { return .failure(.unreadable("app database unavailable")) }
+                    return appDatabase.tripDistance().map(Result.success) ?? .failure(.notFound)
+                }
+            },
+            saveTripDistance: { metres in
+                Publisher.future { () -> Result<Void, FileError> in
+                    guard let appDatabase else { return .failure(.unwritable("app database unavailable")) }
+                    appDatabase.saveTripDistance(metres)
+                    return .success(())
+                }
+            },
+            loadFuelLog: {
+                Publisher.future { () -> Result<FuelLog, FileError> in
+                    appDatabase.map { .success($0.fuelLog()) }
+                        ?? .failure(.unreadable("app database unavailable"))
+                }
+            },
+            saveFuelLog: { log in
+                Publisher.future { () -> Result<Void, FileError> in
+                    guard let appDatabase else { return .failure(.unwritable("app database unavailable")) }
+                    appDatabase.save(log)
+                    return .success(())
+                }
+            },
+            loadMaintenanceLog: {
+                Publisher.future { () -> Result<MaintenanceLog, FileError> in
+                    appDatabase.map { .success($0.maintenanceLog()) }
+                        ?? .failure(.unreadable("app database unavailable"))
+                }
+            },
+            saveMaintenanceLog: { log in
+                Publisher.future { () -> Result<Void, FileError> in
+                    guard let appDatabase else { return .failure(.unwritable("app database unavailable")) }
+                    appDatabase.save(log)
+                    return .success(())
+                }
+            },
             phoneBattery: { device.batteryLevel },
             isLowPowerMode: { ProcessInfo.processInfo.isLowPowerModeEnabled },
             fetchStation: { latitude, longitude in

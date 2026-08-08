@@ -20,10 +20,9 @@ func utcDayStamp(_ dayIndex: Int) -> String {
 
 /// Appends lines to a JSONL file, one file per UTC day.
 ///
-/// Two of these exist. The **journey** log takes typed `JourneyEvent` records and only while a
-/// journey is active — that is the file worth keeping. The **debug** log takes
-/// `String(describing:)` of every action, on or off journey, and is the firehose: brilliant for a
-/// first ride, useless as a record, and 42% raw motion samples.
+/// Only the **debug** firehose lives here now — `String(describing:)` of every action, on or off
+/// journey: brilliant for a first ride, useless as a record, and deleted weekly. The journey
+/// timeline that once shared this type lives in the app database as typed rows.
 ///
 /// Crude on purpose. In a Redux app every observation already passes through the store as an action,
 /// so dumping actions captures GPS, road info, Indimate, Cardo, CHIGEE and tyre readings in one
@@ -82,20 +81,6 @@ final class ActionLogBox: @unchecked Sendable {
         ]
         guard
             let data = try? JSONSerialization.data(withJSONObject: line, options: [.sortedKeys]),
-            let text = String(data: data, encoding: .utf8)
-        else { return }
-        write(text, at: date)
-    }
-
-    /// A typed record.
-    ///
-    /// Encoded through `JourneyRecord`, which is the same type the file is *read* back with — so the
-    /// writer and the reader cannot drift apart, and a shape that fails to decode fails here rather
-    /// than in a year's time.
-    func append(_ payload: any JourneyPayloadType) {
-        let date = now()
-        guard
-            let data = try? JourneyLog.encoder.encode(JourneyRecord(time: date, payload: payload)),
             let text = String(data: data, encoding: .utf8)
         else { return }
         write(text, at: date)

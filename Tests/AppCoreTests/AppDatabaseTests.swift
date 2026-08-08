@@ -104,50 +104,125 @@ struct AppDatabaseJourneyTests {
             db.append(JourneyRecord(
                 time: Date(timeIntervalSince1970: 42), payload: JourneyStartPayload(via: "both")
             ))
-            db.saveDocument("fuel-log", json: "{}")
+            db.saveTripDistance(500)
         }
         let reopened = try #require(AppDatabase(url: url))
         #expect(reopened.journeyRecords().count == 1)
-        #expect(reopened.document("fuel-log") == "{}")
+        #expect(reopened.tripDistance() == 500)
     }
 }
 
-@Suite("App database documents")
-struct AppDatabaseDocumentTests {
-    @Test("A document round-trips whole")
-    func documentRoundTrip() throws {
-        let db = try makeDatabase()
-        db.saveDocument("fuel-log", json: #"{"litres": 9.5}"#)
-        #expect(db.document("fuel-log") == #"{"litres": 9.5}"#)
+@Suite("App database fuel store")
+struct AppDatabaseFuelTests {
+    private func fill(
+        seconds: Double, station: FuelStation? = nil, odometer: Double? = nil
+    ) -> RefuelRecord {
+        RefuelRecord(
+            id: UUID(), date: Date(timeIntervalSince1970: seconds),
+            litres: Litres(9.2), pricePerLitre: 1.49, grade: .e5, filledToBrim: true,
+            odometer: odometer.map { Kilometres($0) }, gpsKilometres: Kilometres(231.4),
+            latitude: Latitude(51.87), longitude: Longitude(-0.41), station: station
+        )
     }
 
-    @Test("Saving replaces, never appends")
+    @Test("The whole log round-trips through the normalised tables")
+    func roundTrip() throws {
+        let db = try makeDatabase()
+        let shell = FuelStation(id: 42, brand: "Shell", name: "Shell Luton")
+        let log = FuelLog(
+            refuels: [fill(seconds: 100, station: shell, odometer: 19_000),
+                      fill(seconds: 200, station: shell)],
+            reserves: [ReserveEvent(
+                id: UUID(), date: Date(timeIntervalSince1970: 150),
+                odometer: Kilometres(19_200), gpsKilometres: Kilometres(210),
+                latitude: Latitude(51.9), longitude: Longitude(-0.42)
+            )]
+        )
+        db.save(log)
+        #expect(db.fuelLog() == log)
+    }
+
+    /// Two fills at the same forecourt are one station row — the dimension the foreign key
+    /// points at, and the whole reason the station is not repeated per fill.
+    @Test("Saving replaces the store whole")
     func saveReplaces() throws {
         let db = try makeDatabase()
-        db.saveDocument("trip-distance", json: "100")
-        db.saveDocument("trip-distance", json: "250")
-        #expect(db.document("trip-distance") == "250")
+        db.save(FuelLog(refuels: [fill(seconds: 100)], reserves: []))
+        let second = FuelLog(refuels: [fill(seconds: 300)], reserves: [])
+        db.save(second)
+        #expect(db.fuelLog() == second)
     }
 
-    @Test("An absent document is nil, not empty")
-    func absentIsNil() throws {
+    @Test("An empty database is an empty log, not a missing one")
+    func emptyIsEmpty() throws {
         let db = try makeDatabase()
-        #expect(db.document("maintenance-log") == nil)
+        #expect(db.fuelLog() == .empty)
     }
+}
 
-    /// The reader wrappers keep the file-era error vocabulary: absent row → `.notFound` (the
-    /// normal first run), undecodable row → `.malformed` (a shape change, never silently empty).
-    @Test("The document reader distinguishes absent from malformed")
-    func readerErrors() async throws {
+@Suite("App database maintenance store")
+struct AppDatabaseMaintenanceTests {
+    @Test("Every due shape survives its columns")
+    func dueShapes() throws {
         let db = try makeDatabase()
-        var result = await makeDocumentReader(FuelLog.self, name: "fuel-log", database: db).firstValue()
-        #expect(result == .failure(.notFound))
-
-        db.saveDocument("fuel-log", json: "not json at all")
-        result = await makeDocumentReader(FuelLog.self, name: "fuel-log", database: db).firstValue()
-        guard case .failure(.malformed) = result else {
-            Issue.record("a shape change must be loud, got \(String(describing: result))")
-            return
+        let date = Date(timeIntervalSince1970: 86_400 * 100)
+        let dues: [MaintenanceDue] = [
+            .onDate(date),
+            .atOdometer(Kilometres(20_000)),
+            .either(date: date, odometer: Kilometres(20_000)),
+            .both(date: date, odometer: Kilometres(20_000))
+        ]
+        let log = MaintenanceLog(items: dues.map { due in
+            MaintenanceItem(
+                id: UUID(), title: "Chain oil", due: due,
+                warnDaysBefore: 5, warnKilometresBefore: 300,
+                recurrence: MaintenanceRecurrence(days: 30, kilometres: 1_000)
+            )
+        })
+        db.save(log)
+        #expect(Set(db.maintenanceLog().items.map(\.id)) == Set(log.items.map(\.id)))
+        for item in log.items {
+            #expect(db.maintenanceLog().items.first { $0.id == item.id } == item)
         }
+    }
+
+    @Test("Events ride under their item and come back date-ordered")
+    func eventsCascade() throws {
+        let db = try makeDatabase()
+        let item = MaintenanceItem(
+            id: UUID(), title: "Valve clearances",
+            due: .atOdometer(Kilometres(24_000)),
+            events: [
+                MaintenanceEvent(id: UUID(), date: Date(timeIntervalSince1970: 200),
+                                 odometer: Kilometres(16_000), notes: "second"),
+                MaintenanceEvent(id: UUID(), date: Date(timeIntervalSince1970: 100),
+                                 odometer: Kilometres(8_000),
+                                 latitude: Latitude(51.8), longitude: Longitude(-0.4),
+                                 notes: "first")
+            ]
+        )
+        db.save(MaintenanceLog(items: [item]))
+        let read = db.maintenanceLog().items.first
+        #expect(read?.events.map(\.notes) == ["first", "second"])
+
+        // Deleting the item takes its events with it: the cascade, exercised through a
+        // replacing save that no longer contains the item.
+        db.save(MaintenanceLog(items: []))
+        #expect(db.maintenanceLog().items.isEmpty)
+        let fresh = MaintenanceItem(id: UUID(), title: "Chain", due: .atOdometer(Kilometres(1)))
+        db.save(MaintenanceLog(items: [fresh]))
+        #expect(db.maintenanceLog().items.first?.events.isEmpty == true)
+    }
+}
+
+@Suite("App database trip counter")
+struct AppDatabaseTripTests {
+    @Test("The counter is one row: absent, then replaced")
+    func tripLifecycle() throws {
+        let db = try makeDatabase()
+        #expect(db.tripDistance() == nil)
+        db.saveTripDistance(1_234.5)
+        db.saveTripDistance(2_000)
+        #expect(db.tripDistance() == 2_000)
     }
 }

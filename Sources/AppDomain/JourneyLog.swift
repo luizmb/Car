@@ -32,7 +32,7 @@ public enum RecordType: String, Codable, Sendable, CaseIterable {
 ///
 /// `isEqual(to:)` exists because an existential cannot be `Equatable`; the default implementation
 /// casts, so conforming types get it for free by being `Equatable`.
-public protocol JourneyPayloadType: Codable, Sendable {
+public protocol JourneyPayloadType: Sendable {
     static var recordType: RecordType { get }
     func isEqual(to other: any JourneyPayloadType) -> Bool
 }
@@ -118,11 +118,6 @@ public struct CameraPayload: JourneyPayloadType, Equatable {
         self.type = type
         self.mph = mph
         self.atMPH = atMPH
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case type = "cameraType"   // `type` is taken by the discriminator on the same flat object
-        case mph, atMPH
     }
 }
 
@@ -269,122 +264,27 @@ public struct ReservePayload: JourneyPayloadType, Equatable {
     }
 }
 
-// MARK: - Kind lookup
-
-public extension RecordType {
-    /// Which shape this kind names. The one switch in the whole format, and the only thing that has
-    /// to change when a record kind is added.
-    var payloadType: any JourneyPayloadType.Type {
-        switch self {
-        case .journeyStart: JourneyStartPayload.self
-        case .journeyEnd: JourneyEndPayload.self
-        case .fix: FixPayload.self
-        case .road: RoadPayload.self
-        case .camera: CameraPayload.self
-        case .averageZone: AverageZonePayload.self
-        case .indicator: IndicatorPayload.self
-        case .tyre: TyrePayload.self
-        case .weather: WeatherPayload.self
-        case .barometer: BarometerPayload.self
-        case .activity: ActivityPayload.self
-        case .device: DevicePayload.self
-        case .destination: DestinationPayload.self
-        case .refuel: RefuelPayload.self
-        case .reserve: ReservePayload.self
-        }
-    }
-}
-
 // MARK: - The container
 
-/// One line of the journey log: a timestamp, a discriminator, and the payload — **flat**.
+/// One record of the journey timeline: a timestamp, a discriminator, and the payload.
 ///
-/// The container codes three things and delegates the rest: it writes `t` and `type`, then asks the
-/// payload to encode itself into the *same* encoder, which is what keeps the line flat rather than
-/// nesting under a `payload` key. Decoding is the mirror — read `type`, look up the shape, hand the
-/// decoder over.
-///
-/// So there is no growing switch here. `RecordType.payloadType` is the only place that enumerates
-/// the shapes, and every payload owns its own coding.
-///
-/// Reading a whole file back:
-///
-/// ```swift
-/// let json = "[" + lines.joined(separator: ",") + "]"
-/// let records = try JourneyLog.decoder.decode([JourneyRecord].self, from: Data(json.utf8))
-/// ```
-public struct JourneyRecord: Codable, Sendable {
+/// A plain value — serialisation lives at the World boundary, where each payload maps to its own
+/// table's typed columns. The discriminator comes from the payload's type, so the two cannot
+/// disagree.
+public struct JourneyRecord: Sendable {
     public let time: Date
     public let type: RecordType
     public let payload: any JourneyPayloadType
 
-    /// The discriminator comes from the payload's own type, so the two cannot disagree.
     public init<Payload: JourneyPayloadType>(time: Date, payload: Payload) {
         self.time = time
         type = Payload.recordType
         self.payload = payload
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case time = "t"
-        case type
-    }
-
-    public init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        time = try container.decode(Date.self, forKey: .time)
-        let kind = try container.decode(RecordType.self, forKey: .type)
-        type = kind
-        payload = try kind.payloadType.init(from: decoder)
-    }
-
-    public func encode(to encoder: any Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(time, forKey: .time)
-        try container.encode(type, forKey: .type)
-        try payload.encode(to: encoder)
     }
 }
 
 extension JourneyRecord: Equatable {
     public static func == (lhs: JourneyRecord, rhs: JourneyRecord) -> Bool {
         lhs.time == rhs.time && lhs.type == rhs.type && lhs.payload.isEqual(to: rhs.payload)
-    }
-}
-
-// MARK: - Coders
-
-/// ISO-8601 dates, matching the `t` field every line already carried, and stable across locales.
-public enum JourneyLog {
-    public static var encoder: JSONEncoder {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.sortedKeys]
-        return encoder
-    }
-
-    public static var decoder: JSONDecoder {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return decoder
-    }
-
-    /// The whole file, from its lines.
-    ///
-    /// Joining and wrapping is exactly as intended — and it is safe precisely *because* each line is
-    /// a complete object, so a file truncated by the app being killed loses only its last line. That
-    /// last line is dropped here rather than failing the whole parse, which matters because the app
-    /// being killed mid-write is the normal ending, not an exception.
-    public static func records(fromLines lines: [String]) -> [JourneyRecord] {
-        let usable = lines.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        guard !usable.isEmpty else { return [] }
-
-        if let all = try? decoder.decode(
-            [JourneyRecord].self,
-            from: Data(("[" + usable.joined(separator: ",") + "]").utf8)
-        ) { return all }
-
-        // One bad line — almost always a half-written last one — should not cost the ride.
-        return usable.compactMap { try? decoder.decode(JourneyRecord.self, from: Data($0.utf8)) }
     }
 }
