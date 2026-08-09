@@ -124,6 +124,7 @@ public enum FuelFeature {
         case setLitres(String)
         case setPrice(String)
         case setOdometer(String)
+        case suggestOdometer(Double)
         case setGrade(FuelGrade)
         case setFilledToBrim(Bool)
         case setPosition(Latitude, Longitude)
@@ -231,6 +232,13 @@ public enum FuelFeature {
                 return .reduce { $0.pricePerLitre = value }.produce(parsing: value, as: .price)
             case let .setOdometer(value):
                 return .reduce { $0.odometer = value }.produce(parsing: value, as: .odometer)
+            case let .suggestOdometer(km):
+                // The estimate — last fill's reading plus the GPS distance since — lands only in
+                // an empty field: a figure the rider typed, or the camera read, is a reading, and
+                // an estimate never overwrites a reading.
+                guard context.stateBefore?.odometer.isEmpty == true else { return .doNothing }
+                let text = String(Int(km.rounded()))
+                return .reduce { $0.odometer = text }.produce(parsing: text, as: .odometer)
             case let .setReserveOdometer(value):
                 return .reduce { $0.reserveOdometer = value }.produce(parsing: value, as: .reserveOdometer)
 

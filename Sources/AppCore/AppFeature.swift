@@ -472,6 +472,23 @@ public enum AppFeature {
             }
         }
 
+        // The odometer field opens on the phone's own estimate — the last fill's reading plus
+        // the distance since — the same seed the watch gets, and the same rule: it lands only in
+        // an empty field, so a typed or scanned reading is never overwritten.
+        <> Behavior<AppAction, AppState, World>.handle { action, context in
+            guard
+                AppAction.prism.fuel.preview(action)
+                    .flatMap(FuelFeature.Action.prism.appeared.preview) != nil,
+                let state = context.stateBefore,
+                let lastReading = state.fuelLog.refuels.last?.odometer
+            else { return .doNothing }
+            return .produce { _ in
+                Effect.just(.fuel(.suggestOdometer(
+                    lastReading.rawValue + state.trip.kilometresSinceFill.rawValue
+                )))
+            }
+        }
+
         <> AppScopes.trip.behavior(of: TripFeature.self)
             // A fill or a reserve switch starts a fresh measurement — from either screen or wrist.
             .on(.action(\.fuel.saved), dispatch: .action(review: const(.trip(.reset))))

@@ -17,10 +17,12 @@ public struct WatchRootView: View {
         )) {
             InstrumentsView(viewStore: viewStore)
                 .tag(WatchFeature.Tab.instruments)
-            WatchMapView(viewStore: viewStore)
-                .tag(WatchFeature.Tab.map)
+            SensorsView(viewStore: viewStore)
+                .tag(WatchFeature.Tab.sensors)
             RefuelView(viewStore: viewStore)
                 .tag(WatchFeature.Tab.refuel)
+            WatchMapView(viewStore: viewStore)
+                .tag(WatchFeature.Tab.map)
         }
         .pagedVertically()
         .onAppear { viewStore.dispatch(.appeared) }
@@ -192,59 +194,156 @@ struct WatchMapView: View {
     }
 }
 
+// MARK: - Sensors
+
+/// The bike's vitals, one glance: weather, both tyres, altitude, and which of the garage's
+/// devices are actually talking. Everything here is the phone's snapshot — the wrist measures
+/// nothing — and a missing figure shows as a dash, never a zero.
+struct SensorsView: View {
+    let viewStore: ViewStore<WatchFeature.State, WatchFeature.Action>
+
+    private var snapshot: WatchSnapshot? { viewStore.state.snapshot }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 7) {
+                reading(
+                    "cloud.sun.fill",
+                    snapshot?.weatherCelsius.map { celsius in
+                        let humidity = snapshot?.weatherHumidity.map { " · \(Int($0))%" } ?? ""
+                        return String(format: "%.0f°C", celsius) + humidity
+                    } ?? "—"
+                )
+                tyre("F", psi: snapshot?.frontTyrePSI, celsius: snapshot?.frontTyreCelsius,
+                     warn: snapshot?.frontTyreWarn == true)
+                tyre("R", psi: snapshot?.rearTyrePSI, celsius: snapshot?.rearTyreCelsius,
+                     warn: snapshot?.rearTyreWarn == true)
+                reading(
+                    "mountain.2.fill",
+                    snapshot?.altitudeMetres.map { String(format: "%.0f m", $0) } ?? "—"
+                )
+                device("Ignition", state: snapshot?.ignitionOn)
+                device("Indimate", state: snapshot?.indimateConnected)
+                device("Cardo", state: snapshot?.cardoConnected)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func reading(_ symbol: String, _ value: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: symbol)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .frame(width: 22)
+            Text(value)
+                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+        }
+    }
+
+    private func tyre(_ wheel: String, psi: Double?, celsius: Double?, warn: Bool) -> some View {
+        HStack(spacing: 6) {
+            Text(wheel)
+                .font(.footnote.weight(.black))
+                .foregroundStyle(.secondary)
+                .frame(width: 22)
+            Text(psi.map { String(format: "%.1f psi", $0) } ?? "—")
+                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(warn ? .orange : .primary)
+            if let celsius {
+                Text(String(format: "%.0f°", celsius))
+                    .font(.system(size: 13, design: .rounded))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func device(_ name: String, state: Bool?) -> some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(state == true ? Color.green : state == false ? Color.gray : Color.gray.opacity(0.3))
+                .frame(width: 8, height: 8)
+                .frame(width: 22)
+            Text(name)
+                .font(.system(size: 13))
+                .foregroundStyle(state == true ? .primary : .secondary)
+        }
+    }
+}
+
 // MARK: - Refuel
 
 /// The errand: log a fill without taking a glove off for the phone.
 ///
-/// Steps, not text: litres by quarter, price by pence. The watch sends the ask; the phone builds
-/// the real record with its clock, its GPS, its trip counter and its forecourt lookup — the watch
-/// only ever learns whether the ask was handed over.
+/// Digit windows, not text: tap a window and the crown turns it; tap it again — or leave the
+/// tab — and the crown goes back to paging. Every window spans at most 0–99, because two
+/// balanced spins beat one long one: price is pump-style ("18.49" is £1.849, three pound
+/// decimals from two windows) and the odometer is three windows seeded from the phone's own
+/// estimate, so the crown only ever nudges the tail. The watch sends the ask; the phone builds
+/// the real record with its clock, its GPS, its trip counter and its forecourt lookup.
 struct RefuelView: View {
     let viewStore: ViewStore<WatchFeature.State, WatchFeature.Action>
+    // Focus is hardware routing, not app state: the store owns *which* window is being edited
+    // (`refuelFocus`); this only tells watchOS the crown belongs to this view while any window
+    // is selected. SwiftUI offers no other handle on crown ownership.
+    @FocusState private var crownCaptured: Bool
 
-    private var draft: Binding<WatchFeature.RefuelDraft> {
-        Binding(
-            get: { viewStore.state.refuel },
-            set: { viewStore.dispatch(.refuelEdited($0)) }
-        )
-    }
-
-    private func stepperRow(
-        label: String, down: @escaping () -> Void, up: @escaping () -> Void
-    ) -> some View {
-        HStack {
-            Button(action: down) { Image(systemName: "minus") }
-                .buttonStyle(.bordered)
-            Text(label)
-                .font(.system(size: 15, weight: .bold, design: .rounded))
-                .monospacedDigit()
-                .frame(maxWidth: .infinity)
-            Button(action: up) { Image(systemName: "plus") }
-                .buttonStyle(.bordered)
-        }
-    }
+    private var draft: WatchFeature.RefuelDraft { viewStore.state.refuel }
+    private var focus: WatchFeature.RefuelSegment? { viewStore.state.refuelFocus }
 
     var body: some View {
+        #if os(watchOS)
+        picker
+            .focusable(true)
+            .focused($crownCaptured)
+            .digitalCrownRotation(
+                crown,
+                from: crownRange.lowerBound, through: crownRange.upperBound, by: 1,
+                sensitivity: .medium, isContinuous: false, isHapticFeedbackEnabled: true
+            )
+            .onChange(of: crownCaptured) { _, captured in
+                if !captured { viewStore.dispatch(.refuelFocused(nil)) }
+            }
+        #else
+        picker
+        #endif
+    }
+
+    private var picker: some View {
         ScrollView {
-            VStack(spacing: 6) {
-                stepperRow(
-                    label: String(format: "%.2f L", viewStore.state.refuel.litres),
-                    down: { adjust(litres: -0.25) },
-                    up: { adjust(litres: 0.25) }
-                )
-                stepperRow(
-                    label: String(format: "£%.2f/L", viewStore.state.refuel.pricePerLitre),
-                    down: { adjust(price: -0.01) },
-                    up: { adjust(price: 0.01) }
-                )
+            VStack(spacing: 5) {
+                row(unit: "L") {
+                    window(String(draft.litresInt), .litresInt)
+                    dot
+                    window(String(format: "%02d", draft.litresDec), .litresDec)
+                }
+                row(unit: "") {
+                    window(String(draft.priceInt), .priceInt)
+                    dot
+                    window(String(format: "%02d", draft.priceDec), .priceDec)
+                }
+                caption(String(format: "£%.3f per litre", draft.pricePerLitre))
+                row(unit: "km") {
+                    window(String(draft.odoKm), .odo)
+                }
+                caption(draft.odometerKm != nil ? "odometer" : "odometer not read")
 
                 HStack(spacing: 6) {
                     gradeButton("E5")
                     gradeButton("E10")
                 }
 
-                Toggle("To the brim", isOn: draft.filledToBrim)
-                    .font(.footnote)
+                Toggle("To the brim", isOn: Binding(
+                    get: { viewStore.state.refuel.filledToBrim },
+                    set: { brim in
+                        var next = viewStore.state.refuel
+                        next.filledToBrim = brim
+                        viewStore.dispatch(.refuelEdited(next))
+                    }
+                ))
+                .font(.footnote)
 
                 Button {
                     viewStore.dispatch(.submitRefuel)
@@ -270,11 +369,92 @@ struct RefuelView: View {
         }
     }
 
-    private func adjust(litres: Double = 0, price: Double = 0) {
-        var next = viewStore.state.refuel
-        next.litres = min(15, max(0.25, next.litres + litres))
-        next.pricePerLitre = min(3, max(0.5, next.pricePerLitre + price))
-        viewStore.dispatch(.refuelEdited(next))
+    // MARK: The windows
+
+    private func window(_ text: String, _ segment: WatchFeature.RefuelSegment) -> some View {
+        Text(text)
+            .font(.system(size: 17, weight: .bold, design: .rounded))
+            .monospacedDigit()
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(focus == segment ? Color.green.opacity(0.25) : Color.white.opacity(0.08))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7)
+                    .stroke(focus == segment ? Color.green : Color.clear, lineWidth: 1.5)
+            )
+            .onTapGesture {
+                if focus == segment {
+                    viewStore.dispatch(.refuelFocused(nil))
+                    crownCaptured = false
+                } else {
+                    viewStore.dispatch(.refuelFocused(segment))
+                    crownCaptured = true
+                }
+            }
+    }
+
+    private func row(unit: String, @ViewBuilder windows: () -> some View) -> some View {
+        HStack(spacing: 3) {
+            windows()
+            if !unit.isEmpty {
+                Text(unit).font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var dot: some View {
+        Text(".").font(.system(size: 17, weight: .bold, design: .rounded))
+    }
+
+    private func caption(_ text: String) -> some View {
+        Text(text).font(.system(size: 11)).foregroundStyle(.secondary)
+    }
+
+    // MARK: The crown
+
+    private var crownRange: ClosedRange<Double> {
+        switch focus {
+        case .litresInt: 0...15
+        case .priceInt: 5...30
+        case .odo: 0...999_999
+        default: 0...99
+        }
+    }
+
+    private var crown: Binding<Double> {
+        Binding(
+            get: {
+                let draft = viewStore.state.refuel
+                let value: Int = switch viewStore.state.refuelFocus {
+                case .litresInt: draft.litresInt
+                case .litresDec: draft.litresDec
+                case .priceInt: draft.priceInt
+                case .priceDec: draft.priceDec
+                case .odo: draft.odoKm
+                case nil: 0
+                }
+                return Double(value)
+            },
+            set: { raw in
+                guard let segment = viewStore.state.refuelFocus else { return }
+                var next = viewStore.state.refuel
+                let value = Int(raw.rounded())
+                switch segment {
+                case .litresInt: next.litresInt = max(0, min(15, value))
+                case .litresDec: next.litresDec = max(0, min(99, value))
+                case .priceInt: next.priceInt = max(5, min(30, value))
+                case .priceDec: next.priceDec = max(0, min(99, value))
+                case .odo:
+                    next.odoKm = max(0, min(999_999, value))
+                    // A touched odometer is the rider's reading; the phone's estimate stands down.
+                    next.odoSeeded = true
+                }
+                if next != viewStore.state.refuel { viewStore.dispatch(.refuelEdited(next)) }
+            }
+        )
     }
 
     private func gradeButton(_ grade: String) -> some View {
