@@ -409,6 +409,8 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = App/Info.plist;
 				INFOPLIST_KEY_NSCameraUsageDescription = "To read the pump display and odometer when logging a fill";
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "Used only to wake the watch app when a journey starts; nothing is read from Health.";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Used only to wake the watch app when a journey starts; nothing is saved to Health.";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "To alert about speed";
 				INFOPLIST_KEY_NSLocationAlwaysUsageDescription = "To alert about speed";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "To alert about speed";
@@ -443,6 +445,8 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = App/Info.plist;
 				INFOPLIST_KEY_NSCameraUsageDescription = "To read the pump display and odometer when logging a fill";
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "Used only to wake the watch app when a journey starts; nothing is read from Health.";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Used only to wake the watch app when a journey starts; nothing is saved to Health.";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "To alert about speed";
 				INFOPLIST_KEY_NSLocationAlwaysUsageDescription = "To alert about speed";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "To alert about speed";
@@ -470,10 +474,14 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = WatchApp/SpeedJarvisWatch.entitlements;
 				CURRENT_PROJECT_VERSION = 39;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = WatchApp/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = SpeedJarvis;
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "A ride runs as a workout session so the watch stays live on your wrist; nothing is read from Health.";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "A ride runs as a workout session so the watch stays live on your wrist; nothing is saved to Health.";
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = "lu.ios.speed-jarvis";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -498,10 +506,14 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = WatchApp/SpeedJarvisWatch.entitlements;
 				CURRENT_PROJECT_VERSION = 39;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = WatchApp/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = SpeedJarvis;
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "A ride runs as a workout session so the watch stays live on your wrist; nothing is read from Health.";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "A ride runs as a workout session so the watch stays live on your wrist; nothing is saved to Health.";
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = "lu.ios.speed-jarvis";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

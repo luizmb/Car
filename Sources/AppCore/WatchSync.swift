@@ -27,6 +27,7 @@ func watchSnapshot(of state: AppState) -> WatchSnapshot {
             journeyActive: !replay.finished,
             fuelLogEmpty: true
         )
+        snapshot.replaying = true
     } else {
         snapshot = watchSnapshot(
             monitor: state.speedMonitor,

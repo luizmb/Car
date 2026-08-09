@@ -119,17 +119,25 @@ public enum WatchFeature {
         /// immediately when the phone is live, queued when it is not.
         public let sendRefuel: @Sendable (WatchRefuel) -> Publisher<Bool, Never>
         public let playHaptic: @Sendable (WatchHaptic) -> Publisher<Void, Never>
+        /// The ride's runtime shell: a workout session held open for the journey — screen-on
+        /// priority and background haptics — and discarded at the end, never saved to Health.
+        public let beginRideSession: @Sendable () -> Publisher<Void, Never>
+        public let endRideSession: @Sendable () -> Publisher<Void, Never>
 
         public init(
             snapshots: @escaping @Sendable () -> Publisher<WatchSnapshot, Never>,
             reachability: @escaping @Sendable () -> Publisher<Bool, Never>,
             sendRefuel: @escaping @Sendable (WatchRefuel) -> Publisher<Bool, Never>,
-            playHaptic: @escaping @Sendable (WatchHaptic) -> Publisher<Void, Never>
+            playHaptic: @escaping @Sendable (WatchHaptic) -> Publisher<Void, Never>,
+            beginRideSession: @escaping @Sendable () -> Publisher<Void, Never>,
+            endRideSession: @escaping @Sendable () -> Publisher<Void, Never>
         ) {
             self.snapshots = snapshots
             self.reachability = reachability
             self.sendRefuel = sendRefuel
             self.playHaptic = playHaptic
+            self.beginRideSession = beginRideSession
+            self.endRideSession = endRideSession
         }
     }
 
@@ -153,6 +161,11 @@ public enum WatchFeature {
                 let owed = watchHaptics(
                     previous: previous, current: snapshot, consecutiveOver: over
                 )
+                // The ride session rides the journey's edges. A replay is a tape, not a ride —
+                // it drives the display but never opens a session. `begin` is idempotent at the
+                // box, so a session already opened by the phone's wake-up call is left alone.
+                let wasRiding = (previous?.journeyActive ?? false) && previous?.replaying != true
+                let riding = snapshot.journeyActive && !snapshot.replaying
                 return .reduce {
                     $0.snapshot = snapshot
                     $0.consecutiveOver = snapshot.overLimit ? over + 1 : 0
@@ -164,8 +177,14 @@ public enum WatchFeature {
                     }
                 }
                 .produce { ctx in
-                    owed.map { ctx.environment.playHaptic($0) |> Effect<Action>.fireAndForget }
+                    let haptics = owed
+                        .map { ctx.environment.playHaptic($0) |> Effect<Action>.fireAndForget }
                         .reduce(.empty, <>)
+                    let session: Effect<Action> =
+                        riding && !wasRiding ? ctx.environment.beginRideSession() |> Effect.fireAndForget
+                        : !riding && wasRiding ? ctx.environment.endRideSession() |> Effect.fireAndForget
+                        : .empty
+                    return haptics <> session
                 }
 
             case let .reachabilityChanged(reachable):

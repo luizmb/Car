@@ -16,9 +16,20 @@ private final class HapticSpy: @unchecked Sendable {
     var all: [WatchHaptic] { lock.withLock { played } }
 }
 
+/// Counts session opens and closes — the thing that must track journey edges exactly.
+private final class SessionSpy: @unchecked Sendable {
+    private let lock = NSLock()
+    private var opened = 0
+    private var closed = 0
+    func open() { lock.withLock { opened += 1 } }
+    func close() { lock.withLock { closed += 1 } }
+    var counts: (opened: Int, closed: Int) { lock.withLock { (opened, closed) } }
+}
+
 @MainActor
 private func makeStore(
     haptics: HapticSpy = HapticSpy(),
+    sessions: SessionSpy = SessionSpy(),
     sendResult: Bool = true
 ) -> any StoreType<WatchFeature.Action, WatchFeature.State> {
     WatchMain.store(world: WatchFeature.Environment(
@@ -27,6 +38,14 @@ private func makeStore(
         sendRefuel: { _ in .just(sendResult) },
         playHaptic: { haptic in
             haptics.play(haptic)
+            return .just(())
+        },
+        beginRideSession: {
+            sessions.open()
+            return .just(())
+        },
+        endRideSession: {
+            sessions.close()
             return .just(())
         }
     ))
@@ -159,5 +178,42 @@ struct RefuelDraftTests {
         #expect(store.state.refuelFocus == .priceDec)
         store.dispatch(.tabChanged(.map), source: .init(file: #file, function: #function, line: #line))
         #expect(store.state.refuelFocus == nil)
+    }
+}
+
+
+// MARK: - The ride session
+
+@Suite("The ride's runtime shell")
+@MainActor
+struct RideSessionTests {
+    @Test("The session opens with the journey and closes with it, once each")
+    func followsJourneyEdges() async {
+        let sessions = SessionSpy()
+        let store = makeStore(sessions: sessions)
+        let src = SwiftRex.ActionSource(file: #file, function: #function, line: #line)
+        store.dispatch(.snapshotArrived(WatchSnapshot(journeyActive: true)), source: src)
+        for _ in 0..<5 { await Task.yield() }
+        store.dispatch(.snapshotArrived(WatchSnapshot(mph: 30, journeyActive: true)), source: src)
+        for _ in 0..<5 { await Task.yield() }
+        store.dispatch(.snapshotArrived(WatchSnapshot(journeyActive: false)), source: src)
+        for _ in 0..<5 { await Task.yield() }
+        #expect(sessions.counts == (1, 1))
+    }
+
+    /// A replay drives the display exactly like a ride — that is its whole point — but watching
+    /// a tape from the sofa must not open a workout session.
+    @Test("A tape never opens a session")
+    func replayStaysCold() async {
+        let sessions = SessionSpy()
+        let store = makeStore(sessions: sessions)
+        let src = SwiftRex.ActionSource(file: #file, function: #function, line: #line)
+        var tape = WatchSnapshot(journeyActive: true)
+        tape.replaying = true
+        store.dispatch(.snapshotArrived(tape), source: src)
+        for _ in 0..<5 { await Task.yield() }
+        store.dispatch(.snapshotArrived(WatchSnapshot(journeyActive: false)), source: src)
+        for _ in 0..<5 { await Task.yield() }
+        #expect(sessions.counts == (0, 0))
     }
 }

@@ -56,6 +56,9 @@ public struct WatchSnapshot: Sendable, Equatable {
     public var ignitionOn: Bool?
     public var indimateConnected: Bool
     public var cardoConnected: Bool
+    /// A tape, not a ride: `journeyActive` drives the display, this keeps the watch from
+    /// opening a ride session for a replay being watched from a sofa.
+    public var replaying: Bool
 
     public init(
         mph: Double? = nil, limitMPH: Double? = nil, limitText: String? = nil,
@@ -69,7 +72,8 @@ public struct WatchSnapshot: Sendable, Equatable {
         frontTyrePSI: Double? = nil, frontTyreCelsius: Double? = nil, frontTyreWarn: Bool = false,
         rearTyrePSI: Double? = nil, rearTyreCelsius: Double? = nil, rearTyreWarn: Bool = false,
         altitudeMetres: Double? = nil, ignitionOn: Bool? = nil,
-        indimateConnected: Bool = false, cardoConnected: Bool = false
+        indimateConnected: Bool = false, cardoConnected: Bool = false,
+        replaying: Bool = false
     ) {
         self.mph = mph
         self.limitMPH = limitMPH
@@ -100,6 +104,7 @@ public struct WatchSnapshot: Sendable, Equatable {
         self.ignitionOn = ignitionOn
         self.indimateConnected = indimateConnected
         self.cardoConnected = cardoConnected
+        self.replaying = replaying
     }
 }
 
@@ -199,7 +204,8 @@ public enum WatchWire {
             "frontTyreWarn": snapshot.frontTyreWarn,
             "rearTyreWarn": snapshot.rearTyreWarn,
             "indimateConnected": snapshot.indimateConnected,
-            "cardoConnected": snapshot.cardoConnected
+            "cardoConnected": snapshot.cardoConnected,
+            "replaying": snapshot.replaying
         ]
         snapshot.mph.map { wire["mph"] = $0 }
         snapshot.limitMPH.map { wire["limitMPH"] = $0 }
@@ -252,7 +258,8 @@ public enum WatchWire {
             altitudeMetres: wire["altitudeMetres"] as? Double,
             ignitionOn: wire["ignitionOn"] as? Bool,
             indimateConnected: wire["indimateConnected"] as? Bool ?? false,
-            cardoConnected: wire["cardoConnected"] as? Bool ?? false
+            cardoConnected: wire["cardoConnected"] as? Bool ?? false,
+            replaying: wire["replaying"] as? Bool ?? false
         )
     }
 
