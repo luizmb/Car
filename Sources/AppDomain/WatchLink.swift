@@ -38,7 +38,24 @@ public struct WatchSnapshot: Sendable, Equatable {
     public var nextTurnMetres: Double?
     // Fuel
     public var sinceFillKm: Double?
+    /// What the bike's odometer should read about now — the last fill's reading plus the GPS
+    /// distance since. Seeds the watch's refuel form so the crown only ever nudges.
+    public var suggestedOdometerKm: Double?
     public var journeyActive: Bool
+    // Sensors — the live bike, whatever the instruments page is showing
+    public var weatherCelsius: Double?
+    public var weatherHumidity: Double?
+    public var frontTyrePSI: Double?
+    public var frontTyreCelsius: Double?
+    public var frontTyreWarn: Bool
+    public var rearTyrePSI: Double?
+    public var rearTyreCelsius: Double?
+    public var rearTyreWarn: Bool
+    public var altitudeMetres: Double?
+    /// `nil` is honest ignorance — the head unit has not said either way.
+    public var ignitionOn: Bool?
+    public var indimateConnected: Bool
+    public var cardoConnected: Bool
 
     public init(
         mph: Double? = nil, limitMPH: Double? = nil, limitText: String? = nil,
@@ -46,7 +63,13 @@ public struct WatchSnapshot: Sendable, Equatable {
         roadLabel: String? = nil, indicator: String? = nil,
         latitude: Double? = nil, longitude: Double? = nil, headingDegrees: Double = 0,
         routeLatitudes: [Double] = [], routeLongitudes: [Double] = [],
-        nextTurnMetres: Double? = nil, sinceFillKm: Double? = nil, journeyActive: Bool = false
+        nextTurnMetres: Double? = nil, sinceFillKm: Double? = nil,
+        suggestedOdometerKm: Double? = nil, journeyActive: Bool = false,
+        weatherCelsius: Double? = nil, weatherHumidity: Double? = nil,
+        frontTyrePSI: Double? = nil, frontTyreCelsius: Double? = nil, frontTyreWarn: Bool = false,
+        rearTyrePSI: Double? = nil, rearTyreCelsius: Double? = nil, rearTyreWarn: Bool = false,
+        altitudeMetres: Double? = nil, ignitionOn: Bool? = nil,
+        indimateConnected: Bool = false, cardoConnected: Bool = false
     ) {
         self.mph = mph
         self.limitMPH = limitMPH
@@ -63,7 +86,20 @@ public struct WatchSnapshot: Sendable, Equatable {
         self.routeLongitudes = routeLongitudes
         self.nextTurnMetres = nextTurnMetres
         self.sinceFillKm = sinceFillKm
+        self.suggestedOdometerKm = suggestedOdometerKm
         self.journeyActive = journeyActive
+        self.weatherCelsius = weatherCelsius
+        self.weatherHumidity = weatherHumidity
+        self.frontTyrePSI = frontTyrePSI
+        self.frontTyreCelsius = frontTyreCelsius
+        self.frontTyreWarn = frontTyreWarn
+        self.rearTyrePSI = rearTyrePSI
+        self.rearTyreCelsius = rearTyreCelsius
+        self.rearTyreWarn = rearTyreWarn
+        self.altitudeMetres = altitudeMetres
+        self.ignitionOn = ignitionOn
+        self.indimateConnected = indimateConnected
+        self.cardoConnected = cardoConnected
     }
 }
 
@@ -80,12 +116,18 @@ public struct WatchRefuel: Sendable, Equatable {
     /// `"E5"` / `"E10"` — `FuelGrade`'s raw value, kept a string on the wire.
     public var grade: String
     public var filledToBrim: Bool
+    /// The bike's own odometer as read at the pump, when the rider confirmed one.
+    public var odometerKm: Double?
 
-    public init(litres: Double, pricePerLitre: Double, grade: String, filledToBrim: Bool) {
+    public init(
+        litres: Double, pricePerLitre: Double, grade: String, filledToBrim: Bool,
+        odometerKm: Double? = nil
+    ) {
         self.litres = litres
         self.pricePerLitre = pricePerLitre
         self.grade = grade
         self.filledToBrim = filledToBrim
+        self.odometerKm = odometerKm
     }
 }
 
@@ -153,7 +195,11 @@ public enum WatchWire {
             "overLimit": snapshot.overLimit,
             "journeyActive": snapshot.journeyActive,
             "routeLatitudes": snapshot.routeLatitudes,
-            "routeLongitudes": snapshot.routeLongitudes
+            "routeLongitudes": snapshot.routeLongitudes,
+            "frontTyreWarn": snapshot.frontTyreWarn,
+            "rearTyreWarn": snapshot.rearTyreWarn,
+            "indimateConnected": snapshot.indimateConnected,
+            "cardoConnected": snapshot.cardoConnected
         ]
         snapshot.mph.map { wire["mph"] = $0 }
         snapshot.limitMPH.map { wire["limitMPH"] = $0 }
@@ -164,6 +210,15 @@ public enum WatchWire {
         snapshot.longitude.map { wire["longitude"] = $0 }
         snapshot.nextTurnMetres.map { wire["nextTurnMetres"] = $0 }
         snapshot.sinceFillKm.map { wire["sinceFillKm"] = $0 }
+        snapshot.suggestedOdometerKm.map { wire["suggestedOdometerKm"] = $0 }
+        snapshot.weatherCelsius.map { wire["weatherCelsius"] = $0 }
+        snapshot.weatherHumidity.map { wire["weatherHumidity"] = $0 }
+        snapshot.frontTyrePSI.map { wire["frontTyrePSI"] = $0 }
+        snapshot.frontTyreCelsius.map { wire["frontTyreCelsius"] = $0 }
+        snapshot.rearTyrePSI.map { wire["rearTyrePSI"] = $0 }
+        snapshot.rearTyreCelsius.map { wire["rearTyreCelsius"] = $0 }
+        snapshot.altitudeMetres.map { wire["altitudeMetres"] = $0 }
+        snapshot.ignitionOn.map { wire["ignitionOn"] = $0 }
         return wire
     }
 
@@ -184,18 +239,33 @@ public enum WatchWire {
             routeLongitudes: wire["routeLongitudes"] as? [Double] ?? [],
             nextTurnMetres: wire["nextTurnMetres"] as? Double,
             sinceFillKm: wire["sinceFillKm"] as? Double,
-            journeyActive: wire["journeyActive"] as? Bool ?? false
+            suggestedOdometerKm: wire["suggestedOdometerKm"] as? Double,
+            journeyActive: wire["journeyActive"] as? Bool ?? false,
+            weatherCelsius: wire["weatherCelsius"] as? Double,
+            weatherHumidity: wire["weatherHumidity"] as? Double,
+            frontTyrePSI: wire["frontTyrePSI"] as? Double,
+            frontTyreCelsius: wire["frontTyreCelsius"] as? Double,
+            frontTyreWarn: wire["frontTyreWarn"] as? Bool ?? false,
+            rearTyrePSI: wire["rearTyrePSI"] as? Double,
+            rearTyreCelsius: wire["rearTyreCelsius"] as? Double,
+            rearTyreWarn: wire["rearTyreWarn"] as? Bool ?? false,
+            altitudeMetres: wire["altitudeMetres"] as? Double,
+            ignitionOn: wire["ignitionOn"] as? Bool,
+            indimateConnected: wire["indimateConnected"] as? Bool ?? false,
+            cardoConnected: wire["cardoConnected"] as? Bool ?? false
         )
     }
 
     public static func dictionary(from refuel: WatchRefuel) -> [String: any Sendable] {
-        [
+        var wire: [String: any Sendable] = [
             "command": "refuel",
             "litres": refuel.litres,
             "pricePerLitre": refuel.pricePerLitre,
             "grade": refuel.grade,
             "filledToBrim": refuel.filledToBrim
         ]
+        refuel.odometerKm.map { wire["odometerKm"] = $0 }
+        return wire
     }
 
     /// `nil` when the message is not a refuel — an unknown command from a newer watch is ignored,
@@ -208,7 +278,10 @@ public enum WatchWire {
             let grade = wire["grade"] as? String,
             let brim = wire["filledToBrim"] as? Bool
         else { return nil }
-        return WatchRefuel(litres: litres, pricePerLitre: price, grade: grade, filledToBrim: brim)
+        return WatchRefuel(
+            litres: litres, pricePerLitre: price, grade: grade, filledToBrim: brim,
+            odometerKm: wire["odometerKm"] as? Double
+        )
     }
 }
 

@@ -17,28 +17,55 @@ func watchSnapshot(of state: AppState) -> WatchSnapshot {
     // While a tape is running, the wrist mirrors the tape: the replay hosts a second monitor,
     // and its display *is* the ride being watched — speed, limit, road, position, blinker. The
     // moment the replay screen goes, the wrist snaps back to the live world.
+    var snapshot: WatchSnapshot
     if let replay = state.path.compactMap(StackEntry.prism.replay.preview).last {
-        return watchSnapshot(
+        snapshot = watchSnapshot(
             monitor: replay.monitor,
             indicator: replay.indicator,
             sinceFillKm: nil,
+            suggestedOdometerKm: nil,
             journeyActive: !replay.finished,
             fuelLogEmpty: true
         )
+    } else {
+        snapshot = watchSnapshot(
+            monitor: state.speedMonitor,
+            indicator: state.indicator.side,
+            sinceFillKm: state.trip.kilometresSinceFill.rawValue,
+            // What the clock should read about now: the last fill's reading plus the GPS distance
+            // since. Only when the *last* fill carries one — adding this stretch to an older
+            // fill's reading would skip the miles between them.
+            suggestedOdometerKm: state.fuelLog.refuels.last?.odometer.map {
+                $0.rawValue + state.trip.kilometresSinceFill.rawValue
+            },
+            journeyActive: JourneyPhase.prism.active.preview(state.journey) != nil,
+            fuelLogEmpty: state.fuelLog.refuels.isEmpty
+        )
     }
-    return watchSnapshot(
-        monitor: state.speedMonitor,
-        indicator: state.indicator.side,
-        sinceFillKm: state.trip.kilometresSinceFill.rawValue,
-        journeyActive: JourneyPhase.prism.active.preview(state.journey) != nil,
-        fuelLogEmpty: state.fuelLog.refuels.isEmpty
-    )
+    // The sensors page reads the live bike either way — tyres, weather and the garage's
+    // connections are the world of now, not of the tape.
+    snapshot.weatherCelsius = state.weather.latest?.temperature.rawValue
+    snapshot.weatherHumidity = state.weather.latest?.humidity
+    let front = state.tyres.readings[.front]
+    let rear = state.tyres.readings[.rear]
+    snapshot.frontTyrePSI = front?.telemetry.psi.rawValue
+    snapshot.frontTyreCelsius = front?.telemetry.temperature.rawValue
+    snapshot.frontTyreWarn = front.map { $0.status != .ok } ?? false
+    snapshot.rearTyrePSI = rear?.telemetry.psi.rawValue
+    snapshot.rearTyreCelsius = rear?.telemetry.temperature.rawValue
+    snapshot.rearTyreWarn = rear.map { $0.status != .ok } ?? false
+    snapshot.altitudeMetres = state.speedMonitor.lastLocation?.altitude.rawValue
+    snapshot.ignitionOn = state.chigee.isIgnitionOn
+    snapshot.indimateConnected = state.indicator.isConnected
+    snapshot.cardoConnected = state.cardo.isConnected
+    return snapshot
 }
 
 private func watchSnapshot(
     monitor: SpeedMonitorFeature.State,
     indicator: Side?,
     sinceFillKm: Double?,
+    suggestedOdometerKm: Double?,
     journeyActive: Bool,
     fuelLogEmpty: Bool
 ) -> WatchSnapshot {
@@ -79,6 +106,7 @@ private func watchSnapshot(
         routeLongitudes: route.longitudes,
         nextTurnMetres: state.speedMonitor.nextTurn?.rawValue,
         sinceFillKm: fuelLogEmpty ? nil : sinceFillKm,
+        suggestedOdometerKm: suggestedOdometerKm,
         journeyActive: journeyActive
     )
 }
@@ -169,8 +197,8 @@ func watchSyncBehavior() -> Behavior<AppAction, AppState, World> {
                 // drinks rather than dropping the fill.
                 grade: FuelGrade(rawValue: refuel.grade) ?? .e5,
                 filledToBrim: refuel.filledToBrim,
-                // The first fill ever has nothing to measure from — same rule as the fuel screen.
-                odometer: nil,
+                // The wrist reads the clock at the pump now, seeded from this phone's own estimate.
+                odometer: refuel.odometerKm.map { Kilometres($0) },
                 gpsKilometres: log.refuels.isEmpty ? nil : sinceFill,
                 latitude: location?.latitude,
                 longitude: location?.longitude,
@@ -181,7 +209,7 @@ func watchSyncBehavior() -> Behavior<AppAction, AppState, World> {
             let keep = ctx.environment.logJourney(RefuelPayload(
                 litres: record.litres.rawValue,
                 price: record.pricePerLitre,
-                odometer: nil,
+                odometer: record.odometer?.rawValue,
                 brim: record.filledToBrim,
                 station: record.station?.label,
                 stationID: record.station?.id
