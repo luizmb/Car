@@ -409,7 +409,7 @@ public enum AppFeature {
                     default: nil
                     }
                     let announce: Effect<AppAction> = spoken
-                        .map { $0 |> (ctx.environment.speakQueued >>> Effect.fireAndForget) } ?? .empty
+                        .map { $0 |> (ctx.environment.speakAccessory >>> Effect.fireAndForget) } ?? .empty
                     // The boundary goes to both files: a greppable marker in the dump, and a typed
                     // record in the journey log — which is the only writer allowed to bypass the
                     // "journey must be active" gate, since it is the thing that opens and closes it.
@@ -552,7 +552,7 @@ public enum AppFeature {
                     )) |> Effect<AppAction>.fireAndForget
                 } ?? .empty
                 let spoken = destination.map { name in
-                    ctx.environment.speakQueued(routeChosenAnnouncement(
+                    ctx.environment.speakDirections(routeChosenAnnouncement(
                         route,
                         to: name,
                         formatDistance: ctx.environment.formatDistance,
@@ -612,7 +612,7 @@ public enum AppFeature {
                     formatDistance: ctx.environment.formatDistance
                 )
                 let spoken = advanced.announcement.map {
-                    ctx.environment.speakQueued($0) |> Effect<AppAction>.fireAndForget
+                    ctx.environment.speakDirections($0) |> Effect<AppAction>.fireAndForget
                 } ?? .empty
                 // Lane advice, from the extract's paint rather than from the route: the case it
                 // exists for — an exit-only lane the route rides *past* — has no manoeuvre, so no
@@ -627,7 +627,7 @@ public enum AppFeature {
                         context: paint, formatDistance: ctx.environment.formatDistance
                     )
                 {
-                    lane = (ctx.environment.speakQueued(advised) |> Effect<AppAction>.fireAndForget)
+                    lane = (ctx.environment.speakDirections(advised) |> Effect<AppAction>.fireAndForget)
                         <> Effect.just(.laneAdvised(paint.splitWayID))
                 } else {
                     lane = .empty
@@ -1003,7 +1003,7 @@ public enum AppScopes: Rig {
         .environment(fanout(
             keypaths: \.requestAuthorization, \.authorizationUpdates, \.locationUpdates, \.subscribeToRoadSpeed,
                       \.subscribeToCameras, \.camerasOnRoad, \.refreshRoadNow,
-                      \.speak, \.speakQueued, \.speakQueued, \.announceOverLimit, \.announceUnderLimit,
+                      \.speakSpeed, \.speakSpeed, \.speakSpeed, \.announceOverLimit, \.announceUnderLimit,
                       \.thresholds, \.formatSpeed,
                       \.formatSpeedSpeech, \.formatAltitude, \.formatBearing, \.formatCoordinate,
             into: SpeedMonitorFeature.Environment.init
@@ -1013,7 +1013,7 @@ public enum AppScopes: Rig {
         .action(\.indicator).state(\.indicator)
         .environment(fanout(
             \.bluetoothAuthorization, \.indimateEvents,
-            \.playIndicatorLoop, \.stopIndicatorLoop, \.speakQueued
+            \.playIndicatorLoop, \.stopIndicatorLoop, \.speakAccessory
         ) >>> IndicatorFeature.Environment.init)
 
     public static let cardo = ScopeOf<AppScopes>
@@ -1022,12 +1022,12 @@ public enum AppScopes: Rig {
 
     public static let chigee = ScopeOf<AppScopes>
         .action(\.chigee).state(\.chigee)
-        .environment(fanout(keypaths: \.chigeeEvents, \.speakQueued, into: ChigeeFeature.Environment.init))
+        .environment(fanout(keypaths: \.chigeeEvents, \.speakAccessory, into: ChigeeFeature.Environment.init))
 
     public static let tyres = ScopeOf<AppScopes>
         .action(\.tyres).state(\.tyres)
         .environment(fanout(
-            keypaths: \.tyreReadings, \.speakQueued, \.formatPressure, \.formatTemperature,
+            keypaths: \.tyreReadings, \.speakAccessory, \.formatPressure, \.formatTemperature,
             into: TyreFeature.Environment.init
         ))
 
@@ -1057,7 +1057,7 @@ public enum AppScopes: Rig {
 
     /// The route planner — affine for the same reason the fuel screen is, and narrowed the same way.
     ///
-    /// `speakQueued` rather than `speak`: nothing the planner says is time-critical, and cutting off
+    /// The directions voice: everything the planner says belongs to the route family, and cutting off
     /// a speed announcement to report a route would be the wrong trade in a helmet.
     /// The review screen — affine like the other pushed screens, and read-only against the World:
     /// it can load the journey log and write a share file, and nothing else.
@@ -1099,9 +1099,9 @@ public enum AppScopes: Rig {
                 subscribeToCameras: { .empty() },
                 camerasOnRoad: { _, _, _ in .just(nil) },
                 refreshRoadNow: { _, _ in .just(()) },
-                speak: world.speak,
-                announceRoad: world.speakQueued,
-                announceCamera: world.speakQueued,
+                speak: world.speakSpeed,
+                announceRoad: world.speakSpeed,
+                announceCamera: world.speakSpeed,
                 announceOverLimit: world.announceOverLimit,
                 announceUnderLimit: world.announceUnderLimit,
                 thresholds: world.thresholds,
@@ -1127,7 +1127,7 @@ public enum AppScopes: Rig {
         .action(\.navigate)
         .state(preview: topmost(StackEntry.prism.navigate), set: replacing(StackEntry.prism.navigate))
         .environment(fanout(
-            \.completeAddress, \.loadRecentDestinations, \.resolveAddress, \.routes, \.speakQueued,
+            \.completeAddress, \.loadRecentDestinations, \.resolveAddress, \.routes, \.speakDirections,
             \.formatDistance, \.formatDuration, \.formatTime, \.now
         ) >>> NavigationFeature.Environment.init)
 }

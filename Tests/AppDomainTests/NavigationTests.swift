@@ -1310,6 +1310,30 @@ struct ClockFaceTests {
         ]
         #expect(clockSuffix(straight, at: 0) == nil)
     }
+
+    /// The rider's finding after real junctions: the hour helps when the roads are in sight, so
+    /// the early call drops it — except at roundabouts, where exit-counting fails a helmet at
+    /// any distance.
+    @Test("The early call keeps the clock only for roundabouts")
+    func earlyCallClock() {
+        // An ordinary right turn with readable geometry: 3 o'clock exists, but the early call
+        // does not say it.
+        let turn = [
+            step("Turn right onto A505", path: [(52.000, -0.46), (52.002, -0.46)]),
+            step("Continue", path: [(52.002, -0.46), (52.002, -0.457)])
+        ]
+        #expect(clockSuffix(turn, at: 0) == "3 o'clock")
+        #expect(chainedInstruction(turn, from: 0, clock: .roundaboutsOnly) == "Turn right onto A505")
+
+        // The same geometry at a roundabout keeps its hour even early.
+        let roundabout = [
+            step("At the roundabout, take the second exit onto A505",
+                 path: [(52.000, -0.46), (52.002, -0.46)]),
+            step("Continue", path: [(52.002, -0.46), (52.002, -0.457)])
+        ]
+        #expect(chainedInstruction(roundabout, from: 0, clock: .roundaboutsOnly)
+            .hasPrefix("At the roundabout, take the second exit onto A505, 3 o'clock"))
+    }
 }
 
 // MARK: - Forward bias

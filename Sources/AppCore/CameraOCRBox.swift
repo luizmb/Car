@@ -59,18 +59,39 @@ final class CameraOCRBox: NSObject, @unchecked Sendable {
     /// wrapper with the same shape.
     @MainActor
     func previewLayer() -> AVCaptureVideoPreviewLayer? {
-        let current = lock.withLock { session }
-        guard let current else { return nil }
-        let layer = AVCaptureVideoPreviewLayer(session: current)
+        let layer = AVCaptureVideoPreviewLayer(session: ensureSession())
         layer.videoGravity = .resizeAspectFill
         return layer
     }
 
+    /// The session, the moment anyone needs it. Creating the object is synchronous and cheap;
+    /// the expensive parts — permission, configuration, `startRunning` — stay on their queues.
+    ///
+    /// This is the first-open black screen, fixed: the viewfinder used to be handed `nil`
+    /// whenever it asked before the async setup had finished, and a layer with no session stays
+    /// black however long you stare at it. A layer attached to a not-yet-running session shows
+    /// frames the instant they exist instead.
+    private func ensureSession() -> AVCaptureSession {
+        lock.withLock {
+            if let session { return session }
+            let fresh = AVCaptureSession()
+            session = fresh
+            return fresh
+        }
+    }
+
     private func start() {
+        let session = ensureSession()
         AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
             guard granted, let self else { return }
             self.analysisQueue.async {
-                let session = AVCaptureSession()
+                // A session configured by a previous scan just starts again — keeping it is what
+                // makes the second open instant, and configuring twice would double the inputs.
+                guard session.inputs.isEmpty else {
+                    session.startRunning()
+                    return
+                }
+                session.beginConfiguration()
                 session.sessionPreset = .hd1280x720
                 guard
                     let camera = AVCaptureDevice.default(
@@ -78,27 +99,37 @@ final class CameraOCRBox: NSObject, @unchecked Sendable {
                     ),
                     let input = try? AVCaptureDeviceInput(device: camera),
                     session.canAddInput(input)
-                else { return }
+                else {
+                    session.commitConfiguration()
+                    return
+                }
                 session.addInput(input)
+                // Pump displays and odometers live in the forecourt's shade; the torch on auto
+                // costs nothing in daylight and is the difference at dusk.
+                if camera.hasTorch, (try? camera.lockForConfiguration()) != nil {
+                    camera.torchMode = .auto
+                    camera.unlockForConfiguration()
+                }
 
                 let output = AVCaptureVideoDataOutput()
                 output.alwaysDiscardsLateVideoFrames = true
                 output.setSampleBufferDelegate(self, queue: self.analysisQueue)
-                guard session.canAddOutput(output) else { return }
-                session.addOutput(output)
-
-                self.lock.withLock { self.session = session }
+                if session.canAddOutput(output) {
+                    session.addOutput(output)
+                }
+                session.commitConfiguration()
                 session.startRunning()
             }
         }
     }
 
     private func stop() {
+        // The session outlives the scan — stopped, not discarded — so the next open reuses the
+        // configured pipeline instead of racing a rebuild.
         let current = lock.withLock { session }
         analysisQueue.async {
             current?.stopRunning()
         }
-        lock.withLock { session = nil }
     }
 }
 
