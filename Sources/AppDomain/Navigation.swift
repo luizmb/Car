@@ -572,7 +572,9 @@ public func clockSuffix(_ steps: [RouteStep], at index: Int) -> String? {
 }
 
 /// The bearing of a short run of path — its first or last resolvable leg of at least ten metres.
-private func pathBearing(_ points: [Coordinate], lastLeg: Bool) -> Double? {
+/// Internal rather than private: the lane advice reads the same geometry to place a roundabout
+/// exit on the clock.
+func pathBearing(_ points: [Coordinate], lastLeg: Bool) -> Double? {
     let ordered = lastLeg ? points.reversed().map { $0 } : points
     guard let anchor = ordered.first else { return nil }
     for candidate in ordered.dropFirst() {
