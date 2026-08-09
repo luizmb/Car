@@ -103,8 +103,8 @@ struct LaneAdviceTests {
         #expect(text == "Use the right two lanes to keep on the road in 300 metres")
     }
 
-    @Test("A roundabout fork is the clock face's job")
-    func roundabout() {
+    @Test("A roundabout whose geometry cannot be read stays silent")
+    func roundaboutWithoutGeometry() {
         let text = advice(
             paint: "left|through|through", splitAt: 300,
             steps: [step("At the roundabout, take the first exit", ahead: 300)]
@@ -112,13 +112,71 @@ struct LaneAdviceTests {
         #expect(text == nil)
     }
 
-    @Test("A lane that only merges is closed by the road, not by advice")
+    /// The paint is read, not guessed: the route exits at 3 o'clock, and the only lane painted
+    /// with a right arrow is the one named.
+    @Test("A roundabout exit past 12 names the lane whose arrow serves it")
+    func roundaboutRight() {
+        let steps = [
+            RouteStep(
+                instructions: "At the roundabout, take the third exit onto A505",
+                distance: Meters(300), notice: nil,
+                path: [
+                    Coordinate(latitude: Latitude(52.000), longitude: Longitude(-0.46)),
+                    Coordinate(latitude: Latitude(52.002), longitude: Longitude(-0.46))
+                ]
+            ),
+            RouteStep(
+                instructions: "Continue", distance: Meters(500), notice: nil,
+                path: [
+                    Coordinate(latitude: Latitude(52.002), longitude: Longitude(-0.46)),
+                    Coordinate(latitude: Latitude(52.002), longitude: Longitude(-0.457))
+                ]
+            )
+        ]
+        let text = advice(paint: "left|through|through;right", splitAt: 250, steps: steps)
+        #expect(text?.hasPrefix("Use the right lane at the roundabout in") == true)
+    }
+
+    @Test("A roundabout exit before 12 names the left arrows")
+    func roundaboutLeft() {
+        let steps = [
+            RouteStep(
+                instructions: "At the roundabout, take the first exit onto B579",
+                distance: Meters(300), notice: nil,
+                path: [
+                    Coordinate(latitude: Latitude(52.000), longitude: Longitude(-0.46)),
+                    Coordinate(latitude: Latitude(52.002), longitude: Longitude(-0.46))
+                ]
+            ),
+            RouteStep(
+                instructions: "Continue", distance: Meters(500), notice: nil,
+                path: [
+                    Coordinate(latitude: Latitude(52.002), longitude: Longitude(-0.46)),
+                    Coordinate(latitude: Latitude(52.002), longitude: Longitude(-0.463))
+                ]
+            )
+        ]
+        let text = advice(paint: "left|through", splitAt: 250, steps: steps)
+        #expect(text?.hasPrefix("Use the left lane at the roundabout in") == true)
+    }
+
+    /// The roadside "lane ends" sign, spoken: a merge closes the lane whatever the route does.
+    @Test("A merging lane is announced as ending")
     func mergeOnly() {
         let text = advice(
             paint: "|merge_to_left", splitAt: 300,
             steps: [step("Turn left onto High Street", ahead: 5_000)]
         )
-        #expect(text == nil)
+        #expect(text == "The right lane ends in 300 metres")
+    }
+
+    @Test("The motorway join's own lane ends, and says so")
+    func mergeAfterJoining() {
+        let text = advice(
+            paint: "merge_to_right|through|through", splitAt: 300,
+            steps: [step("Take the exit onto A421", ahead: 5_000)]
+        )
+        #expect(text == "The left lane ends in 300 metres")
     }
 
     @Test("Paint with no fork says nothing")
