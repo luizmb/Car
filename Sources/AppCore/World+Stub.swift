@@ -68,6 +68,7 @@ public extension World {
             announceOverLimit: { .empty() },
             announceUnderLimit: { .empty() },
             playRerouteTone: { .empty() },
+            launchWatchApp: { .empty() },
             completeAddress: { _, _, _ in .empty() },
             resolveAddress: { _ in .empty() },
             routes: { _, _, _ in .empty() },

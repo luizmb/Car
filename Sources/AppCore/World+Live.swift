@@ -1,5 +1,6 @@
 import AVFoundation
 import AudioToolbox
+import HealthKit
 import UIKit
 import ReactiveConcurrency
 import Core
@@ -276,6 +277,7 @@ extension World {
         // temporary, deleted-weekly dump - remains a text file, because grep is its query engine.
         let appDatabase = AppDatabase()
         let watchLink = PhoneWatchBox(log: rideLog.append)
+        let healthStore = HKHealthStore()
         let cameraOCR = CameraOCRBox()
         let replayBox = ReplayBox()
         let motionBox = MotionBox()
@@ -612,6 +614,18 @@ extension World {
                 // 1113 is the short double note iOS uses for "begin recording" — distinctive,
                 // unmistakably not an alert, and about a third of a second.
                 Publisher.future { AudioServicesPlaySystemSound(1113) }
+            },
+            launchWatchApp: {
+                Publisher.future {
+                    guard HKHealthStore.isHealthDataAvailable() else { return }
+                    let configuration = HKWorkoutConfiguration()
+                    configuration.activityType = .other
+                    configuration.locationType = .outdoor
+                    healthStore.startWatchApp(with: configuration) { launched, error in
+                        rideLog.append("watch-launch "
+                            + (launched ? "ok" : error?.localizedDescription ?? "failed"))
+                    }
+                }
             },
             completeAddress: RoutingClient.completeAddress,
             resolveAddress: RoutingClient.resolve,

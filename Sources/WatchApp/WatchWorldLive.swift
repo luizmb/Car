@@ -1,5 +1,6 @@
 import AppDomain
 import Foundation
+import HealthKit
 import ReactiveConcurrency
 import WatchConnectivity
 import WatchCore
@@ -25,7 +26,9 @@ extension WatchFeature.Environment {
                         WKInterfaceDevice.current().play(haptic.wkType)
                     }
                 }
-            }
+            },
+            beginRideSession: { Publisher.future { RideRuntimeBox.shared.begin() } },
+            endRideSession: { Publisher.future { RideRuntimeBox.shared.end() } }
         )
     }
 }
@@ -137,5 +140,70 @@ extension WatchSessionBox: WCSessionDelegate {
 
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
         deliver(applicationContext)
+    }
+}
+
+// MARK: - The ride's runtime shell
+
+/// A workout session used for its runtime and nothing else.
+///
+/// Running one gives the watch app what a ride actually needs — it stays live in the
+/// background, owns the wrist-raise ahead of Apple Maps, and its haptics fire with the screen
+/// off. The session is **ended and discarded** at journey close: no builder, no samples, no
+/// `finishWorkout`, so Health never hears about it and the rings stay honest.
+///
+/// A shared instance rather than a World-owned one because two doors lead here: the store's own
+/// journey edges, and watchOS handing over the configuration when the *phone* launches the app
+/// at journey start. Both must find the same session, and `begin` is idempotent for exactly
+/// that collision.
+final class RideRuntimeBox: NSObject, @unchecked Sendable {
+    static let shared = RideRuntimeBox()
+
+    private let lock = NSLock()
+    private let store = HKHealthStore()
+    private var session: HKWorkoutSession?
+
+    func begin() {
+        guard HKHealthStore.isHealthDataAvailable() else { return }
+        guard lock.withLock({ session == nil }) else { return }
+        // Share authorization for the workout type is the session's entry fee, asked once on
+        // first use. Nothing is ever written; denying it only costs the runtime perks.
+        store.requestAuthorization(
+            toShare: [HKObjectType.workoutType()], read: []
+        ) { [weak self] granted, _ in
+            guard granted, let self else { return }
+            let configuration = HKWorkoutConfiguration()
+            configuration.activityType = .other
+            configuration.locationType = .outdoor
+            guard let fresh = try? HKWorkoutSession(
+                healthStore: self.store, configuration: configuration
+            ) else { return }
+            let alreadyRunning = self.lock.withLock { () -> Bool in
+                guard self.session == nil else { return true }
+                self.session = fresh
+                return false
+            }
+            guard !alreadyRunning else { return }
+            fresh.startActivity(with: Date())
+        }
+    }
+
+    func end() {
+        let current = lock.withLock { () -> HKWorkoutSession? in
+            defer { session = nil }
+            return session
+        }
+        current?.end()
+    }
+}
+
+// MARK: - The phone's wake-up call
+
+/// watchOS hands the workout configuration here when the phone's `startWatchApp` launches us at
+/// journey start — the app may be waking straight into the background, so the session opens
+/// immediately rather than waiting for a snapshot to arrive and say the journey is on.
+final class WatchAppDelegate: NSObject, WKApplicationDelegate {
+    func handle(_ workoutConfiguration: HKWorkoutConfiguration) {
+        RideRuntimeBox.shared.begin()
     }
 }

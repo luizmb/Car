@@ -164,6 +164,10 @@ public struct World: Sendable {
     /// told. Words are reserved for the case where the new route breaks one of their exclusions,
     /// which is a change to the terms and does deserve saying.
     public let playRerouteTone: @Sendable () -> Publisher<Void, Never>
+    /// Asks watchOS to launch the watch app when a journey opens. HealthKit's `startWatchApp` is
+    /// the only public door to a remote launch; the workout session the watch answers with is
+    /// runtime only — ended and discarded at journey close, never saved to Health.
+    public let launchWatchApp: @Sendable () -> Publisher<Void, Never>
     // Navigation
     /// Addresses and postcodes matching a query, biased toward a position. Addresses only — points
     /// of interest are excluded at the source, because "Tesco" is a hundred places and picking one

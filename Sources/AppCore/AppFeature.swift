@@ -410,6 +410,14 @@ public enum AppFeature {
                     }
                     let announce: Effect<AppAction> = spoken
                         .map { $0 |> (ctx.environment.speakAccessory >>> Effect.fireAndForget) } ?? .empty
+                    // The wrist wakes with the journey: the phone asks watchOS to launch the
+                    // watch app, which answers by opening its ride session — screen-on data and
+                    // haptics for the whole ride without the rider remembering to open anything.
+                    let wake: Effect<AppAction> =
+                        JourneyPhase.prism.active.preview(next) != nil
+                            && JourneyPhase.prism.idle.preview(before.journey) != nil
+                        ? ctx.environment.launchWatchApp() |> Effect.fireAndForget
+                        : .empty
                     // The boundary goes to both files: a greppable marker in the dump, and a typed
                     // record in the journey log — which is the only writer allowed to bypass the
                     // "journey must be active" gate, since it is the thing that opens and closes it.
@@ -432,7 +440,7 @@ public enum AppFeature {
                     let kept: Effect<AppAction> = record
                         .map { ctx.environment.logJourney($0) |> Effect.fireAndForget } ?? .empty
 
-                    return announce <> mark <> kept
+                    return announce <> wake <> mark <> kept
                 }
         }
 
