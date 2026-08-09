@@ -32,12 +32,18 @@ struct ReplayView: View {
         }
         .overlay(alignment: .top) {
             HStack(spacing: 10) {
+                // An empty tape says so. A ride with nothing recorded — an interrupted journey
+                // that never got a fix — used to play as a dead screen with a 00:00 counter,
+                // indistinguishable from every real failure.
                 Label(
-                    replay?.finished == true ? "REPLAY ENDED" : "REPLAY",
-                    systemImage: replay?.finished == true ? "checkmark.circle" : "play.circle.fill"
+                    replay?.started == true && replay?.duration == 0 ? "NOTHING RECORDED"
+                        : replay?.finished == true ? "REPLAY ENDED" : "REPLAY",
+                    systemImage: replay?.started == true && replay?.duration == 0 ? "exclamationmark.circle"
+                        : replay?.finished == true ? "checkmark.circle" : "play.circle.fill"
                 )
                 .font(.caption.weight(.black))
-                .foregroundStyle(replay?.finished == true ? .green : .orange)
+                .foregroundStyle(replay?.started == true && replay?.duration == 0 ? .red
+                    : replay?.finished == true ? .green : .orange)
 
                 // The tape counter: recorded stillness ticks, a hang does not.
                 Text("\(stamp(replay?.position ?? 0)) / \(stamp(replay?.duration ?? 0))")

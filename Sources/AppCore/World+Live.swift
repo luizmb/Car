@@ -249,7 +249,7 @@ extension World {
         // The journey timeline now lives in the app database; only the debug firehose - the
         // temporary, deleted-weekly dump - remains a text file, because grep is its query engine.
         let appDatabase = AppDatabase()
-        let watchLink = PhoneWatchBox()
+        let watchLink = PhoneWatchBox(log: rideLog.append)
         let cameraOCR = CameraOCRBox()
         let replayBox = ReplayBox()
         let motionBox = MotionBox()
