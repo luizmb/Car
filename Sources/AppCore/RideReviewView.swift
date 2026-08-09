@@ -121,16 +121,20 @@ private struct RideDetailSheet: View {
                 }
             }
 
-            Section {
-                Button {
-                    if let id = viewStore.state.selected {
-                        viewStore.dispatch(.replayRide(id))
+            // No track, no tape: an interrupted journey that never recorded a fix has nothing to
+            // play, and offering the button led to a dead replay screen mistaken for a bug.
+            if viewStore.state.detail.map({ !$0.track.isEmpty }) == true {
+                Section {
+                    Button {
+                        if let id = viewStore.state.selected {
+                            viewStore.dispatch(.replayRide(id))
+                        }
+                    } label: {
+                        Label("Replay this ride", systemImage: "play.circle")
                     }
-                } label: {
-                    Label("Replay this ride", systemImage: "play.circle")
+                } footer: {
+                    Text("The home screen plays the ride back in real time, announcements included.")
                 }
-            } footer: {
-                Text("The home screen plays the ride back in real time, announcements included.")
             }
 
             if let destination = viewStore.state.words.destination,

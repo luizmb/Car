@@ -17,23 +17,60 @@ import WatchConnectivity
 final class PhoneWatchBox: NSObject, @unchecked Sendable {
     private let lock = NSLock()
     private var listeners: [UUID: (WatchRefuel) -> Void] = [:]
+    private let log: @Sendable (String) -> Void
+    // The link's last reported condition, so the log records changes rather than a line per
+    // snapshot — a healthy ride writes a handful of lines, a broken one writes the reason.
+    private var lastHealth: String?
+    private var sent = 0
 
-    override init() {
+    init(log: @escaping @Sendable (String) -> Void = { _ in }) {
+        self.log = log
         super.init()
-        guard WCSession.isSupported() else { return }
+        guard WCSession.isSupported() else {
+            log("watch-link unsupported on this device")
+            return
+        }
         WCSession.default.delegate = self
         WCSession.default.activate()
     }
 
     func send(_ snapshot: WatchSnapshot) {
-        guard WCSession.isSupported(), WCSession.default.activationState == .activated else { return }
-        let wire = WatchWire.dictionary(from: snapshot)
-        // The context write can throw only for non-property-list content, which the wire codec
-        // rules out by construction; a failure here is not actionable and must not be fatal.
-        try? WCSession.default.updateApplicationContext(wire)
-        if WCSession.default.isReachable {
-            WCSession.default.sendMessage(wire, replyHandler: nil, errorHandler: nil)
+        guard WCSession.isSupported() else { return }
+        let session = WCSession.default
+        guard session.activationState == .activated else {
+            note(health: "inactive state=\(session.activationState.rawValue)")
+            return
         }
+        let wire = WatchWire.dictionary(from: snapshot)
+        // Every failure here used to be swallowed — a wrist showing zeros with a phone that
+        // believed it was sending, and no line anywhere saying otherwise. The conditions are
+        // cheap to read and the log only speaks when one of them moves.
+        var context = "ok"
+        do {
+            try session.updateApplicationContext(wire)
+        } catch {
+            context = error.localizedDescription
+        }
+        if session.isReachable {
+            session.sendMessage(wire, replyHandler: nil) { [log] error in
+                log("watch-link message failed: \(error.localizedDescription)")
+            }
+        }
+        note(health: "paired=\(session.isPaired)"
+            + " installed=\(session.isWatchAppInstalled)"
+            + " reachable=\(session.isReachable)"
+            + " context=\(context)")
+    }
+
+    /// One line per change of condition, plus a heartbeat so a pulled log proves sends happened
+    /// at all — absence of the link's lines is itself the diagnosis then.
+    private func note(health: String) {
+        let line: String? = lock.withLock {
+            sent += 1
+            defer { lastHealth = health }
+            return health != lastHealth || sent % 600 == 1 ? "watch-link \(health) sent=\(sent)" : nil
+        }
+        line.map(log)
     }
 
     /// Refuel asks from the wrist, as a cold stream — subscribing registers a listener; the
@@ -61,12 +98,18 @@ extension PhoneWatchBox: WCSessionDelegate {
         _ session: WCSession,
         activationDidCompleteWith activationState: WCSessionActivationState,
         error: (any Error)?
-    ) {}
+    ) {
+        log("watch-link activated state=\(activationState.rawValue)"
+            + (error.map { " error=\($0.localizedDescription)" } ?? ""))
+    }
 
-    func sessionDidBecomeInactive(_ session: WCSession) {}
+    func sessionDidBecomeInactive(_ session: WCSession) {
+        log("watch-link inactive")
+    }
 
     func sessionDidDeactivate(_ session: WCSession) {
         // A watch being switched deactivates the session; reactivating is what re-links the new one.
+        log("watch-link deactivated, reactivating")
         session.activate()
     }
 
