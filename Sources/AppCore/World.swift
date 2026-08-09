@@ -145,13 +145,17 @@ public struct World: Sendable {
     public let writeShareFile: @Sendable (String, String) -> Publisher<URL?, Never>
     /// The record worth keeping: typed events, only while a journey is active.
     public let logJourney: @Sendable (any JourneyPayloadType) -> Publisher<Void, Never>
-    // Audio
-    public let speak: @Sendable (String) -> Publisher<Void, Never>
-    /// Queues behind whatever is playing rather than interrupting it. Everything informational
-    /// uses this; only time-critical speed announcements use `speak`.
-    public let speakQueued: @Sendable (String) -> Publisher<Void, Never>
-    /// Speaks several lines with a pause between each. Used for the briefing, where a beat between
-    /// sources is what makes it followable through a helmet.
+    // Audio — one voice per announcement family. Families may overlap each other (directions
+    // over the top by volume, accessories underneath), but inside a family everything queues
+    // and nothing is ever dropped or cut mid-word.
+    /// The route's voice: turn-by-turn, lanes, reroutes, arrivals.
+    public let speakDirections: @Sendable (String) -> Publisher<Void, Never>
+    /// The speed family: limits, roads, cameras, zones, thresholds.
+    public let speakSpeed: @Sendable (String) -> Publisher<Void, Never>
+    /// Everything else that talks: Indimate, ignition, tyres, the watch's fills.
+    public let speakAccessory: @Sendable (String) -> Publisher<Void, Never>
+    /// Speaks several lines with a pause between each, on the accessory voice. Used for the
+    /// briefing, where a beat between sources is what makes it followable through a helmet.
     public let speakSequence: @Sendable ([String], TimeInterval) -> Publisher<Void, Never>
     public let announceOverLimit: @Sendable () -> Publisher<Void, Never>
     public let announceUnderLimit: @Sendable () -> Publisher<Void, Never>

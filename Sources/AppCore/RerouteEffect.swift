@@ -144,7 +144,7 @@ func rerouteRequest(
                 // saying no motorways is a change to the terms the rider agreed to.
                 guard let apology = exclusionBrokenAnnouncement(original: chosen, replacement: next)
                 else { return retry }
-                return world.speakQueued(apology)
+                return world.speakDirections(apology)
                     .flatMap { _ in retry }
 
             case .routes, .failed:

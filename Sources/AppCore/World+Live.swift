@@ -43,8 +43,36 @@ private func voiceRank(_ voice: AVSpeechSynthesisVoice) -> Int {
     return voice.quality.rawValue * 100 + tier
 }
 
+/// One voice per announcement family, so nothing ever cuts anything mid-word.
+///
+/// The rider's rule, verbatim: groups may overlap each other, but inside a group everything
+/// queues and nothing is dropped. "In 240 met— eleven" was one synthesiser interrupting itself;
+/// three synthesisers make it impossible by construction. Precedence is volume, not silencing:
+/// directions speak loudest, the speed family under them, the accessories under that — and the
+/// whole arrangement ducks Music and Apple Maps as one.
+enum SpeechGroup: CaseIterable, Sendable {
+    /// The route's own voice: turn-by-turn, lanes, reroutes, arrivals.
+    case directions
+    /// The speed family: current limit, road, cameras, zones, thresholds.
+    case speed
+    /// Everything else that talks: Indimate, ignition, tyres, briefings, the watch's fills.
+    case accessory
+
+    var volume: Float {
+        switch self {
+        case .directions: 1.0
+        case .speed: 0.85
+        case .accessory: 0.7
+        }
+    }
+}
+
 private final class SpeechBox: @unchecked Sendable {
-    nonisolated(unsafe) let synth = AVSpeechSynthesizer()
+    nonisolated(unsafe) private let synthesizers: [SpeechGroup: AVSpeechSynthesizer] = [
+        .directions: AVSpeechSynthesizer(),
+        .speed: AVSpeechSynthesizer(),
+        .accessory: AVSpeechSynthesizer()
+    ]
     // Releasing the session between journeys is a real saving — an active `.playback` session with
     // `.duckOthers` dips every other app's audio for as long as we hold it. It is deliberately *not*
     // done yet: GPS, motion and the road lookup all still run continuously, so gating audio alone
@@ -74,35 +102,32 @@ private final class SpeechBox: @unchecked Sendable {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                self.synth.stopSpeaking(at: .immediate)
+                for synth in self.synthesizers.values {
+                    synth.stopSpeaking(at: .immediate)
+                }
                 try? AVAudioSession.sharedInstance().setActive(true)
             }
         }
     }
 
-    /// Interrupts whatever is playing. For time-critical announcements only — a speed threshold
-    /// spoken late is worse than useless, because the number no longer matches the moment.
-    func speak(_ text: String) {
-        synth.stopSpeaking(at: .immediate)
-        synth.speak(utterance(text))
-    }
-
-    /// Queues behind whatever is playing, interrupting nothing.
+    /// Queues behind whatever the *group* is saying, interrupting nothing anywhere.
     ///
-    /// Everything informational goes through here: road names, Indimate connect/disconnect, tyre
-    /// warnings. Previously all speech interrupted all other speech, so a road announcement and a
-    /// threshold crossing simply cut each other in half and the rider heard neither.
-    func enqueue(_ text: String) {
-        synth.speak(utterance(text))
+    /// There is deliberately no interrupting variant left: interrupting is how "in 240 met—
+    /// eleven" happened, and a family that needs to talk over another family already has its own
+    /// synthesiser to do it with.
+    func enqueue(_ text: String, group: SpeechGroup) {
+        synthesizers[group]?.speak(utterance(text, group: group))
     }
 
-    private func utterance(_ text: String) -> AVSpeechUtterance {
+    private func utterance(_ text: String, group: SpeechGroup) -> AVSpeechUtterance {
         let u = AVSpeechUtterance(string: text)
         u.voice = SpeechBox.voice
         // 0.65 was too fast for the old compact voice and 0.52 too slow for the premium one: a
         // neural voice keeps its consonants at pace, so it can carry speed that a compact voice
         // could not. Apple's default is 0.5.
         u.rate  = 0.57
+        // Precedence is volume: when two families do overlap, the directions read over the top.
+        u.volume = group.volume
         return u
     }
 
@@ -138,7 +163,7 @@ private final class SpeechBox: @unchecked Sendable {
     /// so the whole briefing is handed over in one go and survives the app being backgrounded
     /// mid-sentence.
     func speakSequence(_ texts: [String], gap: TimeInterval) {
-        guard !texts.isEmpty else { return }
+        guard !texts.isEmpty, let synth = synthesizers[.accessory] else { return }
         // Only stop if something is actually speaking, and let the stop settle before enqueuing.
         // `stopSpeaking` is asynchronous, and utterances submitted while the synthesiser is still
         // tearing down are silently dropped — a stop issued when nothing was playing could
@@ -165,8 +190,9 @@ private final class SpeechBox: @unchecked Sendable {
             let u = AVSpeechUtterance(string: text)
             u.voice = SpeechBox.voice
             u.rate  = 0.57
+            u.volume = SpeechGroup.accessory.volume
             u.postUtteranceDelay = gap
-            synth.speak(u)
+            synthesizers[.accessory]?.speak(u)
         }
     }
 }
@@ -556,27 +582,29 @@ extension World {
                     appDatabase?.append(JourneyRecord(time: Date(), payload: event))
                 }
             },
-            speak: { text in
-                // Every utterance, with the time it was handed over. Step transitions were already
-                // logged and were not enough: they show which manoeuvre is current, not what the
-                // rider actually heard or when. Told that an instruction arrived one junction
-                // early, there was no way to tell a wrong step from the right step at the wrong
-                // moment from something arriving late — three different bugs.
-                rideLog.append("say! \(text)")
-                return Publisher.future { DispatchQueue.main.async { speech.speak(text) } }
+            // Every utterance, with the time it was handed over and whose voice said it. Step
+            // transitions were already logged and were not enough: they show which manoeuvre is
+            // current, not what the rider actually heard or when.
+            speakDirections: { text in
+                rideLog.append("say[dir] \(text)")
+                return Publisher.future { DispatchQueue.main.async { speech.enqueue(text, group: .directions) } }
             },
-            speakQueued: { text in
-                rideLog.append("say \(text)")
-                return Publisher.future { DispatchQueue.main.async { speech.enqueue(text) } }
+            speakSpeed: { text in
+                rideLog.append("say[spd] \(text)")
+                return Publisher.future { DispatchQueue.main.async { speech.enqueue(text, group: .speed) } }
+            },
+            speakAccessory: { text in
+                rideLog.append("say[acc] \(text)")
+                return Publisher.future { DispatchQueue.main.async { speech.enqueue(text, group: .accessory) } }
             },
             speakSequence: { texts, gap in
                 Publisher.future { DispatchQueue.main.async { speech.speakSequence(texts, gap: gap) } }
             },
             announceOverLimit: {
-                Publisher.future { DispatchQueue.main.async { speech.speak("over") } }
+                Publisher.future { DispatchQueue.main.async { speech.enqueue("over", group: .speed) } }
             },
             announceUnderLimit: {
-                Publisher.future { DispatchQueue.main.async { speech.speak("back") } }
+                Publisher.future { DispatchQueue.main.async { speech.enqueue("back", group: .speed) } }
             },
             playRerouteTone: {
                 // A system sound rather than an asset: it needs no file, ducks nothing, and cannot

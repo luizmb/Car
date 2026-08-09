@@ -229,7 +229,7 @@ func watchSyncBehavior() -> Behavior<AppAction, AppState, World> {
     <> Behavior<AppAction, AppState, World>.handle { action, _ in
         guard AppAction.prism.watchRefuelApplied.preview(action) != nil else { return .doNothing }
         return .produce { ctx in
-            ctx.environment.speakQueued("Fill recorded from the watch.")
+            ctx.environment.speakAccessory("Fill recorded from the watch.")
                 |> Effect.fireAndForget
         }
     }
@@ -237,7 +237,7 @@ func watchSyncBehavior() -> Behavior<AppAction, AppState, World> {
     <> Behavior<AppAction, AppState, World>.handle { action, _ in
         guard AppAction.prism.watchRefuelFailed.preview(action) != nil else { return .doNothing }
         return .produce { ctx in
-            ctx.environment.speakQueued("The fill from the watch could not be saved.")
+            ctx.environment.speakAccessory("The fill from the watch could not be saved.")
                 |> Effect.fireAndForget
         }
     }

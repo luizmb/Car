@@ -518,14 +518,26 @@ func formatGap(_ distance: Meters) -> String {
 /// wrong lane. Only ever two: a third would be a paragraph, and by then the first is done and the
 /// next call is due anyway. The banner deliberately keeps showing the immediate next manoeuvre
 /// alone, since a glance has to answer one question.
+/// Where the clock face earns its breath. The rider's own finding after real junctions: the
+/// hour only helps when the roads are in sight — the *now* call, where "3 o'clock" maps onto
+/// tarmac. In "in 250 metres, turn right, 3 o'clock" the hour describes a junction not yet
+/// visible and just costs words. Roundabouts are the exception both ways: exit-counting fails a
+/// helmet at any distance, so they keep the clock always.
+public enum ClockStyle: Sendable {
+    case always
+    case roundaboutsOnly
+}
+
 public func chainedInstruction(
-    _ steps: [RouteStep], from index: Int, within: Double = chainWithinMetres
+    _ steps: [RouteStep], from index: Int, within: Double = chainWithinMetres,
+    clock: ClockStyle = .always
 ) -> String {
     guard let step = steps[safe: index] else { return "" }
-    // The clock face rides on the instruction — "at 2 o'clock" is the junction's shape, spoken,
-    // which is worth the breath exactly where exit-counting fails a helmet.
-    let instruction = clockSuffix(steps, at: index)
-        .map { "\(step.instructions), \($0)" } ?? step.instructions
+    let wantsClock = clock == .always
+        || step.instructions.lowercased().contains("roundabout")
+    let instruction = wantsClock
+        ? clockSuffix(steps, at: index).map { "\(step.instructions), \($0)" } ?? step.instructions
+        : step.instructions
     // The gap between this manoeuvre and the next is the *next* step's approach length — its
     // polyline runs from this junction to that one, so no geometry is needed to measure it.
     guard
@@ -1006,7 +1018,9 @@ public func guidance(
         let lane = laneHint(steps, at: state.stepIndex).map { ". \($0)" } ?? ""
         return GuidanceUpdate(
             announcement: "In \(formatDistance(Meters(remaining))), "
-                + lowercasedFirst(chainedInstruction(steps, from: state.stepIndex)) + lane,
+                + lowercasedFirst(chainedInstruction(
+                    steps, from: state.stepIndex, clock: .roundaboutsOnly
+                )) + lane,
             state: next
         )
     }

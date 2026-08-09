@@ -499,8 +499,9 @@ struct RefuelRecordingTests {
             logJourney: { payload in
                 Publisher.future { spy.record(payload) }
             },
-            speak: world.speak,
-            speakQueued: world.speakQueued,
+            speakDirections: world.speakDirections,
+            speakSpeed: world.speakSpeed,
+            speakAccessory: world.speakAccessory,
             speakSequence: world.speakSequence,
             announceOverLimit: world.announceOverLimit,
             announceUnderLimit: world.announceUnderLimit,
@@ -710,8 +711,9 @@ struct WatchLinkWiringTests {
             logJourney: { payload in
                 Publisher.future { spy.journey(payload) }
             },
-            speak: world.speak,
-            speakQueued: world.speakQueued,
+            speakDirections: world.speakDirections,
+            speakSpeed: world.speakSpeed,
+            speakAccessory: world.speakAccessory,
             speakSequence: world.speakSequence,
             announceOverLimit: world.announceOverLimit,
             announceUnderLimit: world.announceUnderLimit,
