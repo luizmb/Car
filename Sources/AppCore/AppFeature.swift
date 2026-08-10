@@ -103,9 +103,10 @@ public enum AppFeature {
         /// would be silent on the second outing of the day.
         public var flightPlanSpoken: Bool = false
 
-        /// Whether the launch hush has been lifted. Every voice starts a session held; the first
-        /// real movement — or a chosen route — releases them, once per app session.
-        public var speechReleased: Bool = false
+        /// Whether the speed voice's launch hush has been lifted — the session's first real
+        /// movement does it, once. The greetings are never held, and the directions voice opens
+        /// at GO, which needs no flag because GO is already a deliberate, rare act.
+        public var speedVoiceReleased: Bool = false
 
         /// The pushed screens, each carrying its own state. One source of truth: there is no parallel
         /// table to keep in step, so a route and its data cannot disagree.
@@ -602,21 +603,30 @@ public enum AppFeature {
             }
         }
 
-        // The launch hush lifts when the ride actually begins: first real movement, or a route
-        // chosen while still parked — the rider's own two signals for "now talk to me". Until
-        // then every voice buffers at the driver, so launching the app is silent instead of a
-        // three-voice chorus over a bike being wheeled out.
+        // The launch hush, lifted per family at its own moment — the rider's design: greetings
+        // at ignition (never held), the speed voice at the session's first movement, the
+        // directions voice the moment GO is tapped. Staggered triggers mean no family ever has
+        // to talk over another's backlog.
         <> Behavior<AppAction, AppState, World>.handle { action, context in
-            guard context.stateBefore?.speechReleased == false else { return .doNothing }
-            let moving = AppAction.prism.speedMonitor.preview(action)
-                .flatMap(SpeedMonitorFeature.Action.prism.locationUpdate.preview)
-                .flatMap(\.speed)
-                .map { $0.rawValue >= 2.5 } ?? false
-            let routed = AppAction.prism.navigate.preview(action)
-                .flatMap(NavigationFeature.Action.prism.start.preview) != nil
-            guard moving || routed else { return .doNothing }
-            return .reduce { $0.speechReleased = true }
-                .produce { ctx in ctx.environment.releaseSpeech() |> Effect.fireAndForget }
+            guard
+                context.stateBefore?.speedVoiceReleased == false,
+                let speed = AppAction.prism.speedMonitor.preview(action)
+                    .flatMap(SpeedMonitorFeature.Action.prism.locationUpdate.preview)
+                    .flatMap(\.speed),
+                speed.rawValue >= 2.5
+            else { return .doNothing }
+            return .reduce { $0.speedVoiceReleased = true }
+                .produce { ctx in ctx.environment.releaseSpeedVoice() |> Effect.fireAndForget }
+        }
+
+        <> Behavior<AppAction, AppState, World>.handle { action, _ in
+            guard
+                AppAction.prism.navigate.preview(action)
+                    .flatMap(NavigationFeature.Action.prism.start.preview) != nil
+            else { return .doNothing }
+            return .produce { ctx in
+                ctx.environment.releaseDirectionsVoice() |> Effect.fireAndForget
+            }
         }
 
         // Turn-by-turn, per fix.
