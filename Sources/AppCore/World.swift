@@ -157,10 +157,12 @@ public struct World: Sendable {
     /// Speaks several lines with a pause between each, on the accessory voice. Used for the
     /// briefing, where a beat between sources is what makes it followable through a helmet.
     public let speakSequence: @Sendable ([String], TimeInterval) -> Publisher<Void, Never>
-    /// Opens the launch hush: every voice starts a session held, and this releases them the
-    /// moment the ride has actually begun — first movement or a chosen route — so a rider
-    /// putting gloves on is not read a three-voice chorus. Idempotent.
-    public let releaseSpeech: @Sendable () -> Publisher<Void, Never>
+    /// The launch hush, lifted per family at its own natural moment: greetings are never held
+    /// (they belong to ignition), the speed family opens at the session's first movement, the
+    /// directions at GO. Staggered triggers are what prevent the chorus — at launch *and* at
+    /// release. Both idempotent.
+    public let releaseSpeedVoice: @Sendable () -> Publisher<Void, Never>
+    public let releaseDirectionsVoice: @Sendable () -> Publisher<Void, Never>
     public let announceOverLimit: @Sendable () -> Publisher<Void, Never>
     public let announceUnderLimit: @Sendable () -> Publisher<Void, Never>
     /// The reroute chime. A **sound, not words**: a reroute is routine and happens most often right
