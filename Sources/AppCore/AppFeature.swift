@@ -103,6 +103,10 @@ public enum AppFeature {
         /// would be silent on the second outing of the day.
         public var flightPlanSpoken: Bool = false
 
+        /// Whether the launch hush has been lifted. Every voice starts a session held; the first
+        /// real movement — or a chosen route — releases them, once per app session.
+        public var speechReleased: Bool = false
+
         /// The pushed screens, each carrying its own state. One source of truth: there is no parallel
         /// table to keep in step, so a route and its data cannot disagree.
         public var path: [StackEntry]
@@ -596,6 +600,23 @@ public enum AppFeature {
                     // map pulled in at a junction that no longer matters.
                     <> Effect.just(.speedMonitor(.setNextTurn(nil)))
             }
+        }
+
+        // The launch hush lifts when the ride actually begins: first real movement, or a route
+        // chosen while still parked — the rider's own two signals for "now talk to me". Until
+        // then every voice buffers at the driver, so launching the app is silent instead of a
+        // three-voice chorus over a bike being wheeled out.
+        <> Behavior<AppAction, AppState, World>.handle { action, context in
+            guard context.stateBefore?.speechReleased == false else { return .doNothing }
+            let moving = AppAction.prism.speedMonitor.preview(action)
+                .flatMap(SpeedMonitorFeature.Action.prism.locationUpdate.preview)
+                .flatMap(\.speed)
+                .map { $0.rawValue >= 2.5 } ?? false
+            let routed = AppAction.prism.navigate.preview(action)
+                .flatMap(NavigationFeature.Action.prism.start.preview) != nil
+            guard moving || routed else { return .doNothing }
+            return .reduce { $0.speechReleased = true }
+                .produce { ctx in ctx.environment.releaseSpeech() |> Effect.fireAndForget }
         }
 
         // Turn-by-turn, per fix.

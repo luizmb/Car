@@ -65,6 +65,7 @@ public extension World {
             speakSpeed: { _ in .empty() },
             speakAccessory: { _ in .empty() },
             speakSequence: { _, _ in .empty() },
+            releaseSpeech: { .empty() },
             announceOverLimit: { .empty() },
             announceUnderLimit: { .empty() },
             playRerouteTone: { .empty() },

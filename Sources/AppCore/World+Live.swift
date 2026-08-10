@@ -74,6 +74,14 @@ private final class SpeechBox: @unchecked Sendable {
         .speed: AVSpeechSynthesizer(),
         .accessory: AVSpeechSynthesizer()
     ]
+    // The launch hush. Three concurrent voices made app launch a chorus — ignition, Indimate,
+    // the briefing and the road all at once, to a rider still putting gloves on. Everything is
+    // held here until the app says the ride has actually begun (first movement, or a route
+    // chosen); the gate never closes again within a session. All mutated on the main queue only,
+    // like every other entry point into this box.
+    nonisolated(unsafe) private var gated = true
+    nonisolated(unsafe) private var held: [SpeechGroup: [String]] = [:]
+    nonisolated(unsafe) private var heldSequences: [([String], TimeInterval)] = []
     // Releasing the session between journeys is a real saving — an active `.playback` session with
     // `.duckOthers` dips every other app's audio for as long as we hold it. It is deliberately *not*
     // done yet: GPS, motion and the road lookup all still run continuously, so gating audio alone
@@ -117,7 +125,36 @@ private final class SpeechBox: @unchecked Sendable {
     /// eleven" happened, and a family that needs to talk over another family already has its own
     /// synthesiser to do it with.
     func enqueue(_ text: String, group: SpeechGroup) {
+        guard !gated else {
+            // The speed family holds only its latest line: a speed announcement is a statement
+            // about *now*, and releasing a stale limit would be worse than silence. The other
+            // families keep their full order — a briefing spoken half-missing is no briefing.
+            if group == .speed {
+                held[group] = [text]
+            } else {
+                held[group, default: []].append(text)
+            }
+            return
+        }
         synthesizers[group]?.speak(utterance(text, group: group))
+    }
+
+    /// Opens the gate and speaks what was held. Idempotent — the app may say "we are moving"
+    /// as often as it likes.
+    func release() {
+        guard gated else { return }
+        gated = false
+        for group in SpeechGroup.allCases {
+            for text in held[group] ?? [] {
+                synthesizers[group]?.speak(utterance(text, group: group))
+            }
+        }
+        held = [:]
+        let sequences = heldSequences
+        heldSequences = []
+        for (texts, gap) in sequences {
+            speakSequence(texts, gap: gap)
+        }
     }
 
     private func utterance(_ text: String, group: SpeechGroup) -> AVSpeechUtterance {
@@ -165,6 +202,10 @@ private final class SpeechBox: @unchecked Sendable {
     /// mid-sentence.
     func speakSequence(_ texts: [String], gap: TimeInterval) {
         guard !texts.isEmpty, let synth = synthesizers[.accessory] else { return }
+        guard !gated else {
+            heldSequences.append((texts, gap))
+            return
+        }
         // Only stop if something is actually speaking, and let the stop settle before enqueuing.
         // `stopSpeaking` is asynchronous, and utterances submitted while the synthesiser is still
         // tearing down are silently dropped — a stop issued when nothing was playing could
@@ -601,6 +642,10 @@ extension World {
             },
             speakSequence: { texts, gap in
                 Publisher.future { DispatchQueue.main.async { speech.speakSequence(texts, gap: gap) } }
+            },
+            releaseSpeech: {
+                rideLog.append("speech-gate open")
+                return Publisher.future { DispatchQueue.main.async { speech.release() } }
             },
             announceOverLimit: {
                 Publisher.future { DispatchQueue.main.async { speech.enqueue("over", group: .speed) } }
