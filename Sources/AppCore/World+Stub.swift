@@ -62,6 +62,7 @@ public extension World {
             writeShareFile: { _, _ in .just(nil) },
             logJourney: { _ in .empty() },
             speakDirections: { _ in .empty() },
+            speakDirectionsAt: { _, _ in .empty() },
             speakSpeed: { _ in .empty() },
             speakAccessory: { _ in .empty() },
             speakSequence: { _, _ in .empty() },

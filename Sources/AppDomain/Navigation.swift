@@ -571,6 +571,22 @@ public func clockDirection(incoming: Double, outgoing: Double) -> Int {
 /// always gets its hour, because that is exactly where exit-counting goes wrong.
 public func clockSuffix(_ steps: [RouteStep], at index: Int) -> String? {
     guard
+        let hour = manoeuvreClockHour(steps, at: index),
+        let step = steps[safe: index]
+    else { return nil }
+    let names = step.instructions.lowercased()
+    let junction = names.contains("roundabout") || names.contains("exit")
+    guard junction || abs(hour - 12) >= 1 && hour != 12 else { return nil }
+    return "\(hour) o'clock"
+}
+
+/// The junction's trusted hour — the number behind both the spoken suffix and the voice's
+/// position in space. Corridor bearings, and the instruction's own word outranks the geometry:
+/// a "turn right, 11 o'clock" reached a real helmet, born of a step boundary sitting off the
+/// physical junction. When the hour lands on the wrong side of the named turn it is wrong by
+/// construction and answers `nil` — no suffix, no position, the word stands alone.
+public func manoeuvreClockHour(_ steps: [RouteStep], at index: Int) -> Int? {
+    guard
         let step = steps[safe: index],
         let next = steps[safe: index + 1],
         let incoming = junctionBearing(step.path, approaching: true),
@@ -578,15 +594,9 @@ public func clockSuffix(_ steps: [RouteStep], at index: Int) -> String? {
     else { return nil }
     let hour = clockDirection(incoming: incoming, outgoing: outgoing)
     let names = step.instructions.lowercased()
-    // The instruction's own word outranks the geometry: a "turn right, 11 o'clock" reached a
-    // real helmet, born of a step boundary sitting off the physical junction. When the hour
-    // lands on the wrong side of the named turn, the clock is wrong by construction — silence,
-    // and the word stands alone.
     if names.contains("right"), (7...11).contains(hour) { return nil }
     if names.contains("left"), (1...5).contains(hour) { return nil }
-    let junction = names.contains("roundabout") || names.contains("exit")
-    guard junction || abs(hour - 12) >= 1 && hour != 12 else { return nil }
-    return "\(hour) o'clock"
+    return hour
 }
 
 /// A path's bearing where it meets a junction — measured a corridor *away* from the mouth.
@@ -849,10 +859,16 @@ public func uTurnPenaltySeconds(route: RouteOption, course: Course?) -> TimeInte
 /// One thing to say, and the guidance state that follows from having said it.
 public struct GuidanceUpdate: Sendable, Equatable {
     public let announcement: String?
+    /// Where the manoeuvre sits on the clock, for *positioning* the spoken call in space —
+    /// carried even when no hour is said aloud: the early call names no hour by design, yet its
+    /// voice can still arrive from the turn's own side. `nil` when the geometry is unreadable
+    /// or fails the word-versus-hour trust check.
+    public let clockHour: Int?
     public let state: GuidanceState
 
-    public init(announcement: String?, state: GuidanceState) {
+    public init(announcement: String?, clockHour: Int? = nil, state: GuidanceState) {
         self.announcement = announcement
+        self.clockHour = clockHour
         self.state = state
     }
 }
@@ -1060,7 +1076,9 @@ public func guidance(
     if remaining <= windows.imminent.rawValue, state.stage < .imminent {
         next.stage = .imminent
         return GuidanceUpdate(
-            announcement: chainedInstruction(steps, from: state.stepIndex), state: next
+            announcement: chainedInstruction(steps, from: state.stepIndex),
+            clockHour: manoeuvreClockHour(steps, at: state.stepIndex),
+            state: next
         )
     }
 
@@ -1081,6 +1099,9 @@ public func guidance(
                 + lowercasedFirst(chainedInstruction(
                     steps, from: state.stepIndex, clock: .roundaboutsOnly
                 )) + lane,
+            // The early call names no hour aloud — the rider's rule — but its voice still
+            // arrives from the turn's own side.
+            clockHour: manoeuvreClockHour(steps, at: state.stepIndex),
             state: next
         )
     }

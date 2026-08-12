@@ -68,12 +68,158 @@ enum SpeechGroup: CaseIterable, Sendable {
     }
 }
 
+/// The directions voice, placed on the junction's clock.
+///
+/// The utterance is rendered to PCM by the synthesizer and played through an
+/// `AVAudioEnvironmentNode` with HRTF rendering, so "turn right" *arrives from the right* —
+/// 3 o'clock speaks beside the right ear, 5 o'clock behind it, 12 dead ahead. Position is
+/// information the words no longer have to carry: the early call names no hour aloud and now
+/// does not need to. Sources must be mono for spatialisation, so stereo renders are folded;
+/// utterances play strictly one at a time (the family's queue), each positioned before it
+/// starts. If the engine cannot run, a plain synthesizer speaks the same words from the centre
+/// — degraded, never silent. Main-queue confined like every entry point into the speech box.
+private final class DirectionsVoiceBox: @unchecked Sendable {
+    nonisolated(unsafe) private let engine = AVAudioEngine()
+    nonisolated(unsafe) private let environment = AVAudioEnvironmentNode()
+    nonisolated(unsafe) private let player = AVAudioPlayerNode()
+    nonisolated(unsafe) private let renderer = AVSpeechSynthesizer()
+    nonisolated(unsafe) private let fallback = AVSpeechSynthesizer()
+    nonisolated(unsafe) private var wired = false
+    nonisolated(unsafe) private var playing = false
+    nonisolated(unsafe) private var pending: [(text: String, hour: Int?)] = []
+
+    func speak(_ text: String, hour: Int?, utterance: (String) -> AVSpeechUtterance) {
+        pending.append((text, hour))
+        guard !playing else { return }
+        playing = true
+        playNext(utterance: utterance)
+    }
+
+    /// A route change wedges a running engine the same way it wedges a synthesizer. Stop, and
+    /// let the next utterance rebuild.
+    func recover() {
+        player.stop()
+        engine.stop()
+        playing = false
+    }
+
+    /// The render callback arrives on the synthesizer's own thread and the playback happens on
+    /// main; the box is the bridge, and the ordering is the guarantee — every append precedes
+    /// the zero-length end-of-render buffer that triggers the read.
+    private final class RenderAccumulator: @unchecked Sendable {
+        nonisolated(unsafe) var buffers: [AVAudioPCMBuffer] = []
+    }
+
+    private func playNext(utterance: (String) -> AVSpeechUtterance) {
+        guard !pending.isEmpty else {
+            playing = false
+            return
+        }
+        let (text, hour) = pending.removeFirst()
+        let spoken = utterance(text)
+        let collected = RenderAccumulator()
+        renderer.write(spoken) { [weak self] buffer in
+            guard let pcm = buffer as? AVAudioPCMBuffer else { return }
+            if pcm.frameLength == 0 {
+                DispatchQueue.main.async { [weak self] in
+                    self?.play(collected.buffers, hour: hour, text: text)
+                }
+            } else {
+                collected.buffers.append(pcm)
+            }
+        }
+    }
+
+    private func play(_ buffers: [AVAudioPCMBuffer], hour: Int?, text: String) {
+        let mono = buffers.compactMap(monofold)
+        guard let format = mono.first?.format, ensureEngine(format: format) else {
+            // The engine is a luxury; the words are not. Speak from the centre and move on.
+            fallback.speak(fallbackUtterance(text))
+            continueQueue()
+            return
+        }
+        // Twelve on the clock is dead ahead (−z); the hour walks clockwise, x to the right.
+        let degrees = Double((hour ?? 12) % 12) * 30
+        let radians = Float(degrees * .pi / 180)
+        player.position = AVAudio3DPoint(x: sin(radians), y: 0, z: -cos(radians))
+        for (index, buffer) in mono.enumerated() {
+            if index == mono.count - 1 {
+                player.scheduleBuffer(buffer) { [weak self] in
+                    DispatchQueue.main.async { self?.continueQueue() }
+                }
+            } else {
+                player.scheduleBuffer(buffer)
+            }
+        }
+        player.play()
+    }
+
+    private func continueQueue() {
+        playing = false
+        guard !pending.isEmpty else { return }
+        playing = true
+        playNext(utterance: fallbackUtterance)
+    }
+
+    /// Later queue entries rebuilt here rather than threading the maker through the completion
+    /// chain — same voice, same rate, same shape as the box's own utterances.
+    private func fallbackUtterance(_ text: String) -> AVSpeechUtterance {
+        let u = AVSpeechUtterance(string: text)
+        u.voice = SpeechBox.voice
+        u.rate = 0.57
+        u.volume = SpeechGroup.directions.volume
+        return u
+    }
+
+    private func ensureEngine(format: AVAudioFormat) -> Bool {
+        if !wired {
+            engine.attach(player)
+            engine.attach(environment)
+            engine.connect(player, to: environment, format: format)
+            engine.connect(environment, to: engine.mainMixerNode, format: nil)
+            player.renderingAlgorithm = .HRTFHQ
+            environment.listenerPosition = AVAudio3DPoint(x: 0, y: 0, z: 0)
+            wired = true
+        }
+        if !engine.isRunning {
+            try? engine.start()
+        }
+        return engine.isRunning
+    }
+
+    /// One channel from however many the voice rendered: spatialisation is defined for mono
+    /// sources only, and a premium voice renders stereo.
+    private func monofold(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard buffer.format.channelCount > 1 else { return buffer }
+        guard
+            let format = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32, sampleRate: buffer.format.sampleRate,
+                channels: 1, interleaved: false
+            ),
+            let folded = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: buffer.frameLength),
+            let source = buffer.floatChannelData,
+            let target = folded.floatChannelData
+        else { return nil }
+        let channels = Int(buffer.format.channelCount)
+        for frame in 0..<Int(buffer.frameLength) {
+            var sum: Float = 0
+            for channel in 0..<channels {
+                sum += source[channel][frame]
+            }
+            target[0][frame] = sum / Float(channels)
+        }
+        folded.frameLength = buffer.frameLength
+        return folded
+    }
+}
+
 private final class SpeechBox: @unchecked Sendable {
     nonisolated(unsafe) private let synthesizers: [SpeechGroup: AVSpeechSynthesizer] = [
         .directions: AVSpeechSynthesizer(),
         .speed: AVSpeechSynthesizer(),
         .accessory: AVSpeechSynthesizer()
     ]
+    nonisolated(unsafe) private let directionsVoice = DirectionsVoiceBox()
     // The launch hush, per family. Each voice starts speaking at its own natural moment — the
     // greetings at ignition (never gated), the speed family at the session's first movement,
     // the directions at GO — so no two families pile up at launch *or* at release: the triggers
@@ -81,6 +227,7 @@ private final class SpeechBox: @unchecked Sendable {
     // main queue only, like every other entry point into this box.
     nonisolated(unsafe) private var gated: Set<SpeechGroup> = [.directions, .speed]
     nonisolated(unsafe) private var held: [SpeechGroup: [String]] = [:]
+    nonisolated(unsafe) private var heldDirections: [(String, Int?)] = []
     // Releasing the session between journeys is a real saving — an active `.playback` session with
     // `.duckOthers` dips every other app's audio for as long as we hold it. It is deliberately *not*
     // done yet: GPS, motion and the road lookup all still run continuously, so gating audio alone
@@ -113,6 +260,7 @@ private final class SpeechBox: @unchecked Sendable {
                 for synth in self.synthesizers.values {
                     synth.stopSpeaking(at: .immediate)
                 }
+                self.directionsVoice.recover()
                 try? AVAudioSession.sharedInstance().setActive(true)
             }
         }
@@ -124,10 +272,13 @@ private final class SpeechBox: @unchecked Sendable {
     /// eleven" happened, and a family that needs to talk over another family already has its own
     /// synthesiser to do it with.
     func enqueue(_ text: String, group: SpeechGroup) {
+        guard group != .directions else {
+            enqueueDirections(text, hour: nil)
+            return
+        }
         guard !gated.contains(group) else {
             // The speed family holds only its latest line: a speed announcement is a statement
-            // about *now*, and releasing a stale limit would be worse than silence. Directions
-            // keep their order.
+            // about *now*, and releasing a stale limit would be worse than silence.
             if group == .speed {
                 held[group] = [text]
             } else {
@@ -138,11 +289,29 @@ private final class SpeechBox: @unchecked Sendable {
         synthesizers[group]?.speak(utterance(text, group: group))
     }
 
+    /// The directions voice, with the junction's hour when the caller knows it — spoken from
+    /// that position on the clock. `nil` speaks from dead ahead.
+    func enqueueDirections(_ text: String, hour: Int?) {
+        guard !gated.contains(.directions) else {
+            heldDirections.append((text, hour))
+            return
+        }
+        directionsVoice.speak(text, hour: hour) { utterance($0, group: .directions) }
+    }
+
     /// Opens one family's gate and speaks what it held. Idempotent — the app may repeat its
     /// signal as often as it likes.
     func release(_ group: SpeechGroup) {
         guard gated.contains(group) else { return }
         gated.remove(group)
+        if group == .directions {
+            let queued = heldDirections
+            heldDirections = []
+            for (text, hour) in queued {
+                directionsVoice.speak(text, hour: hour) { utterance($0, group: .directions) }
+            }
+            return
+        }
         for text in held[group] ?? [] {
             synthesizers[group]?.speak(utterance(text, group: group))
         }
@@ -618,7 +787,11 @@ extension World {
             // current, not what the rider actually heard or when.
             speakDirections: { text in
                 rideLog.append("say[dir] \(text)")
-                return Publisher.future { DispatchQueue.main.async { speech.enqueue(text, group: .directions) } }
+                return Publisher.future { DispatchQueue.main.async { speech.enqueueDirections(text, hour: nil) } }
+            },
+            speakDirectionsAt: { text, hour in
+                rideLog.append("say[dir\(hour.map { " @\($0)h" } ?? "")] \(text)")
+                return Publisher.future { DispatchQueue.main.async { speech.enqueueDirections(text, hour: hour) } }
             },
             speakSpeed: { text in
                 rideLog.append("say[spd] \(text)")
