@@ -193,8 +193,8 @@ private func roundaboutAdvice(
     guard
         let step = steps[safe: stepIndex],
         let next = steps[safe: stepIndex + 1],
-        let incoming = pathBearing(Array(step.path.suffix(8)), lastLeg: true),
-        let outgoing = pathBearing(Array(next.path.prefix(8)), lastLeg: false)
+        let incoming = junctionBearing(step.path, approaching: true),
+        let outgoing = junctionBearing(next.path, approaching: false)
     else { return nil }
 
     let rightArrows: Set<LaneTurn> = [.right, .slightRight, .sharpRight]
