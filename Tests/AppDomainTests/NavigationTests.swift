@@ -1347,6 +1347,28 @@ struct ClockFaceTests {
         #expect(clockSuffix(steps, at: 0) == nil)
     }
 
+    /// The hour exists for the voice's *position* even when the words omit it: the early call
+    /// says plain "turn right" by the rider's rule, but its voice arrives from 3 o'clock.
+    @Test("The trusted hour is available even where no hour is spoken")
+    func hourForPositioning() {
+        let steps = [
+            step("Turn right onto A505", path: [(52.0000, -0.46), (52.0006, -0.46)]),
+            step("Continue", path: [
+                (52.0006, -0.46), (52.0006, -0.45978), (52.0006, -0.45890)
+            ])
+        ]
+        #expect(manoeuvreClockHour(steps, at: 0) == 3)
+        // The same trust rules apply to the position as to the suffix: a contradicted hour
+        // positions nothing.
+        let contradicted = [
+            step("Turn right onto A505", path: [(52.0000, -0.46), (52.0006, -0.46)]),
+            step("Continue", path: [
+                (52.0006, -0.46), (52.00075, -0.46015), (52.0009, -0.46030)
+            ])
+        ]
+        #expect(manoeuvreClockHour(contradicted, at: 0) == nil)
+    }
+
     /// The rider's finding after real junctions: the hour helps when the roads are in sight, so
     /// the early call drops it — except at roundabouts, where exit-counting fails a helmet at
     /// any distance.

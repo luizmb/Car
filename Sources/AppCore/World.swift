@@ -148,8 +148,12 @@ public struct World: Sendable {
     // Audio — one voice per announcement family. Families may overlap each other (directions
     // over the top by volume, accessories underneath), but inside a family everything queues
     // and nothing is ever dropped or cut mid-word.
-    /// The route's voice: turn-by-turn, lanes, reroutes, arrivals.
+    /// The route's voice: turn-by-turn, lanes, reroutes, arrivals. Spoken from dead ahead.
     public let speakDirections: @Sendable (String) -> Publisher<Void, Never>
+    /// The route's voice, placed on the junction's clock: the hour (1–12, nil = ahead) positions
+    /// the words in space over HRTF — "turn right" arrives from the right, a 5 o'clock hairpin
+    /// from behind the right ear. Position carries what the early call's words deliberately omit.
+    public let speakDirectionsAt: @Sendable (String, Int?) -> Publisher<Void, Never>
     /// The speed family: limits, roads, cameras, zones, thresholds.
     public let speakSpeed: @Sendable (String) -> Publisher<Void, Never>
     /// Everything else that talks: Indimate, ignition, tyres, the watch's fills.

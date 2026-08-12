@@ -500,6 +500,7 @@ struct RefuelRecordingTests {
                 Publisher.future { spy.record(payload) }
             },
             speakDirections: world.speakDirections,
+            speakDirectionsAt: world.speakDirectionsAt,
             speakSpeed: world.speakSpeed,
             speakAccessory: world.speakAccessory,
             speakSequence: world.speakSequence,
@@ -715,6 +716,7 @@ struct WatchLinkWiringTests {
                 Publisher.future { spy.journey(payload) }
             },
             speakDirections: world.speakDirections,
+            speakDirectionsAt: world.speakDirectionsAt,
             speakSpeed: world.speakSpeed,
             speakAccessory: world.speakAccessory,
             speakSequence: world.speakSequence,

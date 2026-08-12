@@ -651,7 +651,8 @@ public enum AppFeature {
                     formatDistance: ctx.environment.formatDistance
                 )
                 let spoken = advanced.announcement.map {
-                    ctx.environment.speakDirections($0) |> Effect<AppAction>.fireAndForget
+                    ctx.environment.speakDirectionsAt($0, advanced.clockHour)
+                        |> Effect<AppAction>.fireAndForget
                 } ?? .empty
                 // Lane advice, from the extract's paint rather than from the route: the case it
                 // exists for — an exit-only lane the route rides *past* — has no manoeuvre, so no
