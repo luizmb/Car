@@ -1311,6 +1311,42 @@ struct ClockFaceTests {
         #expect(clockSuffix(straight, at: 0) == nil)
     }
 
+    /// The ride that found it: a hard right spoken as "11 o'clock", because MapKit's step
+    /// boundary sat past the physical junction — the approach's final metres already contained
+    /// the turn, and a bearing read inside them pointed east before the rider did.
+    @Test("A corner swallowed by the step boundary still reads as the true angle")
+    func contaminatedApproach() {
+        let steps = [
+            step("Turn right onto A505", path: [
+                // North for ~55 m, then the polyline rounds the corner: its last ~12 m
+                // already head east, though the rider has not turned yet.
+                (52.0000, -0.46), (52.0005, -0.46),
+                (52.00052, -0.46), (52.00052, -0.45982)
+            ]),
+            step("Continue", path: [
+                (52.00052, -0.45982), (52.00052, -0.45960), (52.00052, -0.45900)
+            ])
+        ]
+        // The final-leg reading would say the approach already pointed east — no turn at all,
+        // or one on the wrong side. The corridor reading knows the approach ran north.
+        #expect(clockSuffix(steps, at: 0) == "3 o'clock")
+    }
+
+    /// Even when geometry misleads, the instruction's own word outranks it: a clock on the
+    /// wrong side of a named turn is wrong by construction and stays unsaid.
+    @Test("An hour contradicting the named side is silenced")
+    func contradictionSilenced() {
+        let steps = [
+            // Approach north; the "exit" geometry bends slightly LEFT — whatever produced it,
+            // an 11 o'clock cannot ride with the word "right".
+            step("Turn right onto A505", path: [(52.0000, -0.46), (52.0006, -0.46)]),
+            step("Continue", path: [
+                (52.0006, -0.46), (52.00075, -0.46015), (52.0009, -0.46030)
+            ])
+        ]
+        #expect(clockSuffix(steps, at: 0) == nil)
+    }
+
     /// The rider's finding after real junctions: the hour helps when the roads are in sight, so
     /// the early call drops it — except at roundabouts, where exit-counting fails a helmet at
     /// any distance.

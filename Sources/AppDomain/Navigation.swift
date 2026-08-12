@@ -573,14 +573,74 @@ public func clockSuffix(_ steps: [RouteStep], at index: Int) -> String? {
     guard
         let step = steps[safe: index],
         let next = steps[safe: index + 1],
-        let incoming = pathBearing(step.path.suffix(8), lastLeg: true),
-        let outgoing = pathBearing(Array(next.path.prefix(8)), lastLeg: false)
+        let incoming = junctionBearing(step.path, approaching: true),
+        let outgoing = junctionBearing(next.path, approaching: false)
     else { return nil }
     let hour = clockDirection(incoming: incoming, outgoing: outgoing)
     let names = step.instructions.lowercased()
+    // The instruction's own word outranks the geometry: a "turn right, 11 o'clock" reached a
+    // real helmet, born of a step boundary sitting off the physical junction. When the hour
+    // lands on the wrong side of the named turn, the clock is wrong by construction — silence,
+    // and the word stands alone.
+    if names.contains("right"), (7...11).contains(hour) { return nil }
+    if names.contains("left"), (1...5).contains(hour) { return nil }
     let junction = names.contains("roundabout") || names.contains("exit")
     guard junction || abs(hour - 12) >= 1 && hour != 12 else { return nil }
     return "\(hour) o'clock"
+}
+
+/// A path's bearing where it meets a junction — measured a corridor *away* from the mouth.
+///
+/// MapKit's step boundaries do not sit exactly on the physical junction: the approach's final
+/// metres, and the exit's first, often contain the rounded corner itself — sometimes the whole
+/// turn. A bearing taken inside that stretch collapses the angle or flips its sign, which is
+/// how a hard right was once spoken as "11 o'clock". So the nearest 12 m to the junction are
+/// skipped and the bearing is a chord across the ~28 m beyond them — long enough to smooth
+/// corner rounding, short enough to still describe this road and not the next bend. Paths too
+/// short to skip anything fall back to the plain first/last-leg reading.
+func junctionBearing(_ points: [Coordinate], approaching: Bool) -> Double? {
+    let skipMetres = 12.0
+    let spanMetres = 28.0
+    // Walk outward from the junction end: reversed for an approach (junction is at the END of
+    // an approach path), forward for an exit (junction at the start).
+    let ordered = approaching ? Array(points.reversed()) : points
+    guard let junction = ordered.first else { return nil }
+
+    var cumulative = 0.0
+    var near: Coordinate?
+    var far: Coordinate?
+    var previous = junction
+    for point in ordered.dropFirst() {
+        cumulative += distanceMetres(
+            from: (previous.latitude, previous.longitude),
+            to: (point.latitude, point.longitude)
+        )
+        previous = point
+        if near == nil, cumulative >= skipMetres { near = point }
+        if cumulative >= skipMetres + spanMetres {
+            far = point
+            break
+        }
+    }
+    // Too short to skip the mouth: the old reading is the only honest one left.
+    guard let near else {
+        return approaching
+            ? pathBearing(points.suffix(8).map { $0 }, lastLeg: true)
+            : pathBearing(Array(points.prefix(8)), lastLeg: false)
+    }
+    // The far anchor may be the path's end when the road is short; it still spans ≥ the skip.
+    let anchor = far ?? previous
+    guard distanceMetres(
+        from: (near.latitude, near.longitude), to: (anchor.latitude, anchor.longitude)
+    ) >= 8 else {
+        return approaching
+            ? pathBearing(points.suffix(8).map { $0 }, lastLeg: true)
+            : pathBearing(Array(points.prefix(8)), lastLeg: false)
+    }
+    // Travel runs toward the junction on an approach, away from it on an exit.
+    return approaching
+        ? bearing(from: (anchor.latitude, anchor.longitude), to: (near.latitude, near.longitude))
+        : bearing(from: (near.latitude, near.longitude), to: (anchor.latitude, anchor.longitude))
 }
 
 /// The bearing of a short run of path — its first or last resolvable leg of at least ten metres.
