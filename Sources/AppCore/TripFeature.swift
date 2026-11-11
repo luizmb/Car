@@ -162,7 +162,7 @@ extension TripFeature: HasBehavior {}
 // MARK: - View
 
 struct TripStatusView: View {
-    let viewStore: ViewStore<TripFeature.State, TripFeature.Action>
+    let viewStore: ViewStore<TripFeature.Action, TripFeature.State>
 
     var body: some View {
         HStack(spacing: 5) {
@@ -184,6 +184,6 @@ extension TripFeature: ViewFactory {
         store: any StoreType<Action, State>,
         environment: Environment
     ) -> some View {
-        TripStatusView(viewStore: ViewStore(store))
+        StoreOwner(store: store) { TripStatusView(viewStore: $0) }
     }
 }

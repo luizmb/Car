@@ -106,7 +106,7 @@ extension CardoFeature: HasBehavior {}
 // MARK: - View
 
 struct CardoStatusView: View {
-    let viewStore: ViewStore<CardoFeature.State, CardoFeature.Action>
+    let viewStore: ViewStore<CardoFeature.Action, CardoFeature.State>
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -153,6 +153,6 @@ extension CardoFeature: ViewFactory {
         store: any StoreType<Action, State>,
         environment: Environment
     ) -> some View {
-        CardoStatusView(viewStore: ViewStore(store))
+        StoreOwner(store: store) { CardoStatusView(viewStore: $0) }
     }
 }

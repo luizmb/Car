@@ -19,17 +19,17 @@ import SwiftUI
 /// Holding the router rather than reading it from `@Environment` is deliberate: it is deterministic
 /// across sheet and cover boundaries, exactly where SwiftUI's environment propagation is not.
 public struct AppRootView: View, Routable {
-    let viewStore: ViewStore<AppState, AppAction>
+    let viewStore: ViewStore<AppAction, AppState>
     public let router: AppRouter
 
-    init(viewStore: ViewStore<AppState, AppAction>, router: AppRouter) {
+    init(viewStore: ViewStore<AppAction, AppState>, router: AppRouter) {
         self.viewStore = viewStore
         self.router = router
     }
 
     public var body: some View {
         NavigationStack(
-            path: viewStore.binding(.state(\.routes), dispatch: .action(\.navigation.setPath))
+            path: viewStore.binding(.state(\.routes).action(\.navigation.setPath))
         ) {
             router.root()
                 // Hidden on the root so the map runs edge to edge. The road name used to be a
@@ -53,8 +53,8 @@ public struct AppRootView: View, Routable {
                         router.statusBubbles()
                     }
                     .padding(.leading, 12)
-                    .padding(.top, viewStore.state.activeRoute == nil ? 6 : 76)
-                    .animation(.easeInOut(duration: 0.2), value: viewStore.state.activeRoute == nil)
+                    .padding(.top, viewStore.state.activeRoute.transpose() == nil ? 6 : 76)
+                    .animation(.easeInOut(duration: 0.2), value: viewStore.state.activeRoute.transpose() == nil)
                 }
                 // The next manoeuvre, across the top, only while a route is being followed.
                 //
@@ -153,7 +153,7 @@ public struct AppRootView: View, Routable {
 
     @ViewBuilder
     private var guidanceBanner: some View {
-        if let banner = viewStore.state.guidanceBanner {
+        if let banner = viewStore.state.guidanceBanner.value {
             HStack(spacing: 10) {
                 Image(systemName: "arrow.triangle.turn.up.right.diamond.fill")
                     .font(.title3)
@@ -188,10 +188,10 @@ public struct AppRootView: View, Routable {
     /// feature exists to end.
     @ViewBuilder
     private var fuelBubble: some View {
-        let state = viewStore.state
-        if !state.fuelLog.refuels.isEmpty {
-            let travelled = state.trip.kilometresSinceFill
-            let range = state.fuelLog.range(travelled: travelled, spec: .vt400)
+        let fuelLog = viewStore.state.fuelLog.value
+        if !fuelLog.refuels.isEmpty {
+            let travelled = viewStore.state.trip.kilometresSinceFill
+            let range = fuelLog.range(travelled: travelled, spec: .vt400)
             HStack(spacing: 5) {
                 Image(systemName: "fuelpump.fill")
                     .font(.system(size: 9))
@@ -235,5 +235,23 @@ public struct AppRootView: View, Routable {
                 .glassEffect(.regular, in: .capsule)
                 .fixedSize()
         }
+    }
+}
+
+// MARK: - AppShell
+
+/// The owner of the app's view store: made once, from the store ``AppFeature`` is handed, and kept for
+/// this view's lifetime. ``AppRootView`` and ``AppRouter`` both receive it — neither makes one.
+struct AppShell: View {
+    @OwnedStore var viewStore: ViewStore<AppAction, AppState>
+    let world: World
+
+    init(store: any StoreType<AppAction, AppState>, world: World) {
+        _viewStore = OwnedStore(wrappedValue: store.viewStore())
+        self.world = world
+    }
+
+    var body: some View {
+        AppRootView(viewStore: viewStore, router: AppRouter(viewStore: viewStore, world: world))
     }
 }

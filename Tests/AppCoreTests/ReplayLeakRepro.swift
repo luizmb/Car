@@ -34,8 +34,8 @@ struct ReplayLeakRepro {
         )
         for _ in 0..<20 { await Task.yield() }
 
-        let replay = store.state.path.compactMap(StackEntry.prism.replay.preview).last
+        let replay = store.currentState.path.compactMap(StackEntry.prism.replay.preview).last
         #expect(replay?.monitor.lastLocation == nil, "live fix leaked into the replay monitor")
-        #expect(store.state.speedMonitor.lastLocation?.latitude == Latitude(50.0), "live monitor must keep working")
+        #expect(store.currentState.speedMonitor.lastLocation?.latitude == Latitude(50.0), "live monitor must keep working")
     }
 }

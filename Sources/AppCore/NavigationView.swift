@@ -15,7 +15,7 @@ import SwiftUI
 /// every navigation app does it, because it is the only arrangement where the thing being chosen is
 /// visible while you choose it.
 struct RoutePlannerView: View {
-    let viewStore: ViewStore<NavigationFeature.State, NavigationFeature.Action>
+    let viewStore: ViewStore<NavigationFeature.Action, NavigationFeature.State>
     /// The same closures the behaviour speaks with, handed to the view rather than reimplemented in
     /// it. A private `String(format: "%.0f miles")` here would be a second opinion about units and
     /// locale — one the World already holds, and one that would drift the moment either changed.
@@ -26,13 +26,13 @@ struct RoutePlannerView: View {
 
     var body: some View {
         Group {
-            if viewStore.state.destination == nil {
+            if viewStore.state.destination.transpose() == nil {
                 searchScreen
             } else {
                 mapScreen
             }
         }
-        .navigationTitle(viewStore.state.destination == nil ? "Where to?" : "Routes")
+        .navigationTitle(viewStore.state.destination.transpose() == nil ? "Where to?" : "Routes")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { viewStore.dispatch(.appeared) }
     }
@@ -46,7 +46,7 @@ struct RoutePlannerView: View {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                     TextField(
                         "Address or postcode",
-                        text: viewStore.binding(.state(\.query), dispatch: .action(\.setQuery))
+                        text: viewStore.binding(.state(\.query).action(\.setQuery))
                     )
                     // `.words`, not `.characters`. One field takes both a postcode and a street, and
                     // forcing capitals suits only the postcode — "AMPTHILL ROAD" is awkward to type
@@ -65,9 +65,9 @@ struct RoutePlannerView: View {
             if viewStore.state.query.isEmpty, viewStore.state.suggestions.isEmpty,
                !viewStore.state.recentDestinations.isEmpty {
                 Section("Recent") {
-                    ForEach(viewStore.state.recentDestinations) { recent in
+                    ForEach(viewStore.state.each(\.recentDestinations)) { recent in
                         Button {
-                            viewStore.dispatch(.destinationResolved(recent))
+                            viewStore.dispatch(.destinationResolved(recent.value))
                         } label: {
                             HStack(spacing: 12) {
                                 Image(systemName: "clock.arrow.circlepath")
@@ -82,9 +82,9 @@ struct RoutePlannerView: View {
             // No Search button. Completions are what Apple Maps' own suggestion list uses — cheap,
             // and they arrive as you type, which is what makes a street name give more than the one
             // result a full search resolves it to.
-            ForEach(viewStore.state.suggestions) { suggestion in
+            ForEach(viewStore.state.each(\.suggestions)) { suggestion in
                 Button {
-                    viewStore.dispatch(.choose(suggestion))
+                    viewStore.dispatch(.choose(suggestion.value))
                 } label: {
                     HStack(spacing: 12) {
                         Image(systemName: "mappin.circle.fill")
@@ -128,15 +128,20 @@ struct RoutePlannerView: View {
     /// Drawn together rather than one at a time because the comparison *is* the overlap: what
     /// distinguishes two routes is where they diverge, and that is only visible with both on screen.
     private var routeMap: some View {
-        Map(position: .constant(.automatic)) {
+        // Read once, outside the map builder: the type checker gives up on a `MapContentBuilder` this
+        // size when every term goes through the view store's dynamic members.
+        let routes: [RouteOption] = viewStore.state.routes.value
+        let chosenID = viewStore.state.chosen.value?.id
+        let destination: AddressSuggestion? = viewStore.state.destination.value
+        return Map(position: .constant(.automatic)) {
             // Unchosen first, so the chosen one is drawn over them rather than under.
-            ForEach(viewStore.state.routes.filter { $0.id != viewStore.state.chosen?.id }) { route in
+            ForEach(routes.filter { $0.id != chosenID }) { route in
                 MapPolyline(coordinates: route.shape.map(\.clCoordinate))
                     .stroke(.gray.opacity(0.6), style: StrokeStyle(
                         lineWidth: 6, lineCap: .round, lineJoin: .round
                     ))
             }
-            ForEach(viewStore.state.routes.filter { $0.id == viewStore.state.chosen?.id }) { route in
+            ForEach(routes.filter { $0.id == chosenID }) { route in
                 MapPolyline(coordinates: route.shape.map(\.clCoordinate))
                     .stroke(.blue, style: StrokeStyle(
                         lineWidth: 8, lineCap: .round, lineJoin: .round
@@ -145,18 +150,18 @@ struct RoutePlannerView: View {
 
             // The badges are the comparison. A list of times cannot say *which line* is the 20
             // minute one, and that is the only question being asked on this screen.
-            ForEach(Array(viewStore.state.routes.enumerated()), id: \.element.id) { index, route in
-                if let anchor = badgeAnchor(route, index: index, of: viewStore.state.routes.count) {
+            ForEach(Array(routes.enumerated()), id: \.element.id) { index, route in
+                if let anchor = badgeAnchor(route, index: index, of: routes.count) {
                     Annotation("", coordinate: anchor.clCoordinate) {
                         routeBadgeLabel(route)
                     }
                 }
             }
 
-            if let destination = viewStore.state.destination?.coordinate {
+            if let coordinate = destination?.coordinate {
                 Marker(
-                    viewStore.state.destination?.title ?? "Destination",
-                    coordinate: destination.clCoordinate
+                    destination?.title ?? "Destination",
+                    coordinate: coordinate.clCoordinate
                 )
                 .tint(.red)
             }
@@ -169,14 +174,14 @@ struct RoutePlannerView: View {
     /// Tappable, because the badge is where the eye already is when comparing two lines.
     @ViewBuilder
     private func routeBadgeLabel(_ route: RouteOption) -> some View {
-        let isChosen = route.id == viewStore.state.chosen?.id
+        let isChosen = route.id == viewStore.state.chosen.value?.id
         Button {
             viewStore.dispatch(.select(route))
         } label: {
             VStack(spacing: 0) {
                 Text(formatDuration(route.travelTime))
                     .font(.subheadline.weight(.semibold))
-                if let badge = routeBadge(route, among: viewStore.state.routes) {
+                if let badge = routeBadge(route, among: viewStore.state.routes.value) {
                     Text(badge).font(.caption2)
                 }
             }
@@ -199,7 +204,7 @@ struct RoutePlannerView: View {
                         ProgressView()
                         Text("Finding routes…").foregroundStyle(.secondary)
                     }
-                } else if let outcome = viewStore.state.outcome {
+                } else if let outcome = viewStore.state.outcome.value {
                     outcomeSection(outcome)
                 } else if !viewStore.state.canRoute {
                     Label("Waiting for a GPS fix…", systemImage: "location")
@@ -210,15 +215,13 @@ struct RoutePlannerView: View {
                     Toggle(
                         "Avoid motorways",
                         isOn: viewStore.binding(
-                            .state(\.preferences.avoidMotorways),
-                            dispatch: .action(\.setAvoidMotorways)
+                            .state(\.preferences.avoidMotorways).action(\.setAvoidMotorways)
                         )
                     )
                     Toggle(
                         "Avoid tolls",
                         isOn: viewStore.binding(
-                            .state(\.preferences.avoidTolls),
-                            dispatch: .action(\.setAvoidTolls)
+                            .state(\.preferences.avoidTolls).action(\.setAvoidTolls)
                         )
                     )
                 } footer: {
@@ -226,7 +229,7 @@ struct RoutePlannerView: View {
                     Text("Routes that use these are hidden, not just discouraged.")
                 }
             }
-            .navigationTitle(viewStore.state.destination?.title ?? "Routes")
+            .navigationTitle(viewStore.state.destination.value?.title ?? "Routes")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -266,7 +269,7 @@ struct RoutePlannerView: View {
 
     @ViewBuilder
     private func routeRow(_ route: RouteOption) -> some View {
-        let isChosen = viewStore.state.chosen?.id == route.id
+        let isChosen = viewStore.state.chosen.value?.id == route.id
         HStack(alignment: .center) {
             Button {
                 viewStore.dispatch(.select(route))
@@ -278,7 +281,7 @@ struct RoutePlannerView: View {
                     Text(routeDetail(route))
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    if let badge = routeBadge(route, among: viewStore.state.routes) {
+                    if let badge = routeBadge(route, among: viewStore.state.routes.value) {
                         Text(badge).font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -291,7 +294,7 @@ struct RoutePlannerView: View {
             // gesture when you already know which one you want, and a rider in gloves should not
             // have to tap twice in two different places.
             Button {
-                viewStore.dispatch(.start(route, viewStore.state.destination?.title))
+                viewStore.dispatch(.start(route, viewStore.state.destination.value?.title))
             } label: {
                 Text("GO").font(.headline)
             }
@@ -325,12 +328,14 @@ extension NavigationFeature: ViewFactory {
         store: any StoreType<Action, State>,
         environment: Environment
     ) -> some View {
-        RoutePlannerView(
-            viewStore: ViewStore(store),
-            formatDistance: environment.formatDistance,
-            formatDuration: environment.formatDuration,
-            formatTime: environment.formatTime,
-            now: environment.now
-        )
+        StoreOwner(store: store) {
+            RoutePlannerView(
+                viewStore: $0,
+                formatDistance: environment.formatDistance,
+                formatDuration: environment.formatDuration,
+                formatTime: environment.formatTime,
+                now: environment.now
+            )
+        }
     }
 }
