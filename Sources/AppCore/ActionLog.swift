@@ -18,10 +18,35 @@ func utcDayStamp(_ dayIndex: Int) -> String {
     return formatter.string(from: Date(timeIntervalSince1970: Double(dayIndex) * 86_400))
 }
 
+/// The UTC day index of a `prefix-YYYY-MM-DD.jsonl` file name; `nil` for any other name.
+func utcDayIndex(ofLogNamed name: String, prefix: String) -> Int? {
+    let head = prefix + "-"
+    let tail = ".jsonl"
+    guard name.hasPrefix(head), name.hasSuffix(tail) else { return nil }
+    let stamp = String(name.dropFirst(head.count).dropLast(tail.count))
+    let formatter = ISO8601DateFormatter()
+    formatter.timeZone = TimeZone(secondsFromGMT: 0)
+    formatter.formatOptions = [.withFullDate]
+    return formatter.date(from: stamp).map(utcDayIndex)
+}
+
+/// The day files that have outlived the retention window, by name.
+///
+/// `keepDays` counts today: 14 keeps today and the thirteen days before it. Names that are not
+/// day files of this prefix are never touched — Documents also holds the databases and the
+/// peripheral identifiers.
+func expiredLogs(_ names: [String], prefix: String, today: Int, keepDays: Int) -> [String] {
+    names.filter { name in
+        utcDayIndex(ofLogNamed: name, prefix: prefix).map { today - $0 >= keepDays } ?? false
+    }
+}
+
 /// Appends lines to a JSONL file, one file per UTC day.
 ///
 /// Only the **debug** firehose lives here now — `String(describing:)` of every action, on or off
-/// journey: brilliant for a first ride, useless as a record, and deleted weekly. The journey
+/// journey: brilliant for a first ride, useless as a record, and pruned to the last `keepDays` days
+/// every time a day file opens (until 2026-11 the comment promised weekly deletion and nothing did
+/// it — 77 files had piled up on the phone). The journey
 /// timeline that once shared this type lives in the app database as typed rows.
 ///
 /// Crude on purpose. In a Redux app every observation already passes through the store as an action,
@@ -62,10 +87,12 @@ final class ActionLogBox: @unchecked Sendable {
     /// The directory is injected rather than looked up, for the same reason the clock is: two
     /// instances pointed at the shared Documents folder fight over the same day's file.
     private let prefix: String
+    private let keepDays: Int
 
-    init(directory: URL, prefix: String, now: @escaping @Sendable () -> Date) {
+    init(directory: URL, prefix: String, keepDays: Int, now: @escaping @Sendable () -> Date) {
         self.directory = directory
         self.prefix = prefix
+        self.keepDays = keepDays
         self.now = now
         let formatter = ISO8601DateFormatter()
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
@@ -113,5 +140,16 @@ final class ActionLogBox: @unchecked Sendable {
         handle = opened
         dayIndex = today
         _url = file
+        prune(today: today)
+    }
+
+    /// Deletes the day files past the retention window. Runs on every day roll — which includes
+    /// the first line after each launch — so a phone that rides daily never holds more than
+    /// `keepDays` files, and one left idle for months is cleaned on its next launch.
+    private func prune(today: Int) {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        for name in expiredLogs(names, prefix: prefix, today: today, keepDays: keepDays) {
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
+        }
     }
 }

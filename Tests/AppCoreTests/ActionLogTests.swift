@@ -80,7 +80,7 @@ struct ActionLogFilingTests {
     func appendsAccumulate() throws {
         let directory = scratch()
         let clock = TestClock(date("2026-08-05T10:00:00Z"))
-        let log = ActionLogBox(directory: directory, prefix: "debug", now: { clock.now })
+        let log = ActionLogBox(directory: directory, prefix: "debug", keepDays: 14, now: { clock.now })
         log.append("first")
         clock.now = date("2026-08-05T10:00:01Z")
         log.append("second")
@@ -99,7 +99,7 @@ struct ActionLogFilingTests {
         // edge one, so the roll cannot happen only at launch.
         let directory = scratch()
         let clock = TestClock(date("2026-08-05T23:59:59Z"))
-        let log = ActionLogBox(directory: directory, prefix: "debug", now: { clock.now })
+        let log = ActionLogBox(directory: directory, prefix: "debug", keepDays: 14, now: { clock.now })
         log.append("before")
         let first = try #require(log.url)
 
@@ -110,6 +110,65 @@ struct ActionLogFilingTests {
         #expect(first != second)
         #expect(first.lastPathComponent == "debug-2026-08-05.jsonl")
         #expect(second.lastPathComponent == "debug-2026-08-06.jsonl")
+        try? FileManager.default.removeItem(at: directory)
+    }
+}
+
+// Nothing ever deleted these: 77 day files had piled up on the phone by 2026-11 under a comment
+// that promised weekly deletion. Retention is now enforced on every day roll.
+@Suite("Ride log retention")
+struct ActionLogRetentionTests {
+
+    private func day(_ stamp: String) -> Int {
+        let formatter = ISO8601DateFormatter()
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.formatOptions = [.withFullDate]
+        return utcDayIndex(formatter.date(from: stamp) ?? Date(timeIntervalSince1970: 0))
+    }
+
+    @Test("a day file's name reads back as its day")
+    func parsesName() {
+        #expect(utcDayIndex(ofLogNamed: "debug-2026-11-09.jsonl", prefix: "debug") == day("2026-11-09"))
+        #expect(utcDayIndex(ofLogNamed: "journey-2026-11-09.jsonl", prefix: "debug") == nil)
+        #expect(utcDayIndex(ofLogNamed: "debug-latest.jsonl", prefix: "debug") == nil)
+        #expect(utcDayIndex(ofLogNamed: "debug-2026-11-09.txt", prefix: "debug") == nil)
+    }
+
+    @Test("keeps today and the days inside the window, expires the rest")
+    func window() {
+        let names = [
+            "debug-2026-11-11.jsonl", "debug-2026-10-29.jsonl", "debug-2026-10-28.jsonl",
+            "debug-2026-08-05.jsonl"
+        ]
+        let expired = expiredLogs(names, prefix: "debug", today: day("2026-11-11"), keepDays: 14)
+        #expect(expired == ["debug-2026-10-28.jsonl", "debug-2026-08-05.jsonl"])
+    }
+
+    @Test("never touches anything that is not one of its own day files")
+    func leavesOthersAlone() {
+        let names = [
+            "speedjarvis.sqlite", "roads.sqlite", "indimate-peripheral.txt",
+            "chigee-peripheral.txt", "journey-2026-08-06.jsonl", "fuel-log.json"
+        ]
+        #expect(expiredLogs(names, prefix: "debug", today: day("2026-11-11"), keepDays: 14).isEmpty)
+    }
+
+    @Test("opening a day file prunes the expired ones from the directory")
+    func prunesOnRoll() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ride-log-retention-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for name in ["debug-2026-08-05.jsonl", "debug-2026-11-01.jsonl", "speedjarvis.sqlite"] {
+            FileManager.default.createFile(atPath: directory.appendingPathComponent(name).path, contents: nil)
+        }
+        let log = ActionLogBox(
+            directory: directory, prefix: "debug", keepDays: 14,
+            now: { Date(timeIntervalSince1970: Double(day("2026-11-11")) * 86_400 + 3_600) }
+        )
+        log.append("launch")
+
+        let left = try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted()
+        #expect(left == ["debug-2026-11-01.jsonl", "debug-2026-11-11.jsonl", "speedjarvis.sqlite"])
         try? FileManager.default.removeItem(at: directory)
     }
 }
