@@ -3,6 +3,7 @@ import CoreFP
 import SpeedMonitorFeature
 import SwiftRex
 import SwiftRexArchitecture
+import SwiftRexSwiftUI
 import SwiftUI
 
 // MARK: - AppRouter
@@ -21,11 +22,13 @@ import SwiftUI
 /// narrowing `World` on the spot — a screen off the stack has no store, no view and no environment.
 @MainActor
 public struct AppRouter {
-    private let store: MainStoreType
+    /// The app's view store — received, never made here. Holding a view store rather than the raw
+    /// store is what lets a pushed screen's presence be a read the stack observes.
+    private let viewStore: ViewStore<AppAction, AppState>
     private let world: World
 
-    init(store: MainStoreType, world: World) {
-        self.store = store
+    init(viewStore: ViewStore<AppAction, AppState>, world: World) {
+        self.viewStore = viewStore
         self.world = world
     }
 
@@ -42,20 +45,20 @@ public struct AppRouter {
     /// top-leading overlays with the same padding drew directly on top of each other, which is
     /// exactly what happened to the road name and the ignition bubble.
     public func root() -> some View {
-        AppScopes.speedMonitor.view(of: SpeedMonitorFeature.self, from: store, world: world)
+        AppScopes.speedMonitor.view(of: SpeedMonitorFeature.self, from: viewStore, world: world)
     }
 
     /// The status column: one bubble per feature, each built from its own scope and none of them
     /// aware the others exist.
     public func statusBubbles() -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            AppScopes.chigee.view(of: ChigeeFeature.self, from: store, world: world)
-            AppScopes.indicator.view(of: IndicatorFeature.self, from: store, world: world)
-            AppScopes.tyres.view(of: TyreFeature.self, from: store, world: world)
-            AppScopes.motion.view(of: MotionFeature.self, from: store, world: world)
-            AppScopes.weather.view(of: WeatherFeature.self, from: store, world: world)
-            AppScopes.trip.view(of: TripFeature.self, from: store, world: world)
-            AppScopes.cardo.view(of: CardoFeature.self, from: store, world: world)
+            AppScopes.chigee.view(of: ChigeeFeature.self, from: viewStore, world: world)
+            AppScopes.indicator.view(of: IndicatorFeature.self, from: viewStore, world: world)
+            AppScopes.tyres.view(of: TyreFeature.self, from: viewStore, world: world)
+            AppScopes.motion.view(of: MotionFeature.self, from: viewStore, world: world)
+            AppScopes.weather.view(of: WeatherFeature.self, from: viewStore, world: world)
+            AppScopes.trip.view(of: TripFeature.self, from: viewStore, world: world)
+            AppScopes.cardo.view(of: CardoFeature.self, from: viewStore, world: world)
         }
     }
 
@@ -64,15 +67,15 @@ public struct AppRouter {
     @ViewBuilder
     public func destination(for route: AppRoute) -> some View {
         switch route {
-        case .fuel: AppScopes.fuel.pushedView(of: FuelFeature.self, from: store, world: world)
+        case .fuel: AppScopes.fuel.pushedView(of: FuelFeature.self, from: viewStore, world: world)
         case .navigate:
-            AppScopes.navigate.pushedView(of: NavigationFeature.self, from: store, world: world)
+            AppScopes.navigate.pushedView(of: NavigationFeature.self, from: viewStore, world: world)
         case .rides:
-            AppScopes.rides.pushedView(of: RideReviewFeature.self, from: store, world: world)
+            AppScopes.rides.pushedView(of: RideReviewFeature.self, from: viewStore, world: world)
         case .maintenance:
-            AppScopes.maintenance.pushedView(of: MaintenanceFeature.self, from: store, world: world)
+            AppScopes.maintenance.pushedView(of: MaintenanceFeature.self, from: viewStore, world: world)
         case .replay:
-            ReplayView(store: store, world: world)
+            ReplayView(viewStore: viewStore, world: world)
         }
     }
 }
@@ -82,7 +85,7 @@ public struct AppRouter {
 /// The affine counterpart of `Relay.Scope.view(of:from:world:)`, which needs a *total* state lane and so
 /// cannot build a screen that lives in a stack element.
 ///
-/// `transpose()` holds the last value steady while SwiftUI animates the pop, so a screen never blanks on
+/// `traverse(action:state:)` depends only on the element's presence and holds the last value steady while SwiftUI animates the pop, so a screen never blanks on
 /// its way out; the outer `nil` then tears it down once the element is gone.
 extension Relay.Scope where
     ActionStrategy: Relay.ActionAxis.EmbedsProtocol,
@@ -94,11 +97,20 @@ extension Relay.Scope where
     @MainActor @ViewBuilder
     func pushedView<F: ViewFactory>(
         of _: F.Type,
-        from store: any StoreType<Action, State>,
-        world: Environment
+        from viewStore: ViewStore<Action, State>,
+        world: Environment,
+        fileID: String = #fileID,
+        line: UInt = #line,
+        column: UInt = #column
     ) -> some View
     where F.Action == ActionStrategy.Local, F.State == StateStrategy.Local, F.Environment == EnvironmentStrategy.Local {
-        if let screen = store.projection(action: action.review, state: state.preview).transpose() {
+        if let screen = viewStore.traverse(
+            action: action.review,
+            state: state.preview,
+            fileID: fileID,
+            line: line,
+            column: column
+        ) {
             F.view(store: screen, environment: environment.narrow(world))
         }
     }

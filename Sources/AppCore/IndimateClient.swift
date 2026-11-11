@@ -40,11 +40,21 @@ private enum Indimate {
 ///
 /// Scanning is filtered to the custom service UUID, which is what makes it legal in the
 /// background — an unfiltered scan is foreground-only.
+///
+/// **The remembered identifier is a hint, never the only door (2026-11).** From 8 Sep the unit
+/// stopped connecting on every ride while the Indimate's own app still reached it, with no app
+/// change in between. The old flow armed a pending connect on the remembered identifier and then
+/// never scanned again — so if iOS ever issued the unit a new identifier (a re-pair through the
+/// vendor app, an OS update), the connect waited on a ghost forever and logged nothing. Now the
+/// known identifier is armed *and* a service-filtered scan runs alongside it; an advertisement from
+/// a different identifier replaces the ghost and is written down. Every step is logged as
+/// `indimate-*`, like `chigee-*`, because the September silence was undiagnosable without it.
 final class IndimateCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate, @unchecked Sendable {
     private let lock = NSLock()
     private var central: CBCentralManager?
     private var peripheral: CBPeripheral?
     private var emit: (@Sendable (IndimateEvent) -> Void)?
+    private var log: (@Sendable (String) -> Void)?
     private var knownIdentifier: UUID?
     private var onLearn: (@Sendable (UUID) -> Void)?
 
@@ -55,12 +65,14 @@ final class IndimateCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
     /// is enforced here rather than relied upon.
     func start(
         knownIdentifier: UUID?,
+        log: @escaping @Sendable (String) -> Void,
         onLearn: @escaping @Sendable (UUID) -> Void,
         _ emit: @escaping @Sendable (IndimateEvent) -> Void
     ) {
         lock.withLock {
             self.knownIdentifier = knownIdentifier
             self.onLearn = onLearn
+            self.log = log
         }
         let alreadyRunning = lock.withLock { () -> Bool in
             guard central == nil else { return true }
@@ -89,6 +101,7 @@ final class IndimateCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
         device.map { manager?.cancelPeripheralConnection($0) }
         lock.withLock {
             emit = nil
+            log = nil
             peripheral = nil
             central = nil
         }
@@ -98,31 +111,72 @@ final class IndimateCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
         lock.withLock { emit }?(event)
     }
 
-    private func scan(_ manager: CBCentralManager) {
-        // A peripheral we already know: arm a pending connect straight at it. No scan, no waiting on
-        // its advertising interval, and it survives the unit being powered down and back up.
-        if let known = lock.withLock({ peripheral ?? knownIdentifier.flatMap {
-            manager.retrievePeripherals(withIdentifiers: [$0]).first
-        } }) {
-            attach(known, on: manager)
-            return
+    private func note(_ event: String, _ fields: [String: Any] = [:]) {
+        let parts = fields.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }
+        lock.withLock { log }?(([event] + parts).joined(separator: " "))
+    }
+
+    private func noteError(_ event: String, _ error: (any Error)?, _ fields: [String: Any] = [:]) {
+        let ns = error as NSError?
+        note(event, fields.merging(["domain": ns?.domain ?? "-", "code": ns?.code ?? 0]) { $1 })
+    }
+
+    /// Arms whatever we can reach, then scans regardless.
+    ///
+    /// 1. The peripheral already adopted this session, or the remembered identifier.
+    /// 2. A link iOS already holds — the vendor app's, for one: iOS shares it, and the unit may not
+    ///    advertise at all while connected.
+    /// 3. A service-filtered scan, *always* — it is the only path that can notice the remembered
+    ///    identifier has gone stale. Filtered, so it is legal in the background.
+    private func search(_ manager: CBCentralManager) {
+        let adopted = lock.withLock { peripheral }
+        let known = lock.withLock { knownIdentifier }
+        if let device = adopted {
+            arm(device, on: manager, reason: "adopted")
+        } else if let id = known {
+            if let device = manager.retrievePeripherals(withIdentifiers: [id]).first {
+                arm(device, on: manager, reason: "known")
+            } else {
+                note("indimate-known-unresolved", ["id": id.uuidString.prefix(8)])
+            }
+        } else {
+            note("indimate-no-identifier")
         }
-        // Already-connected peripherals never appear in a scan, so ask for them explicitly —
-        // this is what recovers the unit after a background relaunch.
-        if let existing = manager.retrieveConnectedPeripherals(withServices: [Indimate.service]).first {
-            attach(existing, on: manager)
-            return
+
+        let linked = manager.retrieveConnectedPeripherals(withServices: [Indimate.service])
+        note("indimate-system-links", ["count": linked.count])
+        if let existing = linked.first, existing.identifier != lock.withLock({ peripheral?.identifier }) {
+            adopt(existing, on: manager, reason: "system-link")
         }
+
+        note("indimate-scanning")
         manager.scanForPeripherals(withServices: [Indimate.service], options: nil)
     }
 
-    private func attach(_ device: CBPeripheral, on manager: CBCentralManager) {
+    /// Switches to a different peripheral than the one armed, cancelling the old pending connect.
+    private func adopt(_ device: CBPeripheral, on manager: CBCentralManager, reason: String) {
+        let previous = lock.withLock { peripheral }
+        if let previous, previous.identifier != device.identifier {
+            note("indimate-id-changed", [
+                "from": previous.identifier.uuidString.prefix(8),
+                "to": device.identifier.uuidString.prefix(8)
+            ])
+            manager.cancelPeripheralConnection(previous)
+        }
+        arm(device, on: manager, reason: reason)
+    }
+
+    private func arm(_ device: CBPeripheral, on manager: CBCentralManager, reason: String) {
         lock.withLock { peripheral = device }
         lock.withLock { onLearn }?(device.identifier)
         device.delegate = self
+        note("indimate-arm", [
+            "id": device.identifier.uuidString.prefix(8),
+            "state": device.state.rawValue,
+            "via": reason
+        ])
         // A connect request with no timeout stays pending indefinitely, so the moment the unit
-        // powers up on first indicator use, iOS links it — no discovery latency on top of the
-        // hardware's own gating.
+        // powers up iOS links it — no discovery latency on top of the hardware's own gating.
         manager.connect(device, options: nil)
     }
 
@@ -134,6 +188,10 @@ final class IndimateCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
     /// still live on the peripheral's side. Re-discovering re-attaches the callbacks.
     func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
         let restored = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] ?? []
+        note("indimate-restore", [
+            "count": restored.count,
+            "state": restored.first?.state.rawValue ?? -1
+        ])
         guard let device = restored.first else { return }
         lock.withLock { peripheral = device }
         device.delegate = self
@@ -148,12 +206,13 @@ final class IndimateCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
     }
 
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        note("indimate-ble-state", ["state": central.state.rawValue])
         send(.availability(central.state.availability))
         guard central.state == .poweredOn else {
             send(.disconnected)
             return
         }
-        scan(central)
+        search(central)
     }
 
     func centralManager(
@@ -162,11 +221,22 @@ final class IndimateCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
         advertisementData: [String: Any],
         rssi RSSI: NSNumber
     ) {
+        note("indimate-adv", [
+            "id": peripheral.identifier.uuidString.prefix(8),
+            "name": peripheral.name ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? "-",
+            "rssi": RSSI.intValue
+        ])
         central.stopScan()
-        attach(peripheral, on: central)
+        let armed = lock.withLock { self.peripheral }
+        // The armed one advertising means its pending connect is about to land; anything else
+        // means the remembered identifier is a ghost.
+        guard armed?.identifier != peripheral.identifier else { return }
+        adopt(peripheral, on: central, reason: "scan")
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        note("indimate-connected", ["id": peripheral.identifier.uuidString.prefix(8)])
+        central.stopScan()
         send(.connected)
         peripheral.discoverServices([Indimate.service])
     }
@@ -176,7 +246,8 @@ final class IndimateCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
         didFailToConnect peripheral: CBPeripheral,
         error: (any Error)?
     ) {
-        scan(central)
+        noteError("indimate-connect-failed", error, ["id": peripheral.identifier.uuidString.prefix(8)])
+        search(central)
     }
 
     func centralManager(
@@ -184,16 +255,19 @@ final class IndimateCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
         didDisconnectPeripheral peripheral: CBPeripheral,
         error: (any Error)?
     ) {
+        noteError("indimate-disconnected", error, ["id": peripheral.identifier.uuidString.prefix(8)])
         send(.disconnected)
         // Re-arm immediately. The unit drops off whenever the ignition does, and the rider may
         // turn the keys several times in one outing.
-        scan(central)
+        search(central)
     }
 
     // MARK: CBPeripheralDelegate
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: (any Error)?) {
-        (peripheral.services ?? [])
+        let services = peripheral.services ?? []
+        noteError("indimate-services", error, ["count": services.count])
+        services
             .filter { $0.uuid == Indimate.service }
             .forEach { peripheral.discoverCharacteristics([Indimate.state], for: $0) }
     }
@@ -203,9 +277,19 @@ final class IndimateCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
         didDiscoverCharacteristicsFor service: CBService,
         error: (any Error)?
     ) {
-        (service.characteristics ?? [])
+        let characteristics = service.characteristics ?? []
+        noteError("indimate-chars", error, ["count": characteristics.count])
+        characteristics
             .filter { $0.uuid == Indimate.state }
             .forEach { peripheral.setNotifyValue(true, for: $0) }
+    }
+
+    func peripheral(
+        _ peripheral: CBPeripheral,
+        didUpdateNotificationStateFor characteristic: CBCharacteristic,
+        error: (any Error)?
+    ) {
+        noteError("indimate-notify", error, ["on": characteristic.isNotifying])
     }
 
     func peripheral(
@@ -261,11 +345,12 @@ private extension CBManagerState {
 func makeIndimateStream(
     central: IndimateCentral,
     knownIdentifier: @escaping @Sendable () -> UUID?,
+    log: @escaping @Sendable (String) -> Void,
     onLearn: @escaping @Sendable (UUID) -> Void
 ) -> Publisher<IndimateEvent, Never> {
     Publisher { continuation in
         let (stream, streamContinuation) = AsyncStream<IndimateEvent>.makeStream()
-        central.start(knownIdentifier: knownIdentifier(), onLearn: onLearn) {
+        central.start(knownIdentifier: knownIdentifier(), log: log, onLearn: onLearn) {
             streamContinuation.yield($0)
         }
         await continuation.yieldAll(stream)   // parks until cancelled

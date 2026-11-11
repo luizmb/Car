@@ -9,11 +9,11 @@ import SwiftUI
 /// Three vertical pages: glance, context, errand. Fully store-driven — the page selection, every
 /// form field and every number on screen comes from state, so the views hold nothing at all.
 public struct WatchRootView: View {
-    let viewStore: ViewStore<WatchFeature.State, WatchFeature.Action>
+    let viewStore: ViewStore<WatchFeature.Action, WatchFeature.State>
 
     public var body: some View {
         TabView(selection: viewStore.binding(
-            .state(\.tab), dispatch: .action(\.tabChanged)
+            .state(\.tab).action(\.tabChanged)
         )) {
             InstrumentsView(viewStore: viewStore)
                 .tag(WatchFeature.Tab.instruments)
@@ -49,10 +49,10 @@ private extension View {
 /// Over the limit the speed itself turns red — on a wrist there is no room for a second element
 /// to carry the warning, and the number is where the eye already is.
 struct InstrumentsView: View {
-    let viewStore: ViewStore<WatchFeature.State, WatchFeature.Action>
+    let viewStore: ViewStore<WatchFeature.Action, WatchFeature.State>
 
     var body: some View {
-        let snapshot = viewStore.state.snapshot
+        let snapshot = viewStore.state.snapshot.value
         VStack(spacing: 2) {
             HStack(spacing: 10) {
                 indicatorArrow("arrow.turn.up.left", lit: snapshot?.indicator == "left")
@@ -110,9 +110,9 @@ struct InstrumentsView: View {
     }
 
     private var statusLine: String {
-        guard viewStore.state.snapshot != nil else { return "waiting for the phone" }
+        guard viewStore.state.snapshot.value != nil else { return "waiting for the phone" }
         guard viewStore.state.phoneReachable else { return "last known" }
-        return viewStore.state.snapshot?.journeyActive == true ? "riding" : "parked"
+        return viewStore.state.snapshot.value?.journeyActive == true ? "riding" : "parked"
     }
 
     private func indicatorArrow(_ symbol: String, lit: Bool) -> some View {
@@ -150,10 +150,10 @@ struct InstrumentsView: View {
 /// The context: where the bike is, which way it faces, and the chosen route's line — the phone's
 /// camera framing, re-rendered on the wrist. No interaction: the map on a watch is a picture.
 struct WatchMapView: View {
-    let viewStore: ViewStore<WatchFeature.State, WatchFeature.Action>
+    let viewStore: ViewStore<WatchFeature.Action, WatchFeature.State>
 
     var body: some View {
-        let snapshot = viewStore.state.snapshot
+        let snapshot = viewStore.state.snapshot.value
         if let lat = snapshot?.latitude, let lon = snapshot?.longitude {
             Map(position: .constant(.camera(MapCamera(
                 centerCoordinate: CLLocationCoordinate2D(latitude: lat, longitude: lon),
@@ -200,9 +200,9 @@ struct WatchMapView: View {
 /// devices are actually talking. Everything here is the phone's snapshot — the wrist measures
 /// nothing — and a missing figure shows as a dash, never a zero.
 struct SensorsView: View {
-    let viewStore: ViewStore<WatchFeature.State, WatchFeature.Action>
+    let viewStore: ViewStore<WatchFeature.Action, WatchFeature.State>
 
-    private var snapshot: WatchSnapshot? { viewStore.state.snapshot }
+    private var snapshot: WatchSnapshot? { viewStore.state.snapshot.value }
 
     var body: some View {
         ScrollView {
@@ -284,13 +284,13 @@ struct SensorsView: View {
 /// estimate, so the crown only ever nudges the tail. The watch sends the ask; the phone builds
 /// the real record with its clock, its GPS, its trip counter and its forecourt lookup.
 struct RefuelView: View {
-    let viewStore: ViewStore<WatchFeature.State, WatchFeature.Action>
+    let viewStore: ViewStore<WatchFeature.Action, WatchFeature.State>
     // Focus is hardware routing, not app state: the store owns *which* window is being edited
     // (`refuelFocus`); this only tells watchOS the crown belongs to this view while any window
     // is selected. SwiftUI offers no other handle on crown ownership.
     @FocusState private var crownCaptured: Bool
 
-    private var draft: WatchFeature.RefuelDraft { viewStore.state.refuel }
+    private var draft: WatchFeature.RefuelDraft { viewStore.state.refuel.value }
     private var focus: WatchFeature.RefuelSegment? { viewStore.state.refuelFocus }
 
     var body: some View {
@@ -338,7 +338,7 @@ struct RefuelView: View {
                 Toggle("To the brim", isOn: Binding(
                     get: { viewStore.state.refuel.filledToBrim },
                     set: { brim in
-                        var next = viewStore.state.refuel
+                        var next = viewStore.state.refuel.value
                         next.filledToBrim = brim
                         viewStore.dispatch(.refuelEdited(next))
                     }
@@ -427,7 +427,7 @@ struct RefuelView: View {
     private var crown: Binding<Double> {
         Binding(
             get: {
-                let draft = viewStore.state.refuel
+                let draft = viewStore.state.refuel.value
                 let value: Int = switch viewStore.state.refuelFocus {
                 case .litresInt: draft.litresInt
                 case .litresDec: draft.litresDec
@@ -440,7 +440,7 @@ struct RefuelView: View {
             },
             set: { raw in
                 guard let segment = viewStore.state.refuelFocus else { return }
-                var next = viewStore.state.refuel
+                var next = viewStore.state.refuel.value
                 let value = Int(raw.rounded())
                 switch segment {
                 case .litresInt: next.litresInt = max(0, min(15, value))
@@ -452,14 +452,14 @@ struct RefuelView: View {
                     // A touched odometer is the rider's reading; the phone's estimate stands down.
                     next.odoSeeded = true
                 }
-                if next != viewStore.state.refuel { viewStore.dispatch(.refuelEdited(next)) }
+                if next != viewStore.state.refuel.value { viewStore.dispatch(.refuelEdited(next)) }
             }
         )
     }
 
     private func gradeButton(_ grade: String) -> some View {
         Button(grade) {
-            var next = viewStore.state.refuel
+            var next = viewStore.state.refuel.value
             next.grade = grade
             viewStore.dispatch(.refuelEdited(next))
         }
@@ -477,6 +477,21 @@ extension WatchFeature {
     public static func view(
         store: any StoreType<Action, State>
     ) -> some View {
-        WatchRootView(viewStore: ViewStore(store))
+        WatchShell(store: store)
     }
 }
+
+/// Keeps the watch app's view store — made once from the store, for this view's lifetime — and hands
+/// it to ``WatchRootView``, which only receives it.
+struct WatchShell: View {
+    @OwnedStore var viewStore: ViewStore<WatchFeature.Action, WatchFeature.State>
+
+    init(store: any StoreType<WatchFeature.Action, WatchFeature.State>) {
+        _viewStore = OwnedStore(wrappedValue: store.viewStore())
+    }
+
+    var body: some View { WatchRootView(viewStore: viewStore) }
+}
+
+/// Which crown window is selected: a small enum the views switch on whole.
+extension WatchFeature.RefuelSegment: IndivisibleTracking {}

@@ -13,7 +13,7 @@ import SwiftUI
 /// siblings in app state, and the router composes them. When CHIGEE gets the same treatment it
 /// slots in beside this one without either knowing about the other.
 struct IndicatorStatusView: View {
-    let viewStore: ViewStore<IndicatorFeature.State, IndicatorFeature.Action>
+    let viewStore: ViewStore<IndicatorFeature.Action, IndicatorFeature.State>
 
     // No view state: the blink below is a phase animator, which owns its own repetition — the
     // last `@State` in the app went with it.
@@ -109,6 +109,6 @@ extension IndicatorFeature: ViewFactory {
         store: any StoreType<Action, State>,
         environment: Environment
     ) -> some View {
-        IndicatorStatusView(viewStore: ViewStore(store))
+        StoreOwner(store: store) { IndicatorStatusView(viewStore: $0) }
     }
 }

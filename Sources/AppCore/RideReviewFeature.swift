@@ -75,7 +75,6 @@ public enum RideReviewFeature {
 
     // MARK: State
 
-    @Tracked
     public struct State: Sendable, Equatable {
         /// The list's three columns, straight from the journey table — never the timeline.
         public var summaries: [RideSummary] = []
@@ -343,12 +342,12 @@ public enum RideReviewFeature {
 extension RideReviewFeature: Feature {
     /// Hand-written where `@Feature` would have generated it: the macro's conformance resolves
     /// for probes but stays invisible to same-module generic uses — a corner worth reporting to
-    /// SwiftRex. The body is exactly what the macro emits: project, wrap tracked, hand to Content.
+    /// SwiftRex. The body is what the macro emits: keep a view store, hand it to Content.
     @MainActor
     public static func view(
         store: any StoreType<Action, State>,
         environment _: Environment
     ) -> some View {
-        RideReviewView(viewStore: TrackedViewStore(store))
+        StoreOwner(store: store) { RideReviewView(viewStore: $0) }
     }
 }

@@ -103,14 +103,14 @@ extension MotionFeature: HasBehavior {}
 // MARK: - View
 
 struct MotionStatusView: View {
-    let viewStore: ViewStore<MotionFeature.State, MotionFeature.Action>
+    let viewStore: ViewStore<MotionFeature.Action, MotionFeature.State>
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            if let barometer = viewStore.state.barometer {
+            if let barometer = viewStore.state.barometer.value {
                 row("Air:", String(format: "%.1f kPa", barometer.pressure.rawValue), .primary)
             }
-            if let motion = viewStore.state.motion {
+            if let motion = viewStore.state.motion.value {
                 // Labelled "lean?" rather than "lean" on purpose: the derivation assumes a steady
                 // turn, so braking and bumps inflate it. It is a candidate to validate offline
                 // against GPS-derived lateral acceleration, not a number to trust yet.
@@ -118,7 +118,7 @@ struct MotionStatusView: View {
                 row("Lean:", lean, .primary)
                 row("Peak g:", String(format: "%.2f", viewStore.state.peakEffort), .secondary)
             }
-            if let activity = viewStore.state.activity {
+            if let activity = viewStore.state.activity.value {
                 row("Motion:", "\(activity.activity) (\(activity.confidence))", .secondary)
             }
         }
@@ -146,6 +146,6 @@ extension MotionFeature: ViewFactory {
         store: any StoreType<Action, State>,
         environment: Environment
     ) -> some View {
-        MotionStatusView(viewStore: ViewStore(store))
+        StoreOwner(store: store) { MotionStatusView(viewStore: $0) }
     }
 }

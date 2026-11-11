@@ -98,7 +98,7 @@ extension TyreFeature: HasBehavior {}
 // MARK: - View
 
 struct TyreStatusView: View {
-    let viewStore: ViewStore<TyreFeature.State, TyreFeature.Action>
+    let viewStore: ViewStore<TyreFeature.Action, TyreFeature.State>
     let formatPressure: @Sendable (PSI) -> String
     let formatTemperature: @Sendable (Celsius) -> String
 
@@ -115,7 +115,7 @@ struct TyreStatusView: View {
     }
 
     private func row(_ position: TyrePosition) -> some View {
-        let reading = viewStore.state.readings[position]
+        let reading = viewStore.state.readings[position].value
         return HStack(spacing: 5) {
             Text(position.shortLabel)
                 .font(.caption2.weight(.semibold))
@@ -162,10 +162,12 @@ extension TyreFeature: ViewFactory {
         store: any StoreType<Action, State>,
         environment: Environment
     ) -> some View {
-        TyreStatusView(
-            viewStore: ViewStore(store),
-            formatPressure: environment.formatPressure,
-            formatTemperature: environment.formatTemperature
-        )
+        StoreOwner(store: store) {
+            TyreStatusView(
+                viewStore: $0,
+                formatPressure: environment.formatPressure,
+                formatTemperature: environment.formatTemperature
+            )
+        }
     }
 }

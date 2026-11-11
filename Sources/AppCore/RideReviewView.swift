@@ -11,14 +11,14 @@ import SwiftUI
 /// granularity real: SwiftUI tracks observation per `body`, so a `@ViewBuilder` helper's reads
 /// accrue to its caller and only a separate view struct opens a new invalidation boundary. Each
 /// piece below is therefore its own struct with its own `body` and its own narrow set of tracked
-/// fields — the same `TrackedViewStore` passed down, because the granularity lives in the mirror's
-/// per-field observation, not in how small a projection is.
+/// fields — the same `ViewStore` passed down, because the granularity lives in its per-path reads,
+/// not in how small a projection is.
 ///
 /// Nothing here computes. The rows arrive worded, the series arrive cut and downsampled, the ball
 /// finds its place by binary search — the screen is a reader of prepared values, which is both the
 /// performance fix and the honest division of labour.
 public struct RideReviewView: View {
-    let viewStore: TrackedViewStore<RideReviewFeature.State, RideReviewFeature.Action>
+    let viewStore: ViewStore<RideReviewFeature.Action, RideReviewFeature.State>
 
     public var body: some View {
         List {
@@ -32,9 +32,9 @@ public struct RideReviewView: View {
                     .foregroundStyle(.secondary)
             }
 
-            ForEach(viewStore.state.rows) { row in
+            ForEach(viewStore.state.each(\.rows)) { row in
                 Button {
-                    viewStore.dispatch(.select(row.id))
+                    viewStore.dispatch(.select(row.value.id))
                 } label: {
                     VStack(alignment: .leading, spacing: 3) {
                         HStack {
@@ -70,7 +70,7 @@ public struct RideReviewView: View {
 /// The sheet's chrome and worded sections. Reads `words` and `exportURL`; a scrub tick or a chart
 /// window change never re-evaluates this body.
 private struct RideDetailSheet: View {
-    let viewStore: TrackedViewStore<RideReviewFeature.State, RideReviewFeature.Action>
+    let viewStore: ViewStore<RideReviewFeature.Action, RideReviewFeature.State>
 
     var body: some View {
         NavigationStack {
@@ -92,7 +92,7 @@ private struct RideDetailSheet: View {
     private var detailList: some View {
         List {
             Section("Ride") {
-                ForEach(viewStore.state.words.facts) { fact in
+                ForEach(viewStore.state.words.facts.value) { fact in
                     LabeledContent(fact.label, value: fact.value)
                 }
                 if !viewStore.state.words.endedCleanly {
@@ -115,7 +115,7 @@ private struct RideDetailSheet: View {
 
             if !viewStore.state.words.roads.isEmpty {
                 Section("Roads · \(viewStore.state.words.roads.count)") {
-                    ForEach(viewStore.state.words.roads) { road in
+                    ForEach(viewStore.state.words.roads.value) { road in
                         LabeledContent(road.label) { Text(road.value) }
                     }
                 }
@@ -123,7 +123,7 @@ private struct RideDetailSheet: View {
 
             // No track, no tape: an interrupted journey that never recorded a fix has nothing to
             // play, and offering the button led to a dead replay screen mistaken for a bug.
-            if viewStore.state.detail.map({ !$0.track.isEmpty }) == true {
+            if viewStore.state.detail.value.map({ !$0.track.isEmpty }) == true {
                 Section {
                     Button {
                         if let id = viewStore.state.selected {
@@ -137,7 +137,7 @@ private struct RideDetailSheet: View {
                 }
             }
 
-            if let destination = viewStore.state.words.destination,
+            if let destination = viewStore.state.words.destination.value,
                let label = viewStore.state.words.destinationLabel {
                 Section {
                     Button {
@@ -174,10 +174,10 @@ private struct RideDetailSheet: View {
 /// The pinned map with the scrub ball. Its own body on purpose: it reads `detail` and
 /// `scrubTime`, so a scrub tick re-renders the ball — and only the ball's map.
 private struct RideMap: View {
-    let viewStore: TrackedViewStore<RideReviewFeature.State, RideReviewFeature.Action>
+    let viewStore: ViewStore<RideReviewFeature.Action, RideReviewFeature.State>
 
     var body: some View {
-        let detail = viewStore.state.detail
+        let detail = viewStore.state.detail.value
         Map {
             if let track = detail?.track, track.count > 1 {
                 MapPolyline(coordinates: track.map {
@@ -227,10 +227,10 @@ private struct RideMap: View {
 /// data, not the boundary: each draws a few hundred downsampled points that never change while a
 /// finger is on them.
 private struct RideCharts: View {
-    let viewStore: TrackedViewStore<RideReviewFeature.State, RideReviewFeature.Action>
+    let viewStore: ViewStore<RideReviewFeature.Action, RideReviewFeature.State>
 
     var body: some View {
-        let detail = viewStore.state.detail
+        let detail = viewStore.state.detail.value
         Group {
             if let speed = detail?.speed, speed.count > 1 {
                 Section("Speed · mph") {
@@ -306,9 +306,9 @@ private struct RideCharts: View {
         .chartScrollableAxes(.horizontal)
         .chartXVisibleDomain(length: viewStore.state.chartWindowSeconds)
         .chartScrollPosition(x: viewStore.binding(
-            .state(\.chartAnchorTime), dispatch: .action(\.chartScrolled)
+            .state(\.chartAnchorTime).action(\.chartScrolled)
         ))
-        .chartXSelection(value: viewStore.binding(.state(\.scrubTime), dispatch: .action(\.scrub)))
+        .chartXSelection(value: viewStore.binding(.state(\.scrubTime).action(\.scrub)))
         .frame(height: height)
         .simultaneousGesture(
             MagnifyGesture()

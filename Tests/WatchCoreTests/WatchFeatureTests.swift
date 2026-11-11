@@ -60,8 +60,8 @@ struct WatchPresentationTests {
         let snapshot = WatchSnapshot(mph: 31, limitText: "30", overLimit: true, roadLabel: "A505")
         store.dispatch(.snapshotArrived(snapshot), source: .init(file: #file, function: #function, line: #line))
         for _ in 0..<5 { await Task.yield() }
-        #expect(store.state.snapshot == snapshot)
-        #expect(store.state.consecutiveOver == 1)
+        #expect(store.currentState.snapshot == snapshot)
+        #expect(store.currentState.consecutiveOver == 1)
     }
 
     @Test("The indicator coming on buzzes the wrist, staying on ticks it")
@@ -100,8 +100,8 @@ struct WatchPresentationTests {
         store.dispatch(.refuelEdited(draft), source: .init(file: #file, function: #function, line: #line))
         store.dispatch(.submitRefuel, source: .init(file: #file, function: #function, line: #line))
         for _ in 0..<10 { await Task.yield() }
-        #expect(store.state.refuelDelivered == true)
-        #expect(!store.state.refuelSending)
+        #expect(store.currentState.refuelDelivered == true)
+        #expect(!store.currentState.refuelSending)
     }
 
     @Test("Leaving the refuel tab retires its outcome banner")
@@ -109,9 +109,9 @@ struct WatchPresentationTests {
         let store = makeStore()
         store.dispatch(.submitRefuel, source: .init(file: #file, function: #function, line: #line))
         for _ in 0..<10 { await Task.yield() }
-        #expect(store.state.refuelDelivered == true)
+        #expect(store.currentState.refuelDelivered == true)
         store.dispatch(.tabChanged(.instruments), source: .init(file: #file, function: #function, line: #line))
-        #expect(store.state.refuelDelivered == nil)
+        #expect(store.currentState.refuelDelivered == nil)
     }
 }
 
@@ -158,26 +158,26 @@ struct RefuelDraftTests {
         snapshot.suggestedOdometerKm = 38_412
         store.dispatch(.snapshotArrived(snapshot), source: .init(file: #file, function: #function, line: #line))
         for _ in 0..<5 { await Task.yield() }
-        #expect(store.state.refuel.odometerKm == 38_412)
+        #expect(store.currentState.refuel.odometerKm == 38_412)
 
         // The rider corrects the reading; the next snapshot must not undo it.
-        var edited = store.state.refuel
+        var edited = store.currentState.refuel
         edited.odoKm = 38_415
         store.dispatch(.refuelEdited(edited), source: .init(file: #file, function: #function, line: #line))
         var later = WatchSnapshot()
         later.suggestedOdometerKm = 38_499
         store.dispatch(.snapshotArrived(later), source: .init(file: #file, function: #function, line: #line))
         for _ in 0..<5 { await Task.yield() }
-        #expect(store.state.refuel.odometerKm == 38_415)
+        #expect(store.currentState.refuel.odometerKm == 38_415)
     }
 
     @Test("Leaving the refuel tab hands the crown back to paging")
     func focusClears() {
         let store = makeStore()
         store.dispatch(.refuelFocused(.priceDec), source: .init(file: #file, function: #function, line: #line))
-        #expect(store.state.refuelFocus == .priceDec)
+        #expect(store.currentState.refuelFocus == .priceDec)
         store.dispatch(.tabChanged(.map), source: .init(file: #file, function: #function, line: #line))
-        #expect(store.state.refuelFocus == nil)
+        #expect(store.currentState.refuelFocus == nil)
     }
 }
 

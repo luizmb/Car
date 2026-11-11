@@ -12,14 +12,14 @@ import SwiftUI
 /// and only two fields that block saving. Everything else is optional or pre-filled, because a form
 /// that refuses to save is a form that loses the record entirely.
 struct FuelView: View {
-    let viewStore: ViewStore<FuelFeature.State, FuelFeature.Action>
+    let viewStore: ViewStore<FuelFeature.Action, FuelFeature.State>
     /// The viewfinder, handed down from the World through the factory — the only view-layer
     /// plumbing the scanner needs.
     let cameraPreview: @MainActor @Sendable () -> CALayer?
 
     var body: some View {
         Form {
-            Picker("", selection: viewStore.binding(.state(\.tab), dispatch: .action(\.setTab))) {
+            Picker("", selection: viewStore.binding(.state(\.tab).action(\.setTab))) {
                 ForEach(FuelTab.allCases, id: \.self) { Text($0.label).tag($0) }
             }
             .pickerStyle(.segmented)
@@ -42,10 +42,7 @@ struct FuelView: View {
         .navigationTitle("Fuel")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { viewStore.dispatch(.appeared) }
-        .fullScreenCover(isPresented: Binding(
-            get: { viewStore.state.scan != nil },
-            set: { if !$0 { viewStore.dispatch(.cancelScan) } }
-        )) {
+        .fullScreenCover(isPresented: viewStore.binding(.state(\.scan).action(\.cancelScan))) {
             ScanSheet(viewStore: viewStore, cameraPreview: cameraPreview)
         }
     }
@@ -62,15 +59,15 @@ struct FuelView: View {
                     Label("Scan pump and odometer", systemImage: "camera.viewfinder")
                 }
 
-                field("Litres", text: viewStore.binding(.state(\.litres), dispatch: .action(\.setLitres)))
-                field("£ / litre", text: viewStore.binding(.state(\.pricePerLitre), dispatch: .action(\.setPrice)))
+                field("Litres", text: viewStore.binding(.state(\.litres).action(\.setLitres)))
+                field("£ / litre", text: viewStore.binding(.state(\.pricePerLitre).action(\.setPrice)))
 
                 if let total = viewStore.state.totalCost {
                     LabeledContent("Total", value: String(format: "£%.2f", total))
                         .font(.body.monospacedDigit())
                 }
 
-                Picker("Grade", selection: viewStore.binding(.state(\.grade), dispatch: .action(\.setGrade))) {
+                Picker("Grade", selection: viewStore.binding(.state(\.grade).action(\.setGrade))) {
                     ForEach(FuelGrade.allCases, id: \.self) { Text($0.label).tag($0) }
                 }
                 .pickerStyle(.segmented)
@@ -78,12 +75,12 @@ struct FuelView: View {
                 // Default on. Brim-to-brim is the only pair of fills that measures anything, so
                 // the common case must be the effortless one.
                 Toggle("Filled to the brim", isOn: viewStore.binding(
-                    .state(\.filledToBrim), dispatch: .action(\.setFilledToBrim)
+                    .state(\.filledToBrim).action(\.setFilledToBrim)
                 ))
             }
 
             Section {
-                field("Bike odometer (km)", text: viewStore.binding(.state(\.odometer), dispatch: .action(\.setOdometer)))
+                field("Bike odometer (km)", text: viewStore.binding(.state(\.odometer).action(\.setOdometer)))
             } header: {
                 Text("Odometer")
             } footer: {
@@ -113,7 +110,7 @@ struct FuelView: View {
         Group {
             Section {
                 field("Bike odometer (km)", text: viewStore.binding(
-                    .state(\.reserveOdometer), dispatch: .action(\.setReserveOdometer)
+                    .state(\.reserveOdometer).action(\.setReserveOdometer)
                 ))
                 LabeledContent("Date", value: "recorded automatically")
                     .font(.caption).foregroundStyle(.secondary)
@@ -155,7 +152,7 @@ struct FuelView: View {
 
     @ViewBuilder
     private var refuelHistory: some View {
-        let log = viewStore.state.log
+        let log = viewStore.state.log.value
         if !log.refuels.isEmpty {
             Section("Previous fills") {
                 ForEach(log.refuelsNewestFirst.prefix(10)) { record in
@@ -187,7 +184,7 @@ struct FuelView: View {
 
     @ViewBuilder
     private var reserveHistory: some View {
-        let log = viewStore.state.log
+        let log = viewStore.state.log.value
         if !log.reserves.isEmpty {
             Section("Reserve switches") {
                 ForEach(log.reserves.sorted { $0.date > $1.date }) { event in
@@ -231,12 +228,12 @@ private extension FuelView {
     /// short town hop cannot drag the baseline the way a mean-of-ratios would let it.
     @ViewBuilder
     var statsTab: some View {
-        let legs = viewStore.state.log.consumptionLegs(spec: .vt400)
+        let legs = viewStore.state.log.value.consumptionLegs(spec: .vt400)
         let average = averageKilometresPerLitre(legs)
 
         Section {
             Picker("", selection: viewStore.binding(
-                .state(\.consumptionDisplay), dispatch: .action(\.setConsumptionDisplay)
+                .state(\.consumptionDisplay).action(\.setConsumptionDisplay)
             )) {
                 ForEach(ConsumptionDisplay.allCases, id: \.self) { Text($0.label).tag($0) }
             }
@@ -336,7 +333,7 @@ extension FuelFeature: ViewFactory {
         store: any StoreType<Action, State>,
         environment: Environment
     ) -> some View {
-        FuelView(viewStore: ViewStore(store), cameraPreview: environment.cameraPreview)
+        StoreOwner(store: store) { FuelView(viewStore: $0, cameraPreview: environment.cameraPreview) }
     }
 }
 
@@ -349,7 +346,7 @@ extension FuelFeature: ViewFactory {
 /// consecutive frames), then swing to the odometer; when it holds steady too, the sheet closes
 /// itself and the form is already filled. Cancelling at any point costs nothing.
 private struct ScanSheet: View {
-    let viewStore: ViewStore<FuelFeature.State, FuelFeature.Action>
+    let viewStore: ViewStore<FuelFeature.Action, FuelFeature.State>
     let cameraPreview: @MainActor @Sendable () -> CALayer?
 
     var body: some View {
@@ -360,7 +357,7 @@ private struct ScanSheet: View {
             // The happy boxes: one around each value the arithmetic believed, exactly where it
             // sits on the glass — the user's proof the scanner has the right display.
             GeometryReader { geometry in
-                ForEach(Array((viewStore.state.scan?.highlights ?? []).enumerated()), id: \.offset) {
+                ForEach(Array((viewStore.state.scan.value?.highlights ?? []).enumerated()), id: \.offset) {
                     _, box in
                     let frame = screenRect(for: box, in: geometry.size)
                     RoundedRectangle(cornerRadius: 6)
@@ -396,7 +393,7 @@ private struct ScanSheet: View {
 
     @ViewBuilder
     private var instruction: some View {
-        let scan = viewStore.state.scan
+        let scan = viewStore.state.scan.value
         VStack(spacing: 10) {
             HStack(spacing: 8) {
                 phaseBadge(

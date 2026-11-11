@@ -58,7 +58,7 @@ public enum AuthorizationPhase: Sendable, Equatable {
 
 // MARK: - Feature
 
-@Feature(strategy: .observationSimple)
+@Feature
 public enum SpeedMonitorFeature {
 
     // MARK: - State

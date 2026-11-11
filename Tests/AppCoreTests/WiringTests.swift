@@ -30,7 +30,7 @@ struct WiringTests {
         // Indimate: an event dispatched through the app action space must reach the feature's
         // state. If the scope were missing, the action would be dropped silently.
         store.dispatch(.indicator(.event(.connected)), source: .init(file: #file, function: #function, line: #line))
-        #expect(store.state.indicator.isConnected)
+        #expect(store.currentState.indicator.isConnected)
 
         // Tyres, via a resolved reading.
         let reading = TyreReading(
@@ -39,14 +39,14 @@ struct WiringTests {
             status: .ok
         )
         store.dispatch(.tyres(.reading(reading)), source: .init(file: #file, function: #function, line: #line))
-        #expect(store.state.tyres.readings[.front] != nil)
+        #expect(store.currentState.tyres.readings[.front] != nil)
 
         // CHIGEE ignition, on and off again — the off edge is the one that failed in the field,
         // leaving the ignition reading ON for the rest of the day.
         store.dispatch(.chigee(.event(.present)), source: .init(file: #file, function: #function, line: #line))
-        #expect(store.state.chigee.isIgnitionOn == true)
+        #expect(store.currentState.chigee.isIgnitionOn == true)
         store.dispatch(.chigee(.event(.absent)), source: .init(file: #file, function: #function, line: #line))
-        #expect(store.state.chigee.isIgnitionOn == false)
+        #expect(store.currentState.chigee.isIgnitionOn == false)
 
         // Cameras reach the speed monitor's slice.
         let camera = SpeedCamera(
@@ -55,21 +55,21 @@ struct WiringTests {
             limit: MPH(30), direction: nil
         )
         store.dispatch(.speedMonitor(.camerasChanged(CameraSet(cameras: [camera], zones: []))), source: .init(file: #file, function: #function, line: #line))
-        #expect(store.state.speedMonitor.cameras.map(\.id) == [42])
+        #expect(store.currentState.speedMonitor.cameras.map(\.id) == [42])
 
         // And the spoken-once bookkeeping prunes when a camera leaves the fetched set, otherwise
         // riding back the other way would stay silent for ever.
         store.dispatch(.speedMonitor(.camerasAnnounced([42])), source: .init(file: #file, function: #function, line: #line))
-        #expect(store.state.speedMonitor.announcedCameraIDs == [42])
+        #expect(store.currentState.speedMonitor.announcedCameraIDs == [42])
         store.dispatch(.speedMonitor(.camerasChanged(.empty)), source: .init(file: #file, function: #function, line: #line))
-        #expect(store.state.speedMonitor.announcedCameraIDs.isEmpty)
+        #expect(store.currentState.speedMonitor.announcedCameraIDs.isEmpty)
 
         // Cardo, via an audio route carrying a Bluetooth headset.
         let route = AudioRoute(outputs: [
             AudioOutput(portType: "BluetoothA2DPOutput", portName: "PT EDGE", uid: "x")
         ])
         store.dispatch(.cardo(.routeChanged(route)), source: .init(file: #file, function: #function, line: #line))
-        #expect(store.state.cardo.isConnected)
+        #expect(store.currentState.cardo.isConnected)
 
         // Motion.
         let sample = MotionSample(
@@ -78,7 +78,7 @@ struct WiringTests {
             rotationRate: Vector3(x: 0, y: 0, z: 0)
         )
         store.dispatch(.motion(.motion(sample)), source: .init(file: #file, function: #function, line: #line))
-        #expect(store.state.motion.motion != nil)
+        #expect(store.currentState.motion.motion != nil)
 
         // Weather.
         let observation = WeatherObservation(
@@ -89,20 +89,20 @@ struct WiringTests {
             .weather(.observed(observation, Latitude(51), Longitude(0), Date(timeIntervalSince1970: 0))),
             source: .init(file: #file, function: #function, line: #line)
         )
-        #expect(store.state.weather.latest != nil)
+        #expect(store.currentState.weather.latest != nil)
     }
 
     @Test("navigation pushes and pops through the app store")
     func navigationIsWired() {
         let store = MainStore.app(world: .stub)
-        #expect(store.state.path.isEmpty)
+        #expect(store.currentState.path.isEmpty)
 
         store.dispatch(.navigation(.push(.fuel)), source: .init(file: #file, function: #function, line: #line))
-        #expect(store.state.path.count == 1)
-        #expect(store.state.routes == [.fuel])
+        #expect(store.currentState.path.count == 1)
+        #expect(store.currentState.routes == [.fuel])
 
         store.dispatch(.navigation(.pop), source: .init(file: #file, function: #function, line: #line))
-        #expect(store.state.path.isEmpty)
+        #expect(store.currentState.path.isEmpty)
     }
 
     @Test("the fuel screen's affine scope reaches state inside the path element")
@@ -113,7 +113,7 @@ struct WiringTests {
         store.dispatch(.navigation(.push(.fuel)), source: .init(file: #file, function: #function, line: #line))
         store.dispatch(.fuel(.setLitres("12.5")), source: .init(file: #file, function: #function, line: #line))
 
-        guard case let .fuel(state)? = store.state.path.first else {
+        guard case let .fuel(state)? = store.currentState.path.first else {
             Issue.record("fuel entry missing from the path")
             return
         }
@@ -126,7 +126,7 @@ struct WiringTests {
         store.dispatch(.navigation(.push(.navigate)), source: .init(file: #file, function: #function, line: #line))
         store.dispatch(.navigate(.setQuery("MK42")), source: .init(file: #file, function: #function, line: #line))
 
-        guard case let .navigate(state)? = store.state.path.first else {
+        guard case let .navigate(state)? = store.currentState.path.first else {
             Issue.record("route planner entry missing from the path")
             return
         }
@@ -157,7 +157,7 @@ struct WiringTests {
         store.dispatch(.navigate(.appeared), source: .init(file: #file, function: #function, line: #line))
         for _ in 0..<10 { await Task.yield() }
 
-        guard case let .navigate(state)? = store.state.path.first else {
+        guard case let .navigate(state)? = store.currentState.path.first else {
             Issue.record("route planner entry missing"); return
         }
         #expect(state.canRoute)
@@ -183,7 +183,7 @@ struct WiringTests {
         // The fan-out is an effect, not a reduction — the fix arrives on the next turn of the loop.
         for _ in 0..<10 { await Task.yield() }
 
-        guard case let .navigate(state)? = store.state.path.first else {
+        guard case let .navigate(state)? = store.currentState.path.first else {
             Issue.record("route planner entry missing from the path")
             return
         }
@@ -198,7 +198,7 @@ struct WiringTests {
     func chosenRouteReachesTheMap() async {
         let store = MainStore.app(world: .stub)
         store.dispatch(.navigation(.push(.navigate)), source: .init(file: #file, function: #function, line: #line))
-        #expect(store.state.speedMonitor.routeShape.isEmpty)
+        #expect(store.currentState.speedMonitor.routeShape.isEmpty)
 
         let shape = (0..<10).map {
             Coordinate(latitude: Latitude(52 + Double($0) / 1_000), longitude: Longitude(-0.46))
@@ -214,11 +214,11 @@ struct WiringTests {
         )
         for _ in 0..<10 { await Task.yield() }
 
-        #expect(store.state.speedMonitor.routeShape == shape)
-        #expect(store.state.activeRoute != nil)
+        #expect(store.currentState.speedMonitor.routeShape == shape)
+        #expect(store.currentState.activeRoute != nil)
         // And it puts the rider back on the home map rather than leaving them on a preview of a
         // route they have already committed to.
-        #expect(store.state.path.isEmpty)
+        #expect(store.currentState.path.isEmpty)
     }
 
     /// A destination chosen before the first fix cannot be routed — the screen says "waiting for a
@@ -241,7 +241,7 @@ struct WiringTests {
         for _ in 0..<10 { await Task.yield() }
 
         // No fix yet, so nothing could be asked.
-        guard case let .navigate(before)? = store.state.path.first else {
+        guard case let .navigate(before)? = store.currentState.path.first else {
             Issue.record("route planner entry missing"); return
         }
         #expect(before.outcome == nil)
@@ -255,7 +255,7 @@ struct WiringTests {
 
         // The stub returns an empty publisher, so routing never resolves — `isRouting` staying true
         // is exactly the evidence that the request was made.
-        guard case let .navigate(after)? = store.state.path.first else {
+        guard case let .navigate(after)? = store.currentState.path.first else {
             Issue.record("route planner entry missing"); return
         }
         #expect(after.isRouting)
@@ -263,7 +263,7 @@ struct WiringTests {
         // A second fix must not ask again: the guard is on the *first* one.
         store.dispatch(fix(52.14), source: .init(file: #file, function: #function, line: #line))
         for _ in 0..<10 { await Task.yield() }
-        guard case let .navigate(later)? = store.state.path.first else {
+        guard case let .navigate(later)? = store.currentState.path.first else {
             Issue.record("route planner entry missing"); return
         }
         #expect(later.latitude == Latitude(52.14))
@@ -278,7 +278,7 @@ struct WiringTests {
             latitude: 52.2, longitude: -0.5, distance: 900, heading: 45, pitch: 0
         )
         store.dispatch(.speedMonitor(.mapBrowsed(camera)), source: .init(file: #file, function: #function, line: #line))
-        #expect(store.state.speedMonitor.browsedCamera == camera)
+        #expect(store.currentState.speedMonitor.browsedCamera == camera)
 
         func fix(_ latitude: Double, mps: Double) -> AppFeature.Action {
             .speedMonitor(.locationUpdate(LocationUpdate(
@@ -292,12 +292,12 @@ struct WiringTests {
         // One fast fix is not enough — a single blip must not snatch the map back.
         store.dispatch(fix(52.130, mps: 10), source: .init(file: #file, function: #function, line: #line))
         for _ in 0..<10 { await Task.yield() }
-        #expect(store.state.speedMonitor.browsedCamera != nil)
+        #expect(store.currentState.speedMonitor.browsedCamera != nil)
 
         // The second fast fix is: demonstrably riding, the map is the bike's again.
         store.dispatch(fix(52.131, mps: 10), source: .init(file: #file, function: #function, line: #line))
         for _ in 0..<10 { await Task.yield() }
-        #expect(store.state.speedMonitor.browsedCamera == nil)
+        #expect(store.currentState.speedMonitor.browsedCamera == nil)
     }
 
     /// Stopped at the kerb, studying the junctions ahead: left alone indefinitely.
@@ -322,7 +322,7 @@ struct WiringTests {
             )
             for _ in 0..<5 { await Task.yield() }
         }
-        #expect(store.state.speedMonitor.browsedCamera != nil)
+        #expect(store.currentState.speedMonitor.browsedCamera != nil)
     }
 
     /// Otherwise the planner forgets where you were going while the map carries on drawing the route
@@ -343,12 +343,12 @@ struct WiringTests {
             source: .init(file: #file, function: #function, line: #line)
         )
         for _ in 0..<10 { await Task.yield() }
-        #expect(!store.state.speedMonitor.routeShape.isEmpty)
+        #expect(!store.currentState.speedMonitor.routeShape.isEmpty)
 
         store.dispatch(.stopNavigation, source: .init(file: #file, function: #function, line: #line))
         for _ in 0..<10 { await Task.yield() }
-        #expect(store.state.speedMonitor.routeShape.isEmpty)
-        #expect(store.state.activeRoute == nil)
+        #expect(store.currentState.speedMonitor.routeShape.isEmpty)
+        #expect(store.currentState.activeRoute == nil)
     }
 
     /// Reaching the destination must end navigation itself, not only the talking. "You have
@@ -374,7 +374,7 @@ struct WiringTests {
             source: .init(file: #file, function: #function, line: #line)
         )
         for _ in 0..<10 { await Task.yield() }
-        #expect(store.state.activeRoute != nil)
+        #expect(store.currentState.activeRoute != nil)
 
         // A fix on the doorstep: within arrival reach of the final manoeuvre.
         store.dispatch(
@@ -388,9 +388,9 @@ struct WiringTests {
         )
         for _ in 0..<20 { await Task.yield() }
 
-        #expect(store.state.activeRoute == nil)
-        #expect(store.state.speedMonitor.routeShape.isEmpty)
-        #expect(store.state.speedMonitor.nextTurn == nil)
+        #expect(store.currentState.activeRoute == nil)
+        #expect(store.currentState.speedMonitor.routeShape.isEmpty)
+        #expect(store.currentState.speedMonitor.nextTurn == nil)
     }
 }
 
@@ -408,27 +408,27 @@ struct JourneyWiringTests {
     @Test("a journey starts when either signal appears and ends when both are gone")
     func journeyLifecycle() async {
         let store = MainStore.app(world: .stub)
-        #expect(store.state.journey == .idle)
+        #expect(store.currentState.journey == .idle)
 
         // Indimate alone is enough to start.
         store.dispatch(.indicator(.event(.connected)), source: .init(file: #file, function: #function, line: #line))
         await settle()
-        #expect(JourneyPhase.prism.active.preview(store.state.journey) != nil)
+        #expect(JourneyPhase.prism.active.preview(store.currentState.journey) != nil)
 
         // CHIGEE arriving changes nothing — already under way.
         store.dispatch(.chigee(.event(.present)), source: .init(file: #file, function: #function, line: #line))
         await settle()
-        #expect(JourneyPhase.prism.active.preview(store.state.journey) != nil)
+        #expect(JourneyPhase.prism.active.preview(store.currentState.journey) != nil)
 
         // One dropping is a red flag, not an ending. This is the CHIGEE-reboot case.
         store.dispatch(.chigee(.event(.absent)), source: .init(file: #file, function: #function, line: #line))
         await settle()
-        #expect(JourneyPhase.prism.active.preview(store.state.journey) != nil)
+        #expect(JourneyPhase.prism.active.preview(store.currentState.journey) != nil)
 
         // Both gone ends it.
         store.dispatch(.indicator(.event(.disconnected)), source: .init(file: #file, function: #function, line: #line))
         await settle()
-        #expect(store.state.journey == .idle)
+        #expect(store.currentState.journey == .idle)
     }
 }
 
@@ -537,7 +537,7 @@ struct RefuelRecordingTests {
         // record every fuel calculation is built on.
         let spy = Spy()
         let store = MainStore.app(world: world(spy))
-        #expect(store.state.journey == .idle)
+        #expect(store.currentState.journey == .idle)
 
         store.dispatch(.navigation(.push(.fuel)), source: .init(file: #file, function: #function, line: #line))
         store.dispatch(.fuel(.setLitres("12.5")), source: .init(file: #file, function: #function, line: #line))
@@ -572,7 +572,7 @@ struct MaintenanceWiringTests {
     @Test("a loaded log recolours the home wrench")
     func statusFollowsTheLog() async {
         let store = MainStore.app(world: .stub)
-        #expect(store.state.maintenanceStatus == .ok)
+        #expect(store.currentState.maintenanceStatus == .ok)
         // The launch-time load answers empty from the stub; let it land first so it cannot
         // overwrite the log this test is about.
         for _ in 0..<10 { await Task.yield() }
@@ -589,8 +589,8 @@ struct MaintenanceWiringTests {
         )
         for _ in 0..<10 { await Task.yield() }
 
-        #expect(store.state.maintenanceLog.items.count == 1)
-        #expect(store.state.maintenanceStatus == .due)
+        #expect(store.currentState.maintenanceLog.items.count == 1)
+        #expect(store.currentState.maintenanceStatus == .due)
     }
 
     /// The screen cannot see the fuel log or the trip counter; the app answers its `appeared`
@@ -612,7 +612,7 @@ struct MaintenanceWiringTests {
         store.dispatch(.maintenance(.appeared), source: .init(file: #file, function: #function, line: #line))
         for _ in 0..<10 { await Task.yield() }
 
-        guard case let .maintenance(screen)? = store.state.path.first else {
+        guard case let .maintenance(screen)? = store.currentState.path.first else {
             Issue.record("maintenance entry missing from the path")
             return
         }
@@ -637,7 +637,7 @@ struct MaintenanceWiringTests {
         for _ in 0..<10 { await Task.yield() }
 
         let lines = composeFlightPlan(
-            store.state.flightPlanInputs(.stub), verbosity: .exceptions
+            store.currentState.flightPlanInputs(.stub), verbosity: .exceptions
         )
         #expect(lines.contains { $0.contains("Chain oil is due") })
     }
@@ -831,7 +831,7 @@ struct PumpScanWiringTests {
             store.dispatch(.fuel(.scanSaw(pumpFrame)), source: .init(file: #file, function: #function, line: #line))
             for _ in 0..<3 { await Task.yield() }
         }
-        guard case let .fuel(mid)? = store.state.path.first else {
+        guard case let .fuel(mid)? = store.currentState.path.first else {
             Issue.record("fuel entry missing"); return
         }
         #expect(mid.scan?.phase == .odometer)
@@ -845,7 +845,7 @@ struct PumpScanWiringTests {
         }
         for _ in 0..<10 { await Task.yield() }
 
-        guard case let .fuel(done)? = store.state.path.first else {
+        guard case let .fuel(done)? = store.currentState.path.first else {
             Issue.record("fuel entry missing"); return
         }
         #expect(done.scan == nil)
@@ -870,7 +870,7 @@ struct PumpScanWiringTests {
             store.dispatch(.fuel(.scanSaw(frame)), source: .init(file: #file, function: #function, line: #line))
             for _ in 0..<2 { await Task.yield() }
         }
-        guard case let .fuel(state)? = store.state.path.first else {
+        guard case let .fuel(state)? = store.currentState.path.first else {
             Issue.record("fuel entry missing"); return
         }
         #expect(state.scan?.phase == .pump)
@@ -908,7 +908,7 @@ struct ReplayWiringTests {
         store.dispatch(.rides(.replayRide(ride().id)), source: .init(file: #file, function: #function, line: #line))
         for _ in 0..<10 { await Task.yield() }
 
-        let replay = store.state.path.compactMap(StackEntry.prism.replay.preview).last
+        let replay = store.currentState.path.compactMap(StackEntry.prism.replay.preview).last
         #expect(replay != nil)
         #expect(replay?.ride.id == ride().id)
     }
@@ -948,13 +948,13 @@ struct ReplayWiringTests {
         )
         for _ in 0..<15 { await Task.yield() }
 
-        let replay = store.state.path.compactMap(StackEntry.prism.replay.preview).last
+        let replay = store.currentState.path.compactMap(StackEntry.prism.replay.preview).last
         #expect(replay?.monitor.lastLocation?.latitude == Latitude(51.87))
         #expect(replay?.monitor.display.roadName == "A505")
         #expect(replay?.indicator == .left)
         #expect(replay?.position == 3)   // the HUD's counter follows the tape
         // And the *live* monitor never saw any of it.
-        #expect(store.state.speedMonitor.lastLocation == nil)
+        #expect(store.currentState.speedMonitor.lastLocation == nil)
     }
 
     @Test("stop pops the screen; the tape ends with it")
@@ -963,6 +963,6 @@ struct ReplayWiringTests {
         store.dispatch(.navigation(.push(.replay(ride()))), source: .init(file: #file, function: #function, line: #line))
         store.dispatch(.replay(.cancel), source: .init(file: #file, function: #function, line: #line))
         for _ in 0..<10 { await Task.yield() }
-        #expect(store.state.path.compactMap(StackEntry.prism.replay.preview).isEmpty)
+        #expect(store.currentState.path.compactMap(StackEntry.prism.replay.preview).isEmpty)
     }
 }

@@ -12,23 +12,18 @@ import SwiftUI
 /// adds the frame that says "this is a film": the badge, the arrows the Indimate once produced,
 /// the finished banner when the tape runs out, and the way off.
 struct ReplayView: View {
-    let store: MainStoreType
+    /// The app's view store, received from the router: the tape's monitor lives in a stack element,
+    /// so this screen reads the app state rather than a slice of it.
+    let viewStore: ViewStore<AppAction, AppState>
     let world: World
-    private let viewStore: ViewStore<AppState, AppAction>
-
-    init(store: MainStoreType, world: World) {
-        self.store = store
-        self.world = world
-        viewStore = ViewStore(store)
-    }
 
     private var replay: ReplayFeature.State? {
-        viewStore.state.path.compactMap(StackEntry.prism.replay.preview).last
+        viewStore.read(derived: { $0.path.compactMap(StackEntry.prism.replay.preview).last })
     }
 
     var body: some View {
         ZStack {
-            AppScopes.replayMonitor.pushedView(of: SpeedMonitorFeature.self, from: store, world: world)
+            AppScopes.replayMonitor.pushedView(of: SpeedMonitorFeature.self, from: viewStore, world: world)
         }
         .overlay(alignment: .top) {
             HStack(spacing: 10) {

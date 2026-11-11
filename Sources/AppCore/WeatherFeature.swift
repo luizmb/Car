@@ -116,11 +116,11 @@ func haversine(_ lat1: Latitude, _ lon1: Longitude, _ lat2: Latitude, _ lon2: Lo
 // MARK: - View
 
 struct WeatherStatusView: View {
-    let viewStore: ViewStore<WeatherFeature.State, WeatherFeature.Action>
+    let viewStore: ViewStore<WeatherFeature.Action, WeatherFeature.State>
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            if let w = viewStore.state.latest {
+            if let w = viewStore.state.latest.value {
                 row("Air:", String(format: "%.0f°C  %.0f%%  %.0f hPa", w.temperature.rawValue, w.humidity, w.pressure.rawValue * 10))
                 // Density is the number that actually matters to a carb, so it is shown rather
                 // than left implicit in the three inputs above.
@@ -150,6 +150,6 @@ extension WeatherFeature: ViewFactory {
         store: any StoreType<Action, State>,
         environment: Environment
     ) -> some View {
-        WeatherStatusView(viewStore: ViewStore(store))
+        StoreOwner(store: store) { WeatherStatusView(viewStore: $0) }
     }
 }

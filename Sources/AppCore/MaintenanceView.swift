@@ -9,7 +9,7 @@ import SwiftUI
 /// No view state: the drafts live in the store, every keystroke is an action, and the sheets are
 /// the visibility of those drafts — the same shape the ride review takes with its selection.
 struct MaintenanceView: View {
-    let viewStore: ViewStore<MaintenanceFeature.State, MaintenanceFeature.Action>
+    let viewStore: ViewStore<MaintenanceFeature.Action, MaintenanceFeature.State>
 
     var body: some View {
         List {
@@ -31,7 +31,7 @@ struct MaintenanceView: View {
                 }
             }
 
-            ForEach(viewStore.state.items) { item in
+            ForEach(viewStore.state.items.value) { item in
                 row(item)
                     .swipeActions {
                         Button(role: .destructive) {
@@ -55,18 +55,18 @@ struct MaintenanceView: View {
         }
         .onAppear { viewStore.dispatch(.appeared) }
         .sheet(isPresented: Binding(
-            get: { viewStore.state.draft != nil },
+            get: { viewStore.state.draft.transpose() != nil },
             set: { if !$0 { viewStore.dispatch(.draftEdited(nil)) } }
         )) {
-            if let draft = viewStore.state.draft {
+            if let draft = viewStore.state.draft.value {
                 MaintenanceDraftSheet(viewStore: viewStore, snapshot: draft)
             }
         }
         .sheet(isPresented: Binding(
-            get: { viewStore.state.eventDraft != nil },
+            get: { viewStore.state.eventDraft.transpose() != nil },
             set: { if !$0 { viewStore.dispatch(.eventEdited(nil)) } }
         )) {
-            if let draft = viewStore.state.eventDraft {
+            if let draft = viewStore.state.eventDraft.value {
                 MaintenanceEventSheet(viewStore: viewStore, snapshot: draft)
             }
         }
@@ -126,14 +126,14 @@ struct MaintenanceView: View {
 // MARK: - The creation form
 
 private struct MaintenanceDraftSheet: View {
-    let viewStore: ViewStore<MaintenanceFeature.State, MaintenanceFeature.Action>
+    let viewStore: ViewStore<MaintenanceFeature.Action, MaintenanceFeature.State>
     /// The value the sheet was opened with — the binding's fallback for the frame where the store
     /// clears the draft and the sheet is still animating away.
     let snapshot: MaintenanceFeature.Draft
 
     private var draft: Binding<MaintenanceFeature.Draft> {
         Binding(
-            get: { viewStore.state.draft ?? snapshot },
+            get: { viewStore.state.draft.value ?? snapshot },
             set: { viewStore.dispatch(.draftEdited($0)) }
         )
     }
@@ -205,12 +205,12 @@ private struct MaintenanceDraftSheet: View {
 // MARK: - The completion form
 
 private struct MaintenanceEventSheet: View {
-    let viewStore: ViewStore<MaintenanceFeature.State, MaintenanceFeature.Action>
+    let viewStore: ViewStore<MaintenanceFeature.Action, MaintenanceFeature.State>
     let snapshot: MaintenanceFeature.EventDraft
 
     private var draft: Binding<MaintenanceFeature.EventDraft> {
         Binding(
-            get: { viewStore.state.eventDraft ?? snapshot },
+            get: { viewStore.state.eventDraft.value ?? snapshot },
             set: { viewStore.dispatch(.eventEdited($0)) }
         )
     }
@@ -251,6 +251,6 @@ extension MaintenanceFeature: ViewFactory {
         store: any StoreType<Action, State>,
         environment _: Environment
     ) -> some View {
-        MaintenanceView(viewStore: ViewStore(store))
+        StoreOwner(store: store) { MaintenanceView(viewStore: $0) }
     }
 }

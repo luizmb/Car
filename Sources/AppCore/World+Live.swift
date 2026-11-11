@@ -66,6 +66,101 @@ enum SpeechGroup: CaseIterable, Sendable {
         case .accessory: 0.7
         }
     }
+
+    /// The ride log's tag — the same three letters as `say[…]`.
+    var tag: String {
+        switch self {
+        case .directions: "dir"
+        case .speed: "spd"
+        case .accessory: "acc"
+        }
+    }
+}
+
+/// A once-a-minute pulse from the main thread, carrying how many actions the store logged since.
+///
+/// On 2026-11-09 the store stopped taking actions 0 s into a 23-minute ride — no GPS, no speed
+/// calls, no journey end — while CoreBluetooth callbacks kept logging from the main thread. In the
+/// log that is indistinguishable from iOS suspending the app. With this pulse it is not:
+/// `heartbeat actions=0` ticking during a journey is a wedged store; no heartbeat at all is a
+/// suspended process.
+private final class HeartbeatBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var actions = 0
+    private var timer: DispatchSourceTimer?
+
+    func count() { lock.withLock { actions += 1 } }
+
+    func start(every seconds: Int, log: @escaping @Sendable (String) -> Void) {
+        let source = DispatchSource.makeTimerSource(queue: .main)
+        source.schedule(deadline: .now() + .seconds(seconds), repeating: .seconds(seconds))
+        source.setEventHandler { [weak self] in
+            guard let self else { return }
+            let n = self.lock.withLock { () -> Int in
+                defer { self.actions = 0 }
+                return self.actions
+            }
+            log("heartbeat actions=\(n)")
+        }
+        source.resume()
+        lock.withLock { timer = source }
+    }
+}
+
+/// What a synthesiser actually did with what it was handed.
+///
+/// `say[spd]` only proves the app *asked*. On 2026-11-06 the log was full of speed calls while the
+/// rider heard few of them, and nothing could tell a stuck synthesiser from a cancelled queue from
+/// a voice that spoke into a dead route. This logs every start, finish and cancel, the queue depth
+/// on every hand-over, and how long the current utterance has been running when another arrives —
+/// a wedge shows as `stuck=` growing while `depth=` climbs.
+private final class SpeechTrace: NSObject, AVSpeechSynthesizerDelegate, @unchecked Sendable {
+    private let tag: String
+    private let log: @Sendable (String) -> Void
+    private let lock = NSLock()
+    private var depth = 0
+    private var startedAt: Date?
+
+    init(tag: String, log: @escaping @Sendable (String) -> Void) {
+        self.tag = tag
+        self.log = log
+    }
+
+    func handedOver(speaking: Bool) {
+        let (count, since) = lock.withLock { () -> (Int, Date?) in
+            depth += 1
+            return (depth, startedAt)
+        }
+        let stuck = speaking ? since.map { " stuck=\(Int(Date().timeIntervalSince($0)))s" } ?? "" : ""
+        log("voice[\(tag)] queued depth=\(count) speaking=\(speaking)\(stuck)")
+    }
+
+    func held(_ text: String) {
+        log("voice[\(tag)] held \(text)")
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
+        lock.withLock { startedAt = Date() }
+        log("voice[\(tag)] start \(utterance.speechString)")
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        let count = lock.withLock { () -> Int in
+            depth = max(0, depth - 1)
+            startedAt = nil
+            return depth
+        }
+        log("voice[\(tag)] done depth=\(count)")
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        let count = lock.withLock { () -> Int in
+            depth = max(0, depth - 1)
+            startedAt = nil
+            return depth
+        }
+        log("voice[\(tag)] CANCELLED \(utterance.speechString) depth=\(count)")
+    }
 }
 
 /// The directions voice, placed on the junction's clock.
@@ -220,6 +315,8 @@ private final class SpeechBox: @unchecked Sendable {
         .accessory: AVSpeechSynthesizer()
     ]
     nonisolated(unsafe) private let directionsVoice = DirectionsVoiceBox()
+    private let traces: [SpeechGroup: SpeechTrace]
+    private let log: @Sendable (String) -> Void
     // The launch hush, per family. Each voice starts speaking at its own natural moment — the
     // greetings at ignition (never gated), the speed family at the session's first movement,
     // the directions at GO — so no two families pile up at launch *or* at release: the triggers
@@ -234,7 +331,15 @@ private final class SpeechBox: @unchecked Sendable {
     // would be one piece of the battery plan out of order, adding a failure mode before the
     // observation week that is meant to inform the whole thing. See the battery strategy notes.
 
-    init() {
+    init(log: @escaping @Sendable (String) -> Void) {
+        self.log = log
+        let traces = Dictionary(uniqueKeysWithValues: [SpeechGroup.speed, .accessory].map {
+            ($0, SpeechTrace(tag: $0.tag, log: log))
+        })
+        self.traces = traces
+        for (group, trace) in traces {
+            synthesizers[group]?.delegate = trace
+        }
         // `.duckOthers` (not `.mixWithOthers`) is what lets Music and Apple Maps keep playing
         // while dipping under our audio — the arrangement the rider already runs four apps on.
         // The session is activated once and never deactivated: `setActive(false)` would cut the
@@ -254,9 +359,23 @@ private final class SpeechBox: @unchecked Sendable {
         // the same accidental recovery, deliberately.
         NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
-        ) { [weak self] _ in
+        ) { [weak self] note in
+            // Read out of the notification before crossing into the main actor: the notification
+            // itself is not Sendable.
+            let reason = (note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt) ?? 0
             MainActor.assumeIsolated {
                 guard let self else { return }
+                // Every route change empties every queue, not only the word in flight. Logged with
+                // what was speaking, because a flapping route would silently eat whole stretches of
+                // speed calls — each cancelled utterance also logs `CANCELLED` from its trace.
+                let outputs = AVAudioSession.sharedInstance().currentRoute.outputs.map(\.portName)
+                let speaking = SpeechGroup.allCases
+                    .filter { self.synthesizers[$0]?.isSpeaking ?? false }
+                    .map(\.tag)
+                self.log(
+                    "audio-route-change reason=\(reason) to=\(outputs.joined(separator: "+")) "
+                        + "speaking=\(speaking.joined(separator: ","))"
+                )
                 for synth in self.synthesizers.values {
                     synth.stopSpeaking(at: .immediate)
                 }
@@ -284,8 +403,14 @@ private final class SpeechBox: @unchecked Sendable {
             } else {
                 held[group, default: []].append(text)
             }
+            traces[group]?.held(text)
             return
         }
+        speak(text, group: group)
+    }
+
+    private func speak(_ text: String, group: SpeechGroup) {
+        traces[group]?.handedOver(speaking: synthesizers[group]?.isSpeaking ?? false)
         synthesizers[group]?.speak(utterance(text, group: group))
     }
 
@@ -313,7 +438,7 @@ private final class SpeechBox: @unchecked Sendable {
             return
         }
         for text in held[group] ?? [] {
-            synthesizers[group]?.speak(utterance(text, group: group))
+            speak(text, group: group)
         }
         held[group] = nil
     }
@@ -391,6 +516,7 @@ private final class SpeechBox: @unchecked Sendable {
             u.rate  = 0.57
             u.volume = SpeechGroup.accessory.volume
             u.postUtteranceDelay = gap
+            traces[.accessory]?.handedOver(speaking: synthesizers[.accessory]?.isSpeaking ?? false)
             synthesizers[.accessory]?.speak(u)
         }
     }
@@ -463,14 +589,16 @@ extension World {
         // At this cadence a typical ride makes one camera request instead of fifteen, and 50 km is
         // further than this rider goes before stopping, which starts a fresh journey anyway.
         let cameraLoc = RoadSpeedBox(minDistance: Meters(40_000), minTime: 120)
-        let speech    = SpeechBox()
         let indimate  = IndimateCentral()
         let cardo     = CardoCentral()
         let chigee    = ChigeeCentral()
         let tyres     = TyreCentral()
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         // Two files, deliberately. `journey-*` is the record; `debug-*` is the dump.
-        let rideLog    = ActionLogBox(directory: documents, prefix: "debug", now: { Date() })
+        let rideLog    = ActionLogBox(directory: documents, prefix: "debug", keepDays: 14, now: { Date() })
+        let speech     = SpeechBox(log: rideLog.append)
+        let heartbeat  = HeartbeatBox()
+        heartbeat.start(every: 60, log: rideLog.append)
         // The journey timeline now lives in the app database; only the debug firehose - the
         // temporary, deleted-weekly dump - remains a text file, because grep is its query engine.
         let appDatabase = AppDatabase()
@@ -621,6 +749,7 @@ extension World {
                 return makeIndimateStream(
                     central: indimate,
                     knownIdentifier: IndimatePeripheralStore.load,
+                    log: rideLog.append,
                     onLearn: IndimatePeripheralStore.save
                 )
                 #endif
@@ -755,7 +884,10 @@ extension World {
             now: { Date() },
             newID: { UUID() },
             logAction: { line in
-                Publisher.future { rideLog.append(line) }
+                Publisher.future { () -> Void in
+                    heartbeat.count()
+                    rideLog.append(line)
+                }
             },
             loadRecentDestinations: {
                 Publisher.future {
@@ -813,10 +945,12 @@ extension World {
                 return Publisher.future { DispatchQueue.main.async { speech.release(.directions) } }
             },
             announceOverLimit: {
-                Publisher.future { DispatchQueue.main.async { speech.enqueue("over", group: .speed) } }
+                rideLog.append("say[spd] over")
+                return Publisher.future { DispatchQueue.main.async { speech.enqueue("over", group: .speed) } }
             },
             announceUnderLimit: {
-                Publisher.future { DispatchQueue.main.async { speech.enqueue("back", group: .speed) } }
+                rideLog.append("say[spd] back")
+                return Publisher.future { DispatchQueue.main.async { speech.enqueue("back", group: .speed) } }
             },
             playRerouteTone: {
                 // A system sound rather than an asset: it needs no file, ducks nothing, and cannot

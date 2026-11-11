@@ -101,7 +101,7 @@ extension ChigeeFeature: HasBehavior {}
 // MARK: - View
 
 struct ChigeeStatusView: View {
-    let viewStore: ViewStore<ChigeeFeature.State, ChigeeFeature.Action>
+    let viewStore: ViewStore<ChigeeFeature.Action, ChigeeFeature.State>
 
     var body: some View {
         HStack(spacing: 5) {
@@ -141,6 +141,6 @@ extension ChigeeFeature: ViewFactory {
         store: any StoreType<Action, State>,
         environment: Environment
     ) -> some View {
-        ChigeeStatusView(viewStore: ViewStore(store))
+        StoreOwner(store: store) { ChigeeStatusView(viewStore: $0) }
     }
 }
