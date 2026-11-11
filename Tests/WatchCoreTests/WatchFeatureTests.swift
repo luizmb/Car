@@ -57,17 +57,21 @@ struct WatchPresentationTests {
     @Test("A snapshot lands whole")
     func snapshotLands() async {
         let store = makeStore()
+        // Stores are declarative now; the view store is the one readable leaf.
+        let view = store.viewStore()
         let snapshot = WatchSnapshot(mph: 31, limitText: "30", overLimit: true, roadLabel: "A505")
         store.dispatch(.snapshotArrived(snapshot), source: .init(file: #file, function: #function, line: #line))
         for _ in 0..<5 { await Task.yield() }
-        #expect(store.state.snapshot == snapshot)
-        #expect(store.state.consecutiveOver == 1)
+        #expect(view.state.value.snapshot == snapshot)
+        #expect(view.state.value.consecutiveOver == 1)
     }
 
     @Test("The indicator coming on buzzes the wrist, staying on ticks it")
     func indicatorHaptics() async {
         let spy = HapticSpy()
         let store = makeStore(haptics: spy)
+        // Stores are declarative now; the view store is the one readable leaf.
+        let view = store.viewStore()
         store.dispatch(.snapshotArrived(WatchSnapshot(indicator: "left")), source: .init(file: #file, function: #function, line: #line))
         for _ in 0..<5 { await Task.yield() }
         store.dispatch(.snapshotArrived(WatchSnapshot(indicator: "left")), source: .init(file: #file, function: #function, line: #line))
@@ -81,6 +85,8 @@ struct WatchPresentationTests {
     func overSpeedHaptics() async {
         let spy = HapticSpy()
         let store = makeStore(haptics: spy)
+        // Stores are declarative now; the view store is the one readable leaf.
+        let view = store.viewStore()
         for _ in 0..<3 {
             store.dispatch(.snapshotArrived(WatchSnapshot(overLimit: true)), source: .init(file: #file, function: #function, line: #line))
             for _ in 0..<5 { await Task.yield() }
@@ -93,6 +99,8 @@ struct WatchPresentationTests {
     @Test("Submitting a refuel sends the draft and reports the outcome")
     func refuelRoundTrip() async {
         let store = makeStore()
+        // Stores are declarative now; the view store is the one readable leaf.
+        let view = store.viewStore()
         var draft = WatchFeature.RefuelDraft()
         draft.litresInt = 8
         draft.litresDec = 50
@@ -100,18 +108,20 @@ struct WatchPresentationTests {
         store.dispatch(.refuelEdited(draft), source: .init(file: #file, function: #function, line: #line))
         store.dispatch(.submitRefuel, source: .init(file: #file, function: #function, line: #line))
         for _ in 0..<10 { await Task.yield() }
-        #expect(store.state.refuelDelivered == true)
-        #expect(!store.state.refuelSending)
+        #expect(view.state.value.refuelDelivered == true)
+        #expect(!view.state.value.refuelSending)
     }
 
     @Test("Leaving the refuel tab retires its outcome banner")
     func bannerRetires() async {
         let store = makeStore()
+        // Stores are declarative now; the view store is the one readable leaf.
+        let view = store.viewStore()
         store.dispatch(.submitRefuel, source: .init(file: #file, function: #function, line: #line))
         for _ in 0..<10 { await Task.yield() }
-        #expect(store.state.refuelDelivered == true)
+        #expect(view.state.value.refuelDelivered == true)
         store.dispatch(.tabChanged(.instruments), source: .init(file: #file, function: #function, line: #line))
-        #expect(store.state.refuelDelivered == nil)
+        #expect(view.state.value.refuelDelivered == nil)
     }
 }
 
@@ -154,30 +164,34 @@ struct RefuelDraftTests {
     @Test("A snapshot's estimate seeds the odometer once, and never over a touched value")
     func estimateSeedsOnce() async {
         let store = makeStore()
+        // Stores are declarative now; the view store is the one readable leaf.
+        let view = store.viewStore()
         var snapshot = WatchSnapshot()
         snapshot.suggestedOdometerKm = 38_412
         store.dispatch(.snapshotArrived(snapshot), source: .init(file: #file, function: #function, line: #line))
         for _ in 0..<5 { await Task.yield() }
-        #expect(store.state.refuel.odometerKm == 38_412)
+        #expect(view.state.value.refuel.odometerKm == 38_412)
 
         // The rider corrects the reading; the next snapshot must not undo it.
-        var edited = store.state.refuel
+        var edited = view.state.value.refuel
         edited.odoKm = 38_415
         store.dispatch(.refuelEdited(edited), source: .init(file: #file, function: #function, line: #line))
         var later = WatchSnapshot()
         later.suggestedOdometerKm = 38_499
         store.dispatch(.snapshotArrived(later), source: .init(file: #file, function: #function, line: #line))
         for _ in 0..<5 { await Task.yield() }
-        #expect(store.state.refuel.odometerKm == 38_415)
+        #expect(view.state.value.refuel.odometerKm == 38_415)
     }
 
     @Test("Leaving the refuel tab hands the crown back to paging")
     func focusClears() {
         let store = makeStore()
+        // Stores are declarative now; the view store is the one readable leaf.
+        let view = store.viewStore()
         store.dispatch(.refuelFocused(.priceDec), source: .init(file: #file, function: #function, line: #line))
-        #expect(store.state.refuelFocus == .priceDec)
+        #expect(view.state.value.refuelFocus == .priceDec)
         store.dispatch(.tabChanged(.map), source: .init(file: #file, function: #function, line: #line))
-        #expect(store.state.refuelFocus == nil)
+        #expect(view.state.value.refuelFocus == nil)
     }
 }
 
@@ -191,6 +205,8 @@ struct RideSessionTests {
     func followsJourneyEdges() async {
         let sessions = SessionSpy()
         let store = makeStore(sessions: sessions)
+        // Stores are declarative now; the view store is the one readable leaf.
+        let view = store.viewStore()
         let src = SwiftRex.ActionSource(file: #file, function: #function, line: #line)
         store.dispatch(.snapshotArrived(WatchSnapshot(journeyActive: true)), source: src)
         for _ in 0..<5 { await Task.yield() }
@@ -207,6 +223,8 @@ struct RideSessionTests {
     func replayStaysCold() async {
         let sessions = SessionSpy()
         let store = makeStore(sessions: sessions)
+        // Stores are declarative now; the view store is the one readable leaf.
+        let view = store.viewStore()
         let src = SwiftRex.ActionSource(file: #file, function: #function, line: #line)
         var tape = WatchSnapshot(journeyActive: true)
         tape.replaying = true

@@ -1,8 +1,9 @@
+import AppDomain
 import CoreLocation
 import SwiftRexArchitecture
 import SwiftUI
 
-@BoundTo(SpeedMonitorFeature.self, strategy: .observationSimple)
+@BoundTo(SpeedMonitorFeature.self)
 public struct SpeedMonitorView: View {
     public var body: some View {
         SpeedMonitorContent(
@@ -34,3 +35,9 @@ public struct SpeedMonitorView: View {
         .onAppear { viewStore.dispatch(.onAppear) }
     }
 }
+
+// Small values the map reads whole: a limit badge, a polyline vertex, the browsed camera. Each is
+// rendered as a unit, so a granular position into them would buy nothing.
+extension RoadLimitDisplay: IndivisibleTracking {}
+extension Coordinate: IndivisibleTracking {}
+extension BrowsedCamera: IndivisibleTracking {}

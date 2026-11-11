@@ -1,13 +1,13 @@
 {
-  "originHash" : "5b0ae7f0b95b1baa8af88653ddd881b7275e64b208d575842e55b020f022102c",
+  "originHash" : "698f989183f9f88b2ea79ca330f818a2b56ae1845b642ae991243edb200cbd48",
   "pins" : [
     {
       "identity" : "fp",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/luizmb/FP.git",
       "state" : {
-        "revision" : "3ff729badf4be84773f9681350e63513dddd4339",
-        "version" : "2.2.0"
+        "revision" : "a825632d12443a554c53039f8871d1fc59f687f1",
+        "version" : "3.0.0"
       }
     },
     {
@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/luizmb/NetworkTools.git",
       "state" : {
-        "revision" : "4721b315a0ab3ac4e44496cc04ab5c1f759557f7",
-        "version" : "0.8.0"
+        "revision" : "42fcce8f963999628671a2f5499c6049bf5b0196",
+        "version" : "0.9.0"
       }
     },
     {
@@ -33,8 +33,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/luizmb/ReactiveConcurrency.git",
       "state" : {
-        "revision" : "35ac52966c4c514bca05ed23bd3f2f621ea77e0f",
-        "version" : "1.1.0"
+        "revision" : "2afd10d5b4e7d2700589d33047fcfaae66827212",
+        "version" : "2.1.0"
       }
     },
     {
@@ -51,8 +51,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-collections.git",
       "state" : {
-        "revision" : "a0cb0954ecb21e4e31b0070e6ed5674e8556685a",
-        "version" : "1.6.0"
+        "revision" : "88754449ab766a739610b660e117762115fabc9c",
+        "version" : "1.7.6"
       }
     },
     {
@@ -60,8 +60,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-nio.git",
       "state" : {
-        "revision" : "0b18836bd8b0162e7e17a995a3fbee20ed8f3b2b",
-        "version" : "2.101.3"
+        "revision" : "2f58d8ef84438d6517fc78bcea2f8527e3c72936",
+        "version" : "2.105.0"
       }
     },
     {
@@ -78,8 +78,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-system.git",
       "state" : {
-        "revision" : "b5544ba79a70a0cb3563e75bf26dc198d6b40ed3",
-        "version" : "1.7.4"
+        "revision" : "869129b7bf4ecc57b97d0193ad29690ca2134750",
+        "version" : "1.8.1"
       }
     },
     {
@@ -88,7 +88,7 @@
       "location" : "https://github.com/SwiftRex/SwiftRex.git",
       "state" : {
         "branch" : "main",
-        "revision" : "4138ec632e690618b9af02cdb59fba0e067f92ca"
+        "revision" : "a67349c9d0b2bca0081f5218d9dcaa9e21c13c8f"
       }
     }
   ],
